@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
-import { resolve } from 'node:path'
-import test from 'node:test'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import test, { after } from 'node:test'
 import type { ExtensionAPI, SlashCommandInfo } from '@earendil-works/pi-coding-agent'
 import { formatSkillsForPrompt, loadSkills } from '@earendil-works/pi-coding-agent'
 import keywordSkillRouter, {
@@ -12,10 +14,47 @@ import keywordSkillRouter, {
 
 type Handler = (event: any, ctx: any) => unknown
 
-const builtInSkillsRoot = resolve(import.meta.dirname, '../../vendor/pi/packages/coding-agent/skills')
-const whatOnlySkillPath = resolve(builtInSkillsRoot, 'what-only/SKILL.md')
-const issueSkillPath = resolve(builtInSkillsRoot, 'issue/SKILL.md')
-const projectMemorySkillPath = resolve(builtInSkillsRoot, 'manage-project-memory/SKILL.md')
+const testSkillsRoot = mkdtempSync(join(tmpdir(), 'mypi-keyword-skill-router-'))
+after(() => rmSync(testSkillsRoot, { recursive: true, force: true }))
+
+function writeTestSkill(name: string, keywordInvoke: string): string {
+  const skillDirectory = join(testSkillsRoot, name)
+  const skillPath = join(skillDirectory, 'SKILL.md')
+  mkdirSync(skillDirectory, { recursive: true })
+  writeFileSync(skillPath, [
+    '---',
+    `name: ${name}`,
+    'description: Test-only keyword routing fixture.',
+    'disable-model-invocation: true',
+    'metadata:',
+    keywordInvoke,
+    '---',
+    '',
+    `# ${name}`,
+    '',
+    'Test-only skill body.',
+    '',
+  ].join('\n'))
+  return skillPath
+}
+
+const whatOnlySkillPath = writeTestSkill('what-only', String.raw`  keyword-invoke:
+    regex:
+      - pattern: '1q2w3e4r5t[0-9]?'`)
+const issueSkillPath = writeTestSkill('issue', String.raw`  keyword-invoke:
+    priority: 100
+    case-sensitive: false
+    keywords:
+      - '[ISSUE]'
+    regex:
+      - pattern: '(?=[\s\S]*\b(?:issues?|bugs?|defects?|regressions?|feature requests?)\b)(?=[\s\S]*\b(?:track(?:s|ed|ing)?|record(?:s|ed|ing)?|log(?:s|ged|ging)?|fil(?:e|es|ed|ing)|report(?:s|ed|ing)?|triag(?:e|es|ed|ing))\b)'
+        flags: i`)
+const projectMemorySkillPath = writeTestSkill('manage-project-memory', String.raw`  keyword-invoke:
+    priority: 50
+    case-sensitive: false
+    regex:
+      - pattern: '(?:^\s*(?:(?:please|kindly)\s+)?(?:remember(?!\s+me\s+(?:checkbox|control|button|option|setting|feature)\b)|memor(?:ize|ise)|recall|forget)\b|^\s*(?:can|could|would|will)\s+you\s+(?:please\s+)?(?:remember(?!\s+me\s+(?:checkbox|control|button|option|setting|feature)\b)|memor(?:ize|ise)|recall|forget)\b|^\s*(?:do|did)\s+you\s+remember\b|^\s*(?:(?:please|kindly)\s+)?(?:keep|note)\s+(?:this|that)\s+(?:in mind|for later)\b|^\s*(?:project\s+)?memo(?:ry)?\s*:|\b(?:save|store|record|add|write)\s+(?:this|that|it|the following)\s+(?:in|to)\s+(?:the\s+)?(?:project\s+)?memory\b|\bwhat\s+do\s+you\s+remember\b|^\s*(?:(?:please|kindly)\s+)?(?:read|show|list|check|review|update|edit|change|clear)\s+(?:the\s+)?(?:project\s+)?memory\b|\b(?:remove|delete)\s+.+?\s+from\s+(?:the\s+)?(?:project\s+)?memory\b)'
+        flags: i`)
 
 function skillCommand(name: string, path = whatOnlySkillPath): SlashCommandInfo {
   return {
@@ -252,7 +291,7 @@ test('authenticated GUI bridge expands keyword and explicit skills exactly once'
   assert.deepEqual(notifications, [])
 })
 
-test('bundled keyword skills are command-discoverable but absent from model prompt metadata', () => {
+test('keyword skills are command-discoverable but absent from model prompt metadata', () => {
   const result = loadSkills({
     cwd: resolve(import.meta.dirname, '../..'),
     agentDir: resolve(import.meta.dirname, '.empty-agent-dir'),

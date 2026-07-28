@@ -44,6 +44,18 @@ export function readMyPiRuntimeVersion(root = defaultRoot) {
 
 export function readMyPiRepositoryVersionContract(root = defaultRoot) {
   const contract = readMyPiRuntimeVersion(root);
+  const protocolSource = readFileSync(join(root, "extensions/gui-control/protocol.ts"), "utf8");
+  const protocolMatch = protocolSource.match(/^export const GUI_CONTROL_PROTOCOL = ([1-9]\d*)$/m);
+  if (!protocolMatch) {
+    throw new Error("extensions/gui-control/protocol.ts must declare a positive integer GUI_CONTROL_PROTOCOL.");
+  }
+  const bridgeProtocol = Number(protocolMatch[1]);
+  const productMajor = Number(contract.productVersion.split(".", 1)[0]);
+  if (productMajor !== bridgeProtocol) {
+    throw new Error(
+      `MyPi CLI major version ${productMajor} must equal GUI-control protocol ${bridgeProtocol}.`,
+    );
+  }
   for (const relativePath of ["resources/mypi-core-package/package.json"]) {
     const manifest = readManifest(join(root, relativePath));
     if (manifest.version !== contract.productVersion) {
@@ -52,7 +64,7 @@ export function readMyPiRepositoryVersionContract(root = defaultRoot) {
       );
     }
   }
-  return contract;
+  return { ...contract, bridgeProtocol };
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : undefined;
@@ -62,6 +74,7 @@ if (invokedPath === fileURLToPath(import.meta.url)) {
   if (field === "--display") console.log(contract.displayVersion);
   else if (field === "--product") console.log(contract.productVersion);
   else if (field === "--pi") console.log(contract.piCoreVersion);
+  else if (field === "--protocol") console.log(contract.bridgeProtocol);
   else if (field === "--json") console.log(JSON.stringify(contract));
   else throw new Error(`Unknown version-contract field: ${field}`);
 }

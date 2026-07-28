@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readMyPiRepositoryVersionContract } from "./mypi-version-contract.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const options = parseArgs(process.argv.slice(2));
@@ -34,7 +35,9 @@ const productManifest = readJson(join(productRoot, "package.json"));
 const coreManifest = readJson(join(productRoot, "resources", "mypi-core-package", "package.json"));
 const provenance = readJson(join(productRoot, "vendor", "pi", "MYPI_PROVENANCE.json"));
 const version = productManifest.version;
+const versionContract = readMyPiRepositoryVersionContract(productRoot);
 
+assert(version === versionContract.productVersion, "MyPi version contract does not match the CLI");
 assert(version === coreManifest.version, "@mypi/core version does not match the CLI");
 assert(
   normalizeVersion(productManifest.devDependencies?.["@earendil-works/pi-coding-agent"])
@@ -373,6 +376,7 @@ function assertCleanTarball(entries) {
       /(^|\/)(docs|examples|plans|tests?|coverage|playwright-report|test-results)(\/|$)/.test(entry)
       && !entry.startsWith("package/node_modules/@earendil-works/pi-coding-agent/docs/")
     )
+    || entry.startsWith("package/node_modules/@earendil-works/pi-coding-agent/skills/")
     || /(^|\/)(package-lock\.json|npm-shrinkwrap\.json)$/.test(entry)
     || /(^|\/)\.DS_Store$/.test(entry)
   ));

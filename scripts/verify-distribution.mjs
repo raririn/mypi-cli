@@ -44,6 +44,10 @@ const entries = execFileSync("tar", ["-tzf", artifact], {
   encoding: "utf8",
   maxBuffer: 100 * 1024 * 1024,
 }).split("\n").filter(Boolean);
+assert(
+  !entries.some((entry) => entry.includes("/@earendil-works/pi-coding-agent/skills/")),
+  "npm artifact must not bundle built-in Pi skills",
+);
 for (const required of [
   "package/LICENSE",
   "package/LICENSES/pi-MIT.txt",

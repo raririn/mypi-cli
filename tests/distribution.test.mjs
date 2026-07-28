@@ -4,8 +4,15 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
+import { readMyPiRepositoryVersionContract } from "../scripts/mypi-version-contract.mjs";
 
 const root = resolve(import.meta.dirname, "..");
+
+test("CLI SemVer major matches the GUI-control protocol", () => {
+  const contract = readMyPiRepositoryVersionContract(root);
+  assert.equal(Number(contract.productVersion.split(".", 1)[0]), contract.bridgeProtocol);
+  assert.equal(contract.bridgeProtocol, 5);
+});
 
 test("public npm documentation uses the scoped package and isolated profile", () => {
   const readme = readFileSync(join(root, "README.md"), "utf8");

@@ -19,6 +19,9 @@ if (packageJson.dependencies?.["@anthropic-ai/sandbox-runtime"] !== expectedSand
     `Installed Pi runtime does not pin @anthropic-ai/sandbox-runtime ${expectedSandboxRuntimeVersion}.`,
   );
 }
+if (packageJson.files?.includes("skills")) {
+  throw new Error(`Installed Pi ${expectedVersion} still declares bundled skills.`);
+}
 
 const requiredReferenceFiles = [
   "README.md",
@@ -82,8 +85,6 @@ for (const fragment of [
   }
 }
 for (const relativePath of [
-  join("skills", "issue", "SKILL.md"),
-  join("skills", "frontend-design", "SKILL.md"),
   join("dist", "extensions", "mypi", "goal-prompts", "continuation.md"),
 ]) {
   const content = await readFile(join(packageRoot, relativePath), "utf8");
@@ -279,4 +280,4 @@ for (const relativePath of ["models.js", "compat.js"]) {
   }
 }
 
-console.log(`Verified Pi ${expectedVersion}, bundled docs/examples and MyPi skills, runtime-owned Plan/Goal/archive/web/TUI/sandbox core with safe web provider selection, isolated fail-closed Anthropic shell sandboxing, suppressed automatic version-update metadata, one-line MyPi identity, outbound credential redaction, /hotkeys, resource viewers, acknowledged tree navigation, skill labels, typed agent settlement including preflight dispatch rejection, and Goal-aware proactive compaction continuation.`);
+console.log(`Verified Pi ${expectedVersion}, bundled docs/examples without built-in skills, runtime-owned Plan/Goal/archive/web/TUI/sandbox core with safe web provider selection, isolated fail-closed Anthropic shell sandboxing, suppressed automatic version-update metadata, one-line MyPi identity, outbound credential redaction, /hotkeys, resource viewers, acknowledged tree navigation, skill labels, typed agent settlement including preflight dispatch rejection, and Goal-aware proactive compaction continuation.`);
