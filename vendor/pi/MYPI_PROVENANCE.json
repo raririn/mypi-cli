@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "upstreamRepository": "https://github.com/earendil-works/pi.git",
+  "upstreamTag": "v0.82.1",
+  "upstreamCommit": "b4f293684bba718d59cc1157679bcf6157b3a7f5",
+  "releaseArchive": "pi-0.82.1-source.tar.gz",
+  "releaseArchiveSha256": "e7edfba89bc4b31683f79209b59a01b9d627302d69ff2df8bdeea8f5f63ced73",
+  "upstreamVersion": "0.82.1",
+  "importedAt": "2026-07-27",
+  "distribution": "vendored-source"
+}

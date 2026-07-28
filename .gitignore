@@ -1,0 +1,14 @@
+.DS_Store
+.cache/
+.env
+.env.*
+.npmrc
+*.log
+build/
+coverage/
+dist/
+node_modules/
+playwright-report/
+test-results/
+vendor/pi/packages/*/dist/
+vendor/pi/packages/*/node_modules/

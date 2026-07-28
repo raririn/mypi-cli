@@ -1,0 +1,27 @@
+{
+  "name": "@mypi/core",
+  "version": "1.0.0-beta.1",
+  "description": "MyPi's profile-specific policy and desktop integration extensions",
+  "license": "MIT",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions/mypi-identity.ts",
+      "./extensions/mypi-credential-redaction.ts",
+      "./extensions/mypi-agent-signals.ts",
+      "./extensions/mypi-ask-user.ts",
+      "./extensions/mypi-chat-manage.ts",
+      "./extensions/mypi-exit.ts",
+      "./extensions/mypi-keyword-skill-router.ts",
+      "./extensions/mypi-progress-briefs.ts",
+      "./extensions/mypi-readonly.ts",
+      "./extensions/mypi-redpanda-provider.ts",
+      "./extensions/mypi-safemode.ts",
+      "./extensions/mypi-tui-auto-title.ts",
+      "./extensions/mypi-working-timer.ts",
+      "./extensions/gui-control/index.ts"
+    ]
+  }
+}

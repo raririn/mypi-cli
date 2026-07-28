@@ -1,0 +1,44 @@
+{
+  "name": "@raririn/mypi-source",
+  "private": true,
+  "version": "1.0.0-beta.1",
+  "description": "Source and release tooling for the MyPi CLI",
+  "license": "MIT",
+  "type": "module",
+  "packageManager": "pnpm@10.25.0",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "node scripts/build-vendored-pi.mjs",
+    "clean": "shx rm -rf build dist vendor/pi/packages/ai/dist vendor/pi/packages/agent/dist vendor/pi/packages/tui/dist vendor/pi/packages/coding-agent/dist",
+    "package": "pnpm build && node scripts/build-npm-package.mjs",
+    "test": "pnpm test:extensions && pnpm test:distribution",
+    "test:distribution": "node --test tests/distribution.test.mjs",
+    "test:extensions": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test extensions/gui-control/*.test.mts extensions/mypi/*.test.mts extensions/mypi/*/*.test.mts",
+    "typecheck": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --types node --skipLibCheck --allowImportingTsExtensions extensions/gui-control/*.ts extensions/mypi/*.ts",
+    "verify:public": "node scripts/verify-public-tree.mjs",
+    "verify:release": "node scripts/verify-release.mjs",
+    "verify:runtime": "node scripts/verify-pi-customizations.mjs",
+    "verify": "pnpm verify:public && pnpm typecheck && pnpm test && pnpm package && pnpm verify:runtime && node scripts/verify-distribution.mjs"
+  },
+  "devDependencies": {
+    "@bybrave/proper-lockfile2": "5.0.0",
+    "@earendil-works/pi-agent-core": "workspace:0.82.1",
+    "@earendil-works/pi-ai": "workspace:0.82.1",
+    "@earendil-works/pi-coding-agent": "workspace:0.82.1",
+    "@earendil-works/pi-tui": "workspace:0.82.1",
+    "@types/node": "24.12.4",
+    "@typescript/native-preview": "7.0.0-dev.20260120.1",
+    "esbuild": "0.28.1",
+    "shx": "0.4.0",
+    "typebox": "1.1.38",
+    "typescript": "5.9.3"
+  },
+  "workspaces": [
+    "vendor/pi/packages/tui",
+    "vendor/pi/packages/ai",
+    "vendor/pi/packages/agent",
+    "vendor/pi/packages/coding-agent"
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "product": "MyPi CLI",
+  "version": "1.0.0-beta.1",
+  "sourceRepository": "https://github.com/raririn/mypi-cli",
+  "includedUpstreams": [
+    {
+      "name": "Pi",
+      "repository": "https://github.com/earendil-works/pi",
+      "tag": "v0.82.1",
+      "commit": "b4f293684bba718d59cc1157679bcf6157b3a7f5",
+      "license": "MIT",
+      "licenseFile": "LICENSES/pi-MIT.txt"
+    }
+  ],
+  "acknowledgments": [
+    {
+      "name": "pi-gui",
+      "repository": "https://github.com/minghinmatthewlam/pi-gui",
+      "commit": "f8a5fd16d7e1bc95541aa5091f6417218b68ccb9",
+      "sourceIncluded": false
+    }
+  ]
+}

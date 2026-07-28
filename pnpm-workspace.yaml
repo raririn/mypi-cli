@@ -1,0 +1,24 @@
+packages:
+  - vendor/pi/packages/tui
+  - vendor/pi/packages/ai
+  - vendor/pi/packages/agent
+  - vendor/pi/packages/coding-agent
+
+allowBuilds:
+  '@google/genai': set this to true or false
+  canvas: set this to true or false
+  esbuild: set this to true or false
+  protobufjs: set this to true or false
+
+linkWorkspacePackages: true
+
+minimumReleaseAge: 1440
+
+onlyBuiltDependencies:
+  - canvas
+  - esbuild
+  - protobufjs
+
+overrides:
+  '@smithy/types': 4.15.1
+  protobufjs: 7.6.5
