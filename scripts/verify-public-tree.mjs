@@ -1,17 +1,26 @@
 #!/usr/bin/env node
 
 import { execFileSync } from "node:child_process";
-import { lstatSync, readFileSync } from "node:fs";
+import { lstatSync, readFileSync, readlinkSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 const root = resolve(import.meta.dirname, "..");
-const files = execFileSync(
+let files = execFileSync(
   "git",
   ["-C", root, "ls-files", "--cached", "--others", "--exclude-standard"],
   { encoding: "utf8", maxBuffer: 100 * 1024 * 1024 },
 )
   .split("\n")
   .filter(Boolean);
+
+if (files.includes("node_modules")) {
+  const dependencyBridge = lstatSync(join(root, "node_modules"));
+  assert(
+    dependencyBridge.isSymbolicLink() && readlinkSync(join(root, "node_modules")) === "../node_modules",
+    "untracked root node_modules must be the GUI-managed dependency bridge",
+  );
+  files = files.filter((path) => path !== "node_modules");
+}
 
 const forbiddenPaths = files.filter((path) => (
   /(^|\/)(AGENTS\.md|CLAUDE\.md|PLAN\.md|ISSUES\.md|PREFLIGHT\.md|SYNC\.md|HANDOFF[^/]*\.md)$/i.test(path)
@@ -22,6 +31,7 @@ const forbiddenPaths = files.filter((path) => (
   || /\.(?:pem|p12|pfx)$/i.test(path)
   || (
     /(^|\/)(?:package-lock\.json|npm-shrinkwrap\.json)$/.test(path)
+    && path !== "extensions/gui-control/package-lock.json"
     && !path.startsWith("vendor/pi/packages/coding-agent/")
   )
 ));
