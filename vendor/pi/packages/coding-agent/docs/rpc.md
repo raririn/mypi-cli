@@ -134,6 +134,15 @@ Response:
 {"type": "response", "command": "abort", "success": true}
 ```
 
+**Scope:** `abort` cancels the agent loop and any pending auto-retry. It does
+**not** cancel an in-flight context compaction — `AgentSession.abort()` calls
+`abortRetry()` and `agent.abort()`, while `abortCompaction()` runs only on
+session dispose. A client that aborts during compaction receives
+`success: true` immediately, but the compaction continues and its
+`compaction_end` event still arrives afterwards. GUIs should therefore either
+refuse an abort while `get_state` reports `isCompacting: true`, or present it
+as "stop after compaction" rather than an immediate cancel.
+
 #### new_session
 
 Start a fresh session. Can be cancelled by a `session_before_switch` extension event handler.
@@ -373,7 +382,8 @@ Response:
 
 #### compact
 
-Manually compact conversation context to reduce token usage.
+Manually compact conversation context to reduce token usage. Compaction is
+not interruptible through [abort](#abort); see that command for details.
 
 ```json
 {"type": "compact"}
