@@ -107,3 +107,20 @@ async function withSessionFile(run: (sessionFile: string) => Promise<void>): Pro
     await rm(dir, { recursive: true, force: true })
   }
 }
+
+test('a stale foreign lease without a live lock is not reported as a live owner', async () => {
+  await withSessionFile(async (sessionFile) => {
+    // Exactly the shape left behind when a container is replaced: the lease
+    // names a host that no longer exists and nothing refreshes the lock.
+    writeFileSync(`${sessionFile}.lease`, `${JSON.stringify({
+      pid: 415,
+      hostname: 'a-replaced-container',
+      startedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+      surface: 'pi-cli',
+      ownerId: 'stale-owner',
+    }, null, 2)}\n`)
+
+    assert.equal(readLiveForeignLease(sessionFile), undefined,
+      'a session must not stay locked out by a dead writer\'s lease')
+  })
+})

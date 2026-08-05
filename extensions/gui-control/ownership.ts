@@ -91,11 +91,16 @@ export function readLiveForeignLease(sessionFile: string): LeaseInfo | undefined
     return parsed.info
   }
 
-  // Migration compatibility for older MyPi writers that created only .lease.
+  // No live lock: the writer is not refreshing it, so the lease is at most
+  // migration-compatibility evidence of an older MyPi writer that created
+  // only a .lease. Trust it solely for a same-host process that is still
+  // alive; a lease from a dead pid or a vanished host (a container that was
+  // replaced, a machine that was renamed) is stale and must not lock the
+  // session out — that is what `startSessionOwnership` reclaims.
   if (parsed.state === 'missing') return undefined
   if (parsed.state === 'invalid') return unknownHolder()
   if (parsed.info.pid === process.pid && parsed.info.hostname === hostname()) return undefined
-  if (parsed.info.hostname !== hostname() || pidAlive(parsed.info.pid)) return parsed.info
+  if (parsed.info.hostname === hostname() && pidAlive(parsed.info.pid)) return parsed.info
   return undefined
 }
 
