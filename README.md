@@ -25,6 +25,26 @@ mypi --version
 mypi
 ```
 
+`npm` installs command launchers under the global prefix's `bin` directory.
+Some containers configure a user-owned global prefix without adding that
+directory to `PATH`. If installation succeeds but the shell reports
+`mypi: command not found`, activate the npm global bin directory for the
+current shell and try again:
+
+```sh
+export PATH="$(npm prefix --global)/bin:$PATH"
+hash -r
+mypi --version
+```
+
+Add the same `export` to the shell profile used by the container if it should
+persist. A PATH-independent one-off invocation is also available:
+
+```sh
+npm exec --yes --package=@raririn/mypi@beta -- mypi --version
+npm exec --yes --package=@raririn/mypi@beta -- mypi
+```
+
 MyPi stores its state under `~/.mypi/agent`, or the directory selected by
 `MYPI_AGENT_DIR`. Compatible session history and local-state formats are
 migrated in place when needed.

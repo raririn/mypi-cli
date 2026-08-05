@@ -17,6 +17,8 @@ test("CLI SemVer major matches the GUI-control protocol", () => {
 test("public npm documentation uses the scoped package and isolated profile", () => {
   const readme = readFileSync(join(root, "README.md"), "utf8");
   assert.match(readme, /npm install --global @raririn\/mypi@beta/);
+  assert.match(readme, /npm prefix --global/);
+  assert.match(readme, /npm exec --yes --package=@raririn\/mypi@beta -- mypi/);
   assert.match(readme, /~\/\.mypi\/agent/);
   assert.doesNotMatch(readme, /npm install --global mypi@beta/);
 });

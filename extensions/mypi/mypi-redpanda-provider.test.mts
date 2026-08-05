@@ -16,9 +16,9 @@ function jsonResponse(payload: unknown, status = 200): Response {
   });
 }
 
-test("provider keeps the first-class catalog bounded to twenty models", () => {
-  assert.equal(REDPANDA_FALLBACK_MODELS.length, 20);
-  assert.equal(new Set(REDPANDA_FALLBACK_MODELS.map((model) => model.id)).size, 20);
+test("provider keeps a deduplicated fallback catalog within limit", () => {
+  assert.ok(REDPANDA_FALLBACK_MODELS.length > 0 && REDPANDA_FALLBACK_MODELS.length <= 20);
+  assert.equal(new Set(REDPANDA_FALLBACK_MODELS.map((model) => model.id)).size, REDPANDA_FALLBACK_MODELS.length);
   assert.equal(REDPANDA_API_BASE_URL, "https://api.whimsicott.com/mypi/v1");
 });
 

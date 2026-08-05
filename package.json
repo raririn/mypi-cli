@@ -1,7 +1,7 @@
 {
   "name": "@raririn/mypi-source",
   "private": true,
-  "version": "5.0.0-beta.2",
+  "version": "5.0.0-beta.4",
   "description": "Source and release tooling for the MyPi CLI",
   "license": "MIT",
   "type": "module",

@@ -89,30 +89,24 @@ function model(
 
 /**
  * Conservative offline snapshot. The site-owned manifest can update metadata,
- * but it may never expand this provider beyond twenty deliberately qualified
- * coding models.
+ * but it should never expand this provider beyond twenty models.
  */
 export const REDPANDA_FALLBACK_MODELS: readonly ProviderModelConfig[] = [
   model("openai/gpt-latest", "Latest GPT", { reasoning: true, image: true, input: 5, output: 30, cacheRead: 0.5, contextWindow: 1_050_000, maxTokens: 65_536 }),
-  model("openai/gpt-mini-latest", "Latest GPT Mini", { reasoning: true, image: true, input: 0.75, output: 4.5, cacheRead: 0.075, contextWindow: 400_000, maxTokens: 65_536 }),
-  model("anthropic/claude-sonnet-latest", "Latest Claude Sonnet", { reasoning: true, image: true, input: 2, output: 10, contextWindow: 1_000_000, maxTokens: 65_536 }),
   model("anthropic/claude-opus-latest", "Latest Claude Opus", { reasoning: true, image: true, input: 5, output: 25, cacheRead: 0.5, contextWindow: 1_000_000, maxTokens: 65_536 }),
-  model("anthropic/claude-haiku-latest", "Latest Claude Haiku", { reasoning: true, image: true, input: 1, output: 5, cacheRead: 0.1, contextWindow: 200_000, maxTokens: 32_768 }),
-  model("google/gemini-pro-latest", "Latest Gemini Pro", { reasoning: true, image: true, input: 1.25, output: 10, cacheRead: 0.125, contextWindow: 1_048_576, maxTokens: 65_536 }),
-  model("google/gemini-flash-latest", "Latest Gemini Flash", { reasoning: true, image: true, input: 0.3, output: 2.5, cacheRead: 0.03, contextWindow: 1_048_576, maxTokens: 65_536 }),
-  model("deepseek/deepseek-latest", "DeepSeek Latest", { reasoning: true, input: 1.1, output: 2.2, cacheRead: 0.11, contextWindow: 1_048_576, maxTokens: 65_536 }),
+  model("anthropic/claude-sonnet-latest", "Latest Claude Sonnet", { reasoning: true, image: true, input: 2, output: 10, contextWindow: 1_000_000, maxTokens: 65_536 }),
   model("openai/gpt-5.6-sol", "GPT-5.6 Sol", { reasoning: true, image: true, input: 5, output: 30, cacheRead: 0.5, contextWindow: 1_050_000, maxTokens: 65_536 }),
   model("openai/gpt-5.6-terra", "GPT-5.6 Terra", { reasoning: true, image: true, input: 2.5, output: 15, cacheRead: 0.25, contextWindow: 1_050_000, maxTokens: 65_536 }),
-  model("openai/gpt-5.5-pro", "GPT-5.5 Pro", { reasoning: true, image: true, input: 30, output: 180, contextWindow: 1_050_000, maxTokens: 65_536 }),
-  model("anthropic/claude-opus-4-8-fast", "Claude Opus 4.8 Fast", { reasoning: true, image: true, input: 10.5, output: 52.5, cacheRead: 1.05, contextWindow: 1_000_000, maxTokens: 65_536 }),
-  model("google/gemini-3.5-flash", "Gemini 3.5 Flash", { reasoning: true, image: true, input: 1.5, output: 9, contextWindow: 1_000_000, maxTokens: 65_536 }),
+  model("openai/gpt-5.6-luna", "GPT-5.6 Luna", { reasoning: true, image: true, input: 1, output: 6, cacheRead: 0.1, contextWindow: 1_050_000, maxTokens: 128_000 }),
+  model("openai/gpt-5.5", "GPT-5.5", { reasoning: true, image: true, input: 5, output: 30, cacheRead: 0.5, contextWindow: 1_050_000, maxTokens: 128_000 }),
+  model("google/gemini-3.6-flash", "Gemini 3.6 Flash", { reasoning: true, image: true, input: 1.5, output: 7.5, cacheRead: 0.15, contextWindow: 1_048_576, maxTokens: 65_536 }),
   model("google/gemini-3.1-pro-preview-customtools", "Gemini 3.1 Pro Custom Tools", { reasoning: true, image: true, input: 2, output: 12, cacheRead: 0.2, contextWindow: 1_048_756, maxTokens: 65_536 }),
-  model("moonshotai/kimi-k2.7-code", "Kimi K2.7 Code", { reasoning: false, image: true, input: 0.74, output: 3.5, cacheRead: 0.15, contextWindow: 262_144, maxTokens: 32_768 }),
-  model("moonshotai/kimi-k2.7-code-highspeed", "Kimi K2.7 Code High-Speed", { reasoning: true, image: true, input: 1.9, output: 8, cacheRead: 0.32, contextWindow: 262_144, maxTokens: 32_768 }),
-  model("qwen/qwen3-coder-plus", "Qwen3 Coder Plus", { reasoning: false, input: 0.6825, output: 3.4125, cacheRead: 0.1365, contextWindow: 1_000_000, maxTokens: 65_536 }),
-  model("qwen/qwen3-coder-flash", "Qwen3 Coder Flash", { reasoning: false, input: 0.20475, output: 1.02375, cacheRead: 0.04095, contextWindow: 1_000_000, maxTokens: 65_536 }),
-  model("mistralai/codestral-2508", "Codestral 2508", { reasoning: false, input: 0.3, output: 0.9, cacheRead: 0.15, contextWindow: 256_000, maxTokens: 32_768 }),
-  model("deepseek/deepseek-v3.2-thinking", "DeepSeek V3.2 Thinking", { reasoning: true, input: 0.28, output: 0.42, cacheRead: 0.14, contextWindow: 163_000, maxTokens: 32_768 }),
+  model("qwen/qwen3-coder-plus", "Qwen3 Coder Plus", { reasoning: false, input: 0.65, output: 3.25, cacheRead: 0.13, contextWindow: 1_000_000, maxTokens: 65_536 }),
+  model("deepseek/deepseek-v4-flash", "DeepSeek V4 Flash", { reasoning: true, input: 0.0938, output: 0.1876, cacheRead: 0.01876, contextWindow: 1_048_575, maxTokens: 4_096 }),
+  model("moonshotai/kimi-k3", "Kimi K3", { reasoning: true, image: true, input: 3, output: 15, cacheRead: 0.3, contextWindow: 1_048_576, maxTokens: 131_072 }),
+  model("anthropic/claude-opus-5", "Claude Opus 5", { reasoning: true, image: true, input: 5, output: 25, cacheRead: 0.5, contextWindow: 1_000_000, maxTokens: 128_000 }),
+  model("anthropic/claude-sonnet-5", "Claude Sonnet 5", { reasoning: true, image: true, input: 2, output: 10, cacheRead: 0.2, contextWindow: 1_000_000, maxTokens: 128_000 }),
+  model("anthropic/claude-fable-5", "Claude Fable 5", { reasoning: true, image: true, input: 10, output: 50, cacheRead: 1, contextWindow: 1_000_000, maxTokens: 128_000 }),
 ];
 
 function asPositiveInteger(value: unknown, label: string): number {

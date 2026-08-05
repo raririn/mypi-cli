@@ -36,7 +36,7 @@ const options = {
   greeting: "Ready when you are",
   modelLabel: "anthropic/claude-pizza",
   thinkingLevel: "high",
-  version: "5.0.0-beta.2 (pi-core 0.82.1)",
+  version: "5.0.0-beta.4 (pi-core 0.82.1)",
 };
 
 function plain(lines: string[]): string {
@@ -51,7 +51,7 @@ test("renders a Claude-style pizza card at wide and narrow terminal widths", () 
   }
 
   const wide = plain(new PizzaHeroComponent(theme, options).render(108));
-  assert.match(wide, /╭── MyPi v5\.0\.0-beta\.2 \(pi-core 0\.82\.1\)/);
+  assert.match(wide, /╭── MyPi v5\.0\.0-beta\.4 \(pi-core 0\.82\.1\)/);
   assert.match(wide, /_\.\.\._/);
   assert.match(wide, /Ready when you are/);
   assert.match(wide, /anthropic\/claude-pizza/);
