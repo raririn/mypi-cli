@@ -36,7 +36,9 @@ assert(
 assert(packageJson.repository?.url === "git+https://github.com/raririn/mypi-cli.git",
   "publishable package has unexpected repository URL");
 assert(packageJson.publishConfig?.access === "public", "scoped package must publish with public access");
-assert(packageJson.publishConfig?.tag === "beta", "prerelease package must publish on the beta tag");
+const expectedDistributionTag = packageJson.version.includes("-") ? "beta" : "latest";
+assert(packageJson.publishConfig?.tag === expectedDistributionTag,
+  `prerelease packages must publish on the beta tag and stable releases on latest; expected ${expectedDistributionTag}`);
 assert(packageJson.publishConfig?.provenance === true, "npm provenance must be requested by default");
 assert(packageJson.bundledDependencies?.length === 4, "publishable package must bundle four customized Pi workspaces");
 
