@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { lstat, readFile, realpath } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, relative, resolve } from 'node:path'
@@ -182,6 +183,45 @@ function resolveForkEntry(ctx: ExtensionContext, renderedMessageIndex: number, r
     return role === 'assistant' ? nextRole === 'user' || nextRole === 'assistant' : nextRole === 'user'
   })
   return nextIndex > selectedIndex ? branch[nextIndex - 1]?.id ?? selected.id : branch.at(-1)?.id ?? selected.id
+}
+
+/**
+ * Finds a live session-host (FEAT-060) serving the given session file, so a
+ * lease refusal can point at `mypi attach` instead of a dead end. Purely a
+ * discovery read; ownership semantics are untouched.
+ */
+function findLiveHostForSessionFile(agentDir: string, sessionFile: string): { sessionId: string } | undefined {
+  const hostsDirectory = join(agentDir, 'hosts')
+  let entries: string[]
+  try {
+    entries = readdirSync(hostsDirectory)
+  } catch {
+    return undefined
+  }
+  const wanted = resolve(sessionFile)
+  for (const entry of entries) {
+    if (!entry.endsWith('.host.json')) continue
+    try {
+      const sidecar = JSON.parse(readFileSync(join(hostsDirectory, entry), 'utf8')) as {
+        pid?: number
+        socketPath?: string
+        sessionId?: string
+        sessionFile?: string | null
+      }
+      if (!sidecar?.sessionId || typeof sidecar.pid !== 'number') continue
+      if (!sidecar.sessionFile || resolve(sidecar.sessionFile) !== wanted) continue
+      try {
+        process.kill(sidecar.pid, 0)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ESRCH') continue
+      }
+      if (!sidecar.socketPath || !existsSync(sidecar.socketPath)) continue
+      return { sessionId: sidecar.sessionId }
+    } catch {
+      continue
+    }
+  }
+  return undefined
 }
 
 export default function guiControlExtension(pi: ExtensionAPI): void {
@@ -527,7 +567,13 @@ export default function guiControlExtension(pi: ExtensionAPI): void {
     const holder = readLiveForeignLease(event.targetSessionFile)
     if (!holder) return
     const owner = holder.pid > 0 ? `${holder.surface} (pid ${holder.pid})` : 'another or unverifiable Pi writer'
-    ctx.ui.notify(`Cannot resume this session here: it is owned by ${owner}. Close or release the owning surface first.`, 'error')
+    const liveHost = findLiveHostForSessionFile(agentDir, event.targetSessionFile)
+    ctx.ui.notify(
+      liveHost
+        ? `Cannot resume this session here: it is live in a session host (${owner}). Continue it with \`mypi attach ${liveHost.sessionId}\`.`
+        : `Cannot resume this session here: it is owned by ${owner}. Close or release the owning surface first.`,
+      'error',
+    )
     return { cancel: true }
   })
 
@@ -541,7 +587,13 @@ export default function guiControlExtension(pi: ExtensionAPI): void {
       const holder = readLiveForeignLease(sessionFile)
       if (holder) {
         const owner = holder.pid > 0 ? `${holder.surface} (pid ${holder.pid})` : 'another or unverifiable Pi writer'
-        ctx.ui.notify(`This session is owned by ${owner} and cannot be continued in TUI. Continue it in MyPi GUI, or close/release the other session first.`, 'error')
+        const liveHost = findLiveHostForSessionFile(agentDir, sessionFile)
+        ctx.ui.notify(
+          liveHost
+            ? `This session is live in a session host (${owner}). Continue it with \`mypi attach ${liveHost.sessionId}\`.`
+            : `This session is owned by ${owner} and cannot be continued in TUI. Continue it in MyPi GUI, or close/release the other session first.`,
+          'error',
+        )
         setTimeout(() => ctx.shutdown(), 0)
         return
       }

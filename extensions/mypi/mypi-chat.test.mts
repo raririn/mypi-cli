@@ -273,7 +273,9 @@ test("/chat-manage does not call runtime actions while the extension is loading"
     assert.doesNotThrow(() => chatManageExtension(harness.api as any));
     assert.deepEqual(harness.activeTools(), ["read", "bash", ...MANAGEMENT_TOOLS]);
     harness.finishLoading();
-    const manager = SessionManager.create(root);
+    // Explicit session dir: default resolution would write the transcript into
+    // the real ~/.mypi/agent sessions tree (ghost sessions in every client).
+    const manager = SessionManager.create(root, join(root, "sessions"));
     const ctx = harness.context(root, manager);
     await harness.emit("session_start", {}, ctx);
     assert.deepEqual(harness.activeTools(), ["read", "bash"]);

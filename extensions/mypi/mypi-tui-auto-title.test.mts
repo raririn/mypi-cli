@@ -61,13 +61,21 @@ async function flushAsyncWork(): Promise<void> {
 
 async function withAgentDir(run: (agentDir: string) => Promise<void>): Promise<void> {
   const agentDir = await mkdtemp(join(tmpdir(), "pi-tui-auto-title-"));
-  const previous = process.env.MYPI_AGENT_DIR;
+  const previousPublic = process.env.MYPI_AGENT_DIR;
+  const previousInternal = process.env.MYPI_CODING_AGENT_DIR;
+  // The engine resolves its profile from the internal MYPI_CODING_AGENT_DIR
+  // (the mypi launcher derives it from the public MYPI_AGENT_DIR). Set both so
+  // SessionManager.create writes transcripts under this fixture instead of the
+  // developer's real ~/.mypi/agent, where they surface as ghost sessions.
   process.env.MYPI_AGENT_DIR = agentDir;
+  process.env.MYPI_CODING_AGENT_DIR = agentDir;
   try {
     await run(agentDir);
   } finally {
-    if (previous === undefined) delete process.env.MYPI_AGENT_DIR;
-    else process.env.MYPI_AGENT_DIR = previous;
+    if (previousPublic === undefined) delete process.env.MYPI_AGENT_DIR;
+    else process.env.MYPI_AGENT_DIR = previousPublic;
+    if (previousInternal === undefined) delete process.env.MYPI_CODING_AGENT_DIR;
+    else process.env.MYPI_CODING_AGENT_DIR = previousInternal;
     await rm(agentDir, { recursive: true, force: true });
   }
 }

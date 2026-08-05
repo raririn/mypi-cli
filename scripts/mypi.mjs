@@ -64,6 +64,13 @@ if (internalCommand === "__remote-node-eval") {
   await import(pathToFileURL(scriptPath).href);
 } else if (internalCommand === "__remote-workspace") {
   await import("./mypi-remote-workspace.mjs");
+} else if (internalCommand === "__host") {
+  // Session host (FEAT-060): serves the RPC runtime on a unix socket so
+  // several surfaces can attach to one live session.
+  await import("./mypi-host.mjs");
+} else if (internalCommand === "attach") {
+  // Line-mode client for a live hosted session (FEAT-060 Phase 2a).
+  await import("./mypi-attach.mjs");
 } else {
 
   const { runWebSearchCommand } = await import("./mypi-web-search-config.mjs");
