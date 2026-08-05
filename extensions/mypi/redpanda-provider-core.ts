@@ -11,6 +11,7 @@ const DEVICE_AUTHORIZATION_URL = "https://auth.whimsicott.com/application/o/devi
 const TOKEN_URL = "https://auth.whimsicott.com/application/o/token/";
 const OAUTH_SCOPE = "openid email profile offline_access inference";
 const CATALOG_MAX_AGE_MS = 4 * 60 * 60 * 1000;
+const REDPANDA_MANIFEST_MAX_MODELS = 20;
 const TOKEN_EXPIRY_SKEW_MS = 30_000;
 
 type ProviderConfig = Parameters<ExtensionAPI["registerProvider"]>[1];
@@ -89,7 +90,7 @@ function model(
 
 /**
  * Conservative offline snapshot. The site-owned manifest can update metadata,
- * but it should never expand this provider beyond twenty models.
+ * but this client keeps a capped selector around this offline baseline.
  */
 export const REDPANDA_FALLBACK_MODELS: readonly ProviderModelConfig[] = [
   model("openai/gpt-latest", "Latest GPT", { reasoning: true, image: true, input: 5, output: 30, cacheRead: 0.5, contextWindow: 1_050_000, maxTokens: 65_536 }),
@@ -108,6 +109,8 @@ export const REDPANDA_FALLBACK_MODELS: readonly ProviderModelConfig[] = [
   model("anthropic/claude-sonnet-5", "Claude Sonnet 5", { reasoning: true, image: true, input: 2, output: 10, cacheRead: 0.2, contextWindow: 1_000_000, maxTokens: 128_000 }),
   model("anthropic/claude-fable-5", "Claude Fable 5", { reasoning: true, image: true, input: 10, output: 50, cacheRead: 1, contextWindow: 1_000_000, maxTokens: 128_000 }),
 ];
+
+const REDPANDA_MUST_HAVE_MODEL_IDS = REDPANDA_FALLBACK_MODELS.map((model) => model.id);
 
 function asPositiveInteger(value: unknown, label: string): number {
   if (!Number.isInteger(value) || Number(value) <= 0) {
@@ -132,8 +135,8 @@ export function parseRedPandaManifest(value: unknown): ProviderModelConfig[] {
   if (manifest.version !== 1 || manifest.provider?.id !== REDPANDA_PROVIDER_ID || !Array.isArray(manifest.models)) {
     throw new Error("RedPanda provider manifest has an unsupported schema.");
   }
-  if (manifest.models.length === 0 || manifest.models.length > 20) {
-    throw new Error("RedPanda provider manifest must contain between 1 and 20 models.");
+  if (manifest.models.length === 0) {
+    throw new Error("RedPanda provider manifest must contain at least one model.");
   }
 
   const seen = new Set<string>();
@@ -175,6 +178,26 @@ export function parseRedPandaManifest(value: unknown): ProviderModelConfig[] {
       },
     };
   });
+}
+
+function selectProviderModels(models: readonly ProviderModelConfig[]): ProviderModelConfig[] {
+  const selected = new Map<string, ProviderModelConfig>();
+  const modelById = new Map<string, ProviderModelConfig>(models.map((entry) => [entry.id, entry]));
+  for (const id of REDPANDA_MUST_HAVE_MODEL_IDS) {
+    const providerModel = modelById.get(id);
+    if (providerModel && !selected.has(id)) {
+      selected.set(id, providerModel);
+    }
+  }
+  for (const entry of models) {
+    if (selected.size >= REDPANDA_MANIFEST_MAX_MODELS) {
+      break;
+    }
+    if (!selected.has(entry.id)) {
+      selected.set(entry.id, entry);
+    }
+  }
+  return Array.from(selected.values()).slice(0, REDPANDA_MANIFEST_MAX_MODELS);
 }
 
 function encodeForm(values: Record<string, string>): URLSearchParams {
@@ -233,7 +256,8 @@ export function createRedPandaProviderConfig(dependencies: ProviderDependencies 
           headers: { accept: "application/json" },
           signal: context.signal,
         });
-        const refreshed = parseRedPandaManifest(await readJsonResponse<unknown>(response, "RedPanda model refresh"));
+        const manifestModels = parseRedPandaManifest(await readJsonResponse<unknown>(response, "RedPanda model refresh"));
+        const refreshed = selectProviderModels(manifestModels);
         if (context.signal?.aborted) return storedModels ?? [...REDPANDA_FALLBACK_MODELS];
         await context.store.write({
           checkedAt: now(),

@@ -22,16 +22,19 @@ test("provider keeps a deduplicated fallback catalog within limit", () => {
   assert.equal(REDPANDA_API_BASE_URL, "https://api.whimsicott.com/mypi/v1");
 });
 
-test("manifest parser accepts the site contract and rejects catalog overflow", () => {
+test("manifest parser accepts the site contract and preserves oversized catalogs", () => {
   const manifest = {
     version: 1,
     provider: { id: "redpanda" },
     models: [REDPANDA_FALLBACK_MODELS[0]],
   };
   assert.deepEqual(parseRedPandaManifest(manifest).map((model) => model.id), ["openai/gpt-latest"]);
-  assert.throws(
-    () => parseRedPandaManifest({ ...manifest, models: Array.from({ length: 21 }, (_, index) => ({ ...REDPANDA_FALLBACK_MODELS[0], id: `model-${index}` })) }),
-    /between 1 and 20/,
+  assert.equal(
+    parseRedPandaManifest({
+      ...manifest,
+      models: Array.from({ length: 21 }, (_, index) => ({ ...manifest.models[0], id: `model-${index}` })),
+    }).length,
+    21,
   );
 });
 
@@ -102,4 +105,48 @@ test("model refresh uses the public manifest and persists the provider-scoped ca
   });
   assert.deepEqual(models?.map((model) => model.id), ["openai/gpt-latest"]);
   assert.equal(writes.length, 1);
+});
+
+test("model refresh always keeps preferred baseline ids first and caps the catalog to 20", async () => {
+  const extraModels = Array.from({ length: 10 }, (_, index) => ({
+    id: `extra-${index}`,
+    name: `Extra ${index}`,
+    reasoning: false,
+    input: ["text"],
+    cost: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 10_000,
+    maxTokens: 1_000,
+  }));
+  const mustHaveModels = REDPANDA_FALLBACK_MODELS.map((model) => ({
+    id: model.id,
+    name: model.name,
+    reasoning: model.reasoning,
+    input: model.input,
+    cost: model.cost,
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens,
+  }));
+  const shuffled = [extraModels[0], ...mustHaveModels, ...extraModels.slice(1)];
+  const config = createRedPandaProviderConfig({
+    fetch: async () => jsonResponse({ version: 1, provider: { id: "redpanda" }, models: shuffled }),
+  });
+  const models = await config.refreshModels?.({
+    allowNetwork: true,
+    force: true,
+    store: {
+      read: async () => undefined,
+      write: async () => undefined,
+    },
+  });
+  const ids = models?.map((model) => model.id) ?? [];
+  const mustHaveIds = REDPANDA_FALLBACK_MODELS.map((model) => model.id);
+  assert.equal(ids.length, 20);
+  for (const mustHave of ["openai/gpt-latest", "deepseek/deepseek-v4-flash", "moonshotai/kimi-k3"]) {
+    assert.ok(ids.includes(mustHave));
+  }
+  let firstExtra = ids.findIndex((id) => !mustHaveIds.includes(id));
+  if (firstExtra < 0) firstExtra = ids.length;
+  for (const mustHave of mustHaveIds) {
+    assert.ok(ids.indexOf(mustHave) < firstExtra);
+  }
 });
