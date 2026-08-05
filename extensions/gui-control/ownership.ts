@@ -136,10 +136,21 @@ export function startSessionOwnership(
     const legacy = parseLease(leasePath)
     if (legacy.state === 'invalid') throw ownershipError('Legacy writer lease is malformed')
     if (legacy.state === 'valid' && !(legacy.info.pid === process.pid && legacy.info.hostname === hostname())) {
-      if (legacy.info.hostname !== hostname() || pidAlive(legacy.info.pid)) {
+      // Reaching here means proper-lockfile just granted us the writer lock,
+      // so no live writer is refreshing it (the lock mtime is the liveness
+      // signal; the lease is diagnostic metadata). A leftover lease from a
+      // dead writer must therefore be reclaimed, not honored — otherwise a
+      // session whose writer died without cleanup (container restart, SIGKILL,
+      // a host whose hostname no longer matches) stays permanently unusable.
+      // The one case still refused is a *same-host, live-pid* lease, which can
+      // legitimately belong to an older MyPi writer that only wrote a lease.
+      if (legacy.info.hostname === hostname() && pidAlive(legacy.info.pid)) {
         throw ownershipError(`Session is owned by ${legacy.info.surface} (pid ${legacy.info.pid} on ${legacy.info.hostname})`)
       }
-      removeLeaseIfOwned(leasePath, legacy.info)
+      if (legacy.info.hostname !== hostname()) {
+        console.warn(`[mypi] Reclaiming a stale writer lease from ${legacy.info.surface} (pid ${legacy.info.pid} on ${legacy.info.hostname}); its lock was not being refreshed.`)
+      }
+      rmSync(leasePath, { force: true })
     }
     writeLeaseAtomic(leasePath, info)
   } catch (error) {
