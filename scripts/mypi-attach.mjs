@@ -173,6 +173,12 @@ async function takeOver(host, force) {
           takeSocket.destroy();
           return;
         }
+        // An older host (< 5.0.0-beta.7) forwards unknown frames to the
+        // engine, which rejects them as an unknown command.
+        if (frame.type === "response" && frame.command === "host_release") {
+          fail("This session's host predates native takeover (needs mypi >= 5.0.0-beta.7). Mirror it with `mypi attach` instead, or restart the owning client.");
+          return;
+        }
       }
     });
     setTimeout(() => fail("Timed out waiting for the host to release the session."), 30_000).unref?.();
