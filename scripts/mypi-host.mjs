@@ -215,6 +215,10 @@ function handleEngineFrame(line) {
   }
 
   if (frame?.type === "response" && typeof frame.id === "string") {
+    if (frame.id === "__host_release_abort") {
+      // Internal abort issued for a forced release; settlement completes it.
+      return;
+    }
     if (frame.id === HOST_STATE_ID) {
       if (stateTimer) clearTimeout(stateTimer);
       if (frame.success && frame.data) {
@@ -259,11 +263,68 @@ function handleEngineFrame(line) {
   if (frame?.type === "agent_start") turnActive = true;
   if (frame?.type === "agent_settled") {
     turnActive = false;
+    if (pendingRelease) {
+      broadcast(frame);
+      completeRelease();
+      return;
+    }
     if (clients.size === 0) scheduleGraceCheck();
   }
   if (frame?.type === "agent_end" && frame.willRetry !== true) turnActive = false;
 
   broadcast(frame);
+}
+
+/**
+ * Native takeover (FEAT-060 Phase 2b): a client asks this host to shut down
+ * cleanly so another surface (the full TUI) can own the session natively.
+ * Ownership only ever moves via clean shutdown of the owning runtime — the
+ * lease is never transferred. A mid-turn release is refused unless the
+ * requester passes force, in which case the turn is aborted and the release
+ * completes on settlement.
+ */
+let pendingRelease = null; // { client }
+
+function completeRelease() {
+  const requester = pendingRelease?.client;
+  pendingRelease = null;
+  if (requester && !requester.destroyed) {
+    sendToClient(requester, { type: "host_release_ok", sessionId: sessionInfo?.sessionId ?? null, sessionFile: sessionInfo?.sessionFile ?? null });
+  }
+  broadcast({ type: "host_released", sessionId: sessionInfo?.sessionId ?? null });
+  void shutdown();
+}
+
+function handleReleaseRequest(client, frame) {
+  if (shuttingDown || engineExited) {
+    sendToClient(client, { type: "host_release_ok", sessionId: sessionInfo?.sessionId ?? null, sessionFile: sessionInfo?.sessionFile ?? null });
+    return;
+  }
+  if (pendingRelease) {
+    sendToClient(client, { type: "host_release_denied", reason: "Another release is already in progress." });
+    return;
+  }
+  if (turnActive && frame.force !== true) {
+    sendToClient(client, {
+      type: "host_release_denied",
+      reason: "A turn is in progress. Retry with force to abort it, or wait for it to settle.",
+      turnActive: true,
+    });
+    return;
+  }
+  pendingRelease = { client };
+  if (turnActive) {
+    // Forced: abort the in-flight turn; completeRelease fires on settlement
+    // (see the agent_settled handler), with a fallback timer in case the
+    // engine never settles.
+    sendToEngine({ id: "__host_release_abort", type: "abort" });
+    const fallback = setTimeout(() => {
+      if (pendingRelease) completeRelease();
+    }, 10_000);
+    fallback.unref?.();
+    return;
+  }
+  completeRelease();
 }
 
 function helloFrame() {
@@ -283,6 +344,11 @@ function handleClientFrame(client, line) {
     frame = JSON.parse(line);
   } catch {
     sendToClient(client, { type: "host_error", error: "Malformed JSON frame" });
+    return;
+  }
+
+  if (frame?.type === "host_release") {
+    handleReleaseRequest(client, frame);
     return;
   }
 

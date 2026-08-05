@@ -570,7 +570,7 @@ export default function guiControlExtension(pi: ExtensionAPI): void {
     const liveHost = findLiveHostForSessionFile(agentDir, event.targetSessionFile)
     ctx.ui.notify(
       liveHost
-        ? `Cannot resume this session here: it is live in a session host (${owner}). Continue it with \`mypi attach ${liveHost.sessionId}\`.`
+        ? `Cannot resume this session here: it is live in a session host (${owner}). Take it over with \`mypi attach --take ${liveHost.sessionId}\` or mirror it with \`mypi attach ${liveHost.sessionId}\`.`
         : `Cannot resume this session here: it is owned by ${owner}. Close or release the owning surface first.`,
       'error',
     )
@@ -590,7 +590,7 @@ export default function guiControlExtension(pi: ExtensionAPI): void {
         const liveHost = findLiveHostForSessionFile(agentDir, sessionFile)
         ctx.ui.notify(
           liveHost
-            ? `This session is live in a session host (${owner}). Continue it with \`mypi attach ${liveHost.sessionId}\`.`
+            ? `This session is live in a session host (${owner}). Take it over with \`mypi attach --take ${liveHost.sessionId}\` or mirror it with \`mypi attach ${liveHost.sessionId}\`.`
             : `This session is owned by ${owner} and cannot be continued in TUI. Continue it in MyPi GUI, or close/release the other session first.`,
           'error',
         )

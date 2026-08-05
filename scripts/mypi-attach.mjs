@@ -94,7 +94,9 @@ function renderTranscriptTail(sessionFile) {
 }
 
 function usage(hosts) {
-  process.stderr.write("Usage: mypi attach [session-id-or-prefix]\n");
+  process.stderr.write("Usage: mypi attach [--take [--force]] [session-id-or-prefix]\n");
+  process.stderr.write("  --take   release the session from its host and open it natively in the TUI\n");
+  process.stderr.write("  --force  with --take: abort an in-flight turn instead of refusing\n");
   if (hosts.length === 0) {
     process.stderr.write("No live hosted sessions. Hosted sessions are created by MyPi GUI clients (CloudCLI).\n");
   } else {
@@ -105,7 +107,10 @@ function usage(hosts) {
   }
 }
 
-const args = process.argv.slice(3).filter((a) => a !== "--");
+const rawArgs = process.argv.slice(3).filter((a) => a !== "--");
+const takeMode = rawArgs.includes("--take");
+const forceTake = rawArgs.includes("--force");
+const args = rawArgs.filter((a) => a !== "--take" && a !== "--force");
 const target = args[0];
 
 const hosts = await discoverHosts();
@@ -123,6 +128,83 @@ if (target) {
 } else {
   usage(hosts);
   process.exit(hosts.length === 0 ? 1 : 2);
+}
+
+if (takeMode) {
+  await takeOver(chosen, forceTake);
+}
+
+/**
+ * Native takeover (FEAT-060 Phase 2b): ask the host to shut down cleanly,
+ * then open the full TUI as the session's native owner. Ownership moves via
+ * clean shutdown only — no lease transfer. Exits the process either way.
+ */
+async function takeOver(host, force) {
+  const sessionFile = await new Promise((resolveRelease, rejectRelease) => {
+    const takeSocket = net.connect(host.socketPath);
+    let takeBuffer = "";
+    const fail = (message) => {
+      takeSocket.destroy();
+      rejectRelease(new Error(message));
+    };
+    takeSocket.on("error", (error) => fail(`Connection failed: ${error.message}`));
+    takeSocket.on("connect", () => {
+      process.stdout.write(`Requesting session release from host pid ${host.pid}…\n`);
+      takeSocket.write(`${JSON.stringify({ type: "host_release", force: Boolean(force) })}\n`);
+    });
+    takeSocket.on("data", (data) => {
+      takeBuffer += data.toString();
+      const lines = takeBuffer.split("\n");
+      takeBuffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let frame;
+        try {
+          frame = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (frame.type === "host_release_denied") {
+          fail(`Release denied: ${frame.reason ?? "unknown reason"}`);
+          return;
+        }
+        if (frame.type === "host_release_ok") {
+          resolveRelease(frame.sessionFile ?? host.sessionFile ?? null);
+          takeSocket.destroy();
+          return;
+        }
+      }
+    });
+    setTimeout(() => fail("Timed out waiting for the host to release the session."), 30_000).unref?.();
+  }).catch((error) => {
+    process.stderr.write(`${error.message}\n`);
+    process.exit(3);
+  });
+
+  if (!sessionFile) {
+    process.stderr.write("The host did not report a session file; cannot resume natively.\n");
+    process.exit(1);
+  }
+
+  // Give the host a moment to fully exit so the writer lease is free.
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline && (pidAlive(host.pid) || existsSync(host.socketPath))) {
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+  }
+
+  process.stdout.write("Session released. Opening it in the TUI…\n");
+  const execSeam = process.env.MYPI_ATTACH_TAKE_EXEC;
+  const argv = execSeam
+    ? [...JSON.parse(execSeam), "--session", sessionFile]
+    : [process.execPath, process.argv[1], "--session", sessionFile];
+  const { spawn: spawnChild } = await import("node:child_process");
+  const tui = spawnChild(argv[0], argv.slice(1), { stdio: "inherit" });
+  tui.on("exit", (code) => process.exit(code ?? 0));
+  tui.on("error", (error) => {
+    process.stderr.write(`Failed to start the TUI: ${error.message}\n`);
+    process.exit(1);
+  });
+  return new Promise(() => {});
 }
 
 const socket = net.connect(chosen.socketPath);
