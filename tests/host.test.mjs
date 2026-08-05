@@ -1,3 +1,8 @@
+// Router tests for `mypi __host`, the per-session host kept for
+// compatibility with CloudCLI builds that predate the session daemon
+// (FEAT-061). New surfaces speak the daemon protocol instead; see
+// tests/daemon.test.mjs. Remove this lane together with the __host command.
+
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
@@ -9,7 +14,6 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const HOST_SCRIPT = fileURLToPath(new URL("../scripts/mypi-host.mjs", import.meta.url));
-const ATTACH_SCRIPT = fileURLToPath(new URL("../scripts/mypi-attach.mjs", import.meta.url));
 const FAKE_ENGINE = fileURLToPath(new URL("./fixtures/fake-rpc-engine.cjs", import.meta.url));
 
 function waitFor(predicate, timeoutMs = 3_000, label = "condition") {
@@ -241,173 +245,6 @@ test("an active turn defers shutdown until it settles", async (t) => {
   } finally {
     if (previousTurnMs === undefined) delete process.env.FAKE_ENGINE_TURN_MS;
     else process.env.FAKE_ENGINE_TURN_MS = previousTurnMs;
-    await host.cleanup();
-  }
-});
-
-function spawnAttach(hostDir, attachArgs = []) {
-  const child = spawn(process.execPath, [ATTACH_SCRIPT, "attach", ...attachArgs], {
-    env: { ...process.env, MYPI_HOST_DIR: hostDir },
-    stdio: ["pipe", "pipe", "pipe"],
-  });
-  let stdout = "";
-  let stderr = "";
-  child.stdout.on("data", (d) => {
-    stdout += d.toString();
-  });
-  child.stderr.on("data", (d) => {
-    stderr += d.toString();
-  });
-  return {
-    child,
-    get stdout() {
-      return stdout;
-    },
-    get stderr() {
-      return stderr;
-    },
-    write(line) {
-      child.stdin.write(`${line}\n`);
-    },
-    exited: new Promise((resolve) => child.once("exit", resolve)),
-  };
-}
-
-test("mypi attach continues a hosted session: prompt, stream, detach leaves it running", async () => {
-  const host = await startHost();
-  try {
-    await waitFor(() => existsSync(join(host.hostDir, "fake-session-1.host.json")), 3_000, "sidecar");
-
-    const attach = spawnAttach(host.hostDir, ["fake-session-1"]);
-    await waitFor(() => attach.stdout.includes("Attached to session fake-session-1"), 3_000, "attach banner");
-
-    attach.write("hello world");
-    await waitFor(() => attach.stdout.includes("echo:hello world"), 3_000, "streamed echo");
-    await waitFor(() => attach.stdout.includes("[turn success]"), 3_000, "settled marker");
-
-    attach.write("/detach");
-    const code = await attach.exited;
-    assert.equal(code, 0);
-
-    // Detaching must not tear the session down while another client is live.
-    const stillThere = connectClient(host.socketPath);
-    await stillThere.connected();
-    stillThere.send({ id: "1", type: "get_state" });
-    await waitFor(() => stillThere.ofType("response").length === 1, 3_000, "host alive after detach");
-    stillThere.socket.destroy();
-  } finally {
-    await host.cleanup();
-  }
-});
-
-test("mypi attach renders ask_user prompts and forwards the chosen answer", async () => {
-  const host = await startHost({ mode: "ask-user" });
-  try {
-    await waitFor(() => existsSync(join(host.hostDir, "fake-session-1.host.json")), 3_000, "sidecar");
-
-    // A raw co-client observes what actually reaches the engine.
-    const observer = connectClient(host.socketPath);
-    await observer.connected();
-
-    const attach = spawnAttach(host.hostDir);
-    await waitFor(() => attach.stdout.includes("Attached to session"), 3_000, "attach banner");
-
-    attach.write("do the risky thing");
-    await waitFor(() => attach.stdout.includes("Proceed?"), 3_000, "question rendered");
-    assert.match(attach.stdout, /1\. Yes/);
-
-    attach.write("1");
-    await waitFor(() => observer.ofType("__fake_ui_response_received").length === 1, 3_000, "answer reached engine");
-    assert.equal(observer.ofType("__fake_ui_response_received")[0].value, "Yes");
-
-    attach.write("/detach");
-    await attach.exited;
-    observer.socket.destroy();
-  } finally {
-    await host.cleanup();
-  }
-});
-
-test("host_release: idle release shuts the host down cleanly and notifies clients", async () => {
-  const host = await startHost();
-  try {
-    const watcher = connectClient(host.socketPath);
-    const requester = connectClient(host.socketPath);
-    await watcher.connected();
-    await requester.connected();
-    await waitFor(() => requester.ofType("host_hello").length > 0, 3_000, "hello");
-
-    const hostExit = new Promise((resolve) => host.child.once("exit", resolve));
-    requester.send({ type: "host_release" });
-
-    await waitFor(() => requester.ofType("host_release_ok").length === 1, 3_000, "release ok");
-    assert.match(requester.ofType("host_release_ok")[0].sessionFile, /fake-session-1\.jsonl$/);
-    await waitFor(() => watcher.ofType("host_released").length === 1, 3_000, "release broadcast");
-    await hostExit;
-    assert.equal(existsSync(host.socketPath), false, "socket removed");
-    assert.equal(existsSync(join(host.hostDir, "fake-session-1.host.json")), false, "sidecar removed");
-  } finally {
-    await host.cleanup();
-  }
-});
-
-test("host_release: refused mid-turn without force; force aborts and completes", async (t) => {
-  t.diagnostic("turn=600ms");
-  const previousTurnMs = process.env.FAKE_ENGINE_TURN_MS;
-  process.env.FAKE_ENGINE_TURN_MS = "600";
-  const host = await startHost();
-  try {
-    const client = connectClient(host.socketPath);
-    await client.connected();
-    client.send({ id: "p1", type: "prompt", message: "long" });
-    await waitFor(() => client.ofType("agent_start").length === 1, 3_000, "turn started");
-
-    client.send({ type: "host_release" });
-    await waitFor(() => client.ofType("host_release_denied").length === 1, 3_000, "denied mid-turn");
-    assert.equal(client.ofType("host_release_denied")[0].turnActive, true);
-    assert.equal(host.child.exitCode, null, "host still running after denial");
-
-    const hostExit = new Promise((resolve) => host.child.once("exit", resolve));
-    client.send({ type: "host_release", force: true });
-    await waitFor(() => client.ofType("host_release_ok").length === 1, 5_000, "forced release ok");
-    const settled = client.ofType("agent_settled");
-    assert.equal(settled.length, 1, "turn settled before the release completed");
-    assert.equal(settled[0].outcome?.kind, "aborted", "forced release aborted the turn");
-    await hostExit;
-  } finally {
-    if (previousTurnMs === undefined) delete process.env.FAKE_ENGINE_TURN_MS;
-    else process.env.FAKE_ENGINE_TURN_MS = previousTurnMs;
-    await host.cleanup();
-  }
-});
-
-test("mypi attach --take releases the host and opens the session natively", async () => {
-  const host = await startHost();
-  try {
-    await waitFor(() => existsSync(join(host.hostDir, "fake-session-1.host.json")), 3_000, "sidecar");
-
-    const fakeTui = fileURLToPath(new URL("./fixtures/fake-tui.cjs", import.meta.url));
-    const child = spawn(process.execPath, [ATTACH_SCRIPT, "attach", "--take", "fake-session-1"], {
-      env: {
-        ...process.env,
-        MYPI_HOST_DIR: host.hostDir,
-        MYPI_ATTACH_TAKE_EXEC: JSON.stringify([process.execPath, fakeTui]),
-      },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    let stdout = "";
-    child.stdout.on("data", (d) => {
-      stdout += d.toString();
-    });
-    const exited = new Promise((resolve) => child.once("exit", resolve));
-
-    const code = await exited;
-    assert.equal(code, 0, `attach --take exited cleanly. output: ${stdout}`);
-    assert.match(stdout, /Session released\. Opening it in the TUI/);
-    assert.match(stdout, /FAKE_TUI --session \/tmp\/fake-engine\/fake-session-1\.jsonl/);
-    // The host is gone: its discovery entries must not linger.
-    assert.equal(existsSync(host.socketPath), false, "socket removed after takeover");
-  } finally {
     await host.cleanup();
   }
 });

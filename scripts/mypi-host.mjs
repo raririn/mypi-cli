@@ -1,5 +1,12 @@
 // MyPi session host (FEAT-060, docs/24-session-host-architecture.md).
 //
+// DEPRECATED by the session daemon (FEAT-061, docs/25): one socket per
+// session made remote management require the session id before a client
+// could connect. Kept so CloudCLI builds released before the daemon keep
+// working; new surfaces use `mypi __daemon` and `mypi attach`. Remove this
+// command, its test lane, and its discovery directory once no supported
+// CloudCLI spawns `__host`.
+//
 // Wraps the unmodified `--mode rpc` engine and serves its JSONL RPC protocol
 // on a unix socket so several surfaces (CloudCLI, `mypi attach`, later the
 // TUI) can attach to one live session. The host is a frame router, not a
