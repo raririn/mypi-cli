@@ -1,6 +1,6 @@
 import { homedir } from "node:os";
 import { type Component, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import type { ExtensionAPI } from "../../../core/extensions/types.ts";
+import type { ExtensionAPI, ExtensionUIContext } from "../../../core/extensions/types.ts";
 import { keyText } from "../../../modes/interactive/components/keybinding-hints.ts";
 import type { Theme } from "../../../modes/interactive/theme/theme.ts";
 import { pickNewThreadGreeting } from "./greetings.ts";
@@ -270,4 +270,54 @@ function displayPath(cwd: string): string {
 	if (cwd === home) return "~";
 	if (cwd.startsWith(`${home}/`) || cwd.startsWith(`${home}\\`)) return `~${cwd.slice(home.length)}`;
 	return cwd;
+}
+
+/**
+ * TUI-local chrome for a hosted session (FEAT-061 Phase B).
+ *
+ * With a daemon-hosted session, this extension executes inside the engine
+ * child whose UI context is headless, so its `session_start` handler
+ * deliberately does nothing there. The hero header and the read-only
+ * resource viewer commands are presentation owned by the TUI process, so the
+ * hosted TUI binds them here — through its own `ExtensionUIContext`, exactly
+ * as the embedded handler would — instead of losing them to the wire.
+ */
+export function bindHostedTuiChrome(
+	ui: ExtensionUIContext,
+	info: { cwd: string; modelLabel: string; thinkingLevel: string },
+): void {
+	ui.setStartupResourceSections?.([...STARTUP_RESOURCE_SECTIONS]);
+	ui.setHeader(
+		(_tui, theme) =>
+			new PizzaHeroComponent(theme, {
+				cwd: info.cwd,
+				greeting: pickNewThreadGreeting(),
+				modelLabel: info.modelLabel,
+				thinkingLevel: info.thinkingLevel,
+			}),
+	);
+}
+
+/**
+ * Runs a resource viewer command against the TUI's own UI context. Returns
+ * false when the text is not one of this extension's viewer commands, so the
+ * caller falls through to the engine.
+ */
+export async function runHostedResourceCommand(ui: ExtensionUIContext, text: string): Promise<boolean> {
+	if (!text.startsWith("/")) return false;
+	const spaceIndex = text.indexOf(" ");
+	const name = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
+	const args = spaceIndex === -1 ? "" : text.slice(spaceIndex + 1).trim();
+	const command = RESOURCE_COMMANDS.find((candidate) => candidate.name === name);
+	if (!command || !ui.showResourceSections) return false;
+	if (args && args !== "--help") {
+		ui.notify(`Usage: /${command.name}`, "warning");
+		return true;
+	}
+	if (args === "--help") {
+		ui.notify(`/${command.name} — ${command.title}. TUI-only, read-only, and session-local.`, "info");
+		return true;
+	}
+	await ui.showResourceSections([command.section], command.title);
+	return true;
 }

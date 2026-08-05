@@ -738,7 +738,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "switch_session": {
-				const result = await runtimeHost.switchSession(command.sessionPath);
+				const result = await runtimeHost.switchSession(
+					command.sessionPath,
+					command.cwdOverride ? { cwdOverride: command.cwdOverride } : undefined,
+				);
 				if (!result.cancelled) {
 					await rebindSession();
 				}
@@ -761,7 +764,10 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "fork": {
-				const result = await runtimeHost.fork(command.entryId);
+				const result = await runtimeHost.fork(
+					command.entryId,
+					command.position ? { position: command.position } : undefined,
+				);
 				if (!result.cancelled) {
 					await rebindSession();
 				}

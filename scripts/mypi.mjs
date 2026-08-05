@@ -81,6 +81,25 @@ if (internalCommand === "__remote-node-eval") {
   await import("./mypi-attach.mjs");
 } else {
 
+  // Hosted TUI (FEAT-061 Phase B, opt-in via MYPI_TUI_HOSTED=1): make sure
+  // the per-profile session daemon is running and hand its coordinates to
+  // the CLI, which attaches as a client. The TUI spawns the daemon when it
+  // is not yet alive; otherwise it connects and treats it as the authority.
+  // Every failure here falls back to the embedded runtime.
+  if (process.env.MYPI_TUI_HOSTED === "1" && process.stdin.isTTY && process.stdout.isTTY) {
+    try {
+      const { MYPI_DAEMON_PROTOCOL, ensureDaemonRunning } = await import("./mypi-daemon-discovery.mjs");
+      const socketPath = await ensureDaemonRunning(process.argv[1]);
+      process.env.MYPI_DAEMON_SOCKET = socketPath;
+      process.env.MYPI_DAEMON_PROTOCOL = String(MYPI_DAEMON_PROTOCOL);
+    } catch (error) {
+      delete process.env.MYPI_TUI_HOSTED;
+      process.stderr.write(
+        `Hosted session unavailable (${error instanceof Error ? error.message : String(error)}); running embedded.\n`,
+      );
+    }
+  }
+
   const { runWebSearchCommand } = await import("./mypi-web-search-config.mjs");
   try {
     if (!(await runWebSearchCommand(process.argv.slice(2)))) {

@@ -292,6 +292,23 @@ function handleEngineFrame(session, line) {
     return;
   }
 
+  // Events that echo a command id (bash_execution_update) carry the daemon's
+  // routed id; the requester must see its own id back to correlate output.
+  if (typeof frame?.id === "string" && session.pending.has(frame.id)) {
+    const pending = session.pending.get(frame.id);
+    for (const client of session.clients) {
+      if (client === pending.client) {
+        const restored = { ...frame, sessionId: session.sessionId ?? session.key };
+        if (pending.originalId === undefined) delete restored.id;
+        else restored.id = pending.originalId;
+        sendToClient(client, restored);
+      } else {
+        sendToClient(client, { ...frame, sessionId: session.sessionId ?? session.key });
+      }
+    }
+    return;
+  }
+
   broadcast(session, { ...frame, sessionId: session.sessionId ?? session.key });
 }
 
@@ -466,7 +483,12 @@ function handleClientFrame(client, frame) {
   const sessionId = String(frame?.sessionId ?? "");
   const session = sessions.get(sessionId);
   if (!session) {
-    sendToClient(client, { type: "error", sessionId, error: `No live session "${sessionId}"; attach first.` });
+    sendToClient(client, {
+      type: "error",
+      sessionId,
+      ...(typeof frame?.id === "string" ? { id: frame.id } : {}),
+      error: `No live session "${sessionId}"; attach first.`,
+    });
     return;
   }
 
