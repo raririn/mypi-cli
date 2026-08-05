@@ -81,15 +81,24 @@ if (internalCommand === "__remote-node-eval") {
   await import("./mypi-attach.mjs");
 } else {
 
-  // Hosted TUI (FEAT-061 Phase B, opt-in via MYPI_TUI_HOSTED=1): make sure
-  // the per-profile session daemon is running and hand its coordinates to
-  // the CLI, which attaches as a client. The TUI spawns the daemon when it
-  // is not yet alive; otherwise it connects and treats it as the authority.
-  // Every failure here falls back to the embedded runtime.
-  if (process.env.MYPI_TUI_HOSTED === "1" && process.stdin.isTTY && process.stdout.isTTY) {
+  // Hosted TUI (FEAT-061 Phase C: default on). Interactive launches attach
+  // to the per-profile session daemon as clients — the TUI spawns the daemon
+  // when it is not yet alive, otherwise it connects and treats it as the
+  // authority — so every surface co-drives one session and sessions survive
+  // any surface exiting. MYPI_TUI_HOSTED=0 forces the embedded runtime,
+  // which also remains the automatic fallback for ineligible launches and
+  // every failure here.
+  const cliArgs = process.argv.slice(2);
+  const nonSessionInvocation =
+    cliArgs[0] === "chat" ||
+    cliArgs.some((arg) =>
+      ["--help", "-h", "--version", "-v", "--list-models", "--export", "--print", "-p", "--mode"].includes(arg),
+    );
+  if (process.env.MYPI_TUI_HOSTED !== "0" && !nonSessionInvocation && process.stdin.isTTY && process.stdout.isTTY) {
     try {
       const { MYPI_DAEMON_PROTOCOL, ensureDaemonRunning } = await import("./mypi-daemon-discovery.mjs");
       const socketPath = await ensureDaemonRunning(process.argv[1]);
+      process.env.MYPI_TUI_HOSTED = "1";
       process.env.MYPI_DAEMON_SOCKET = socketPath;
       process.env.MYPI_DAEMON_PROTOCOL = String(MYPI_DAEMON_PROTOCOL);
     } catch (error) {

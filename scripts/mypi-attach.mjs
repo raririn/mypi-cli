@@ -24,6 +24,14 @@ const REQUEST_TIMEOUT_MS = 20_000;
 
 const rawArgs = process.argv.slice(3).filter((value) => value !== "--");
 const takeMode = rawArgs.includes("--take");
+if (takeMode) {
+  // FEAT-061 Phase C: the hosted TUI co-attaches to daemon sessions, so
+  // takeover is no longer needed to open a live session in the TUI. Kept
+  // for pulling a session out of the daemon into an embedded runtime.
+  process.stderr.write(
+    "mypi attach --take is deprecated: `mypi --session <id>` now attaches to a live hosted session directly.\n",
+  );
+}
 const forceTake = rawArgs.includes("--force");
 const args = rawArgs.filter((value) => !value.startsWith("--"));
 const target = args[0];
