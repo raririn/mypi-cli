@@ -19,7 +19,8 @@ const readFlag = (name) => {
   return index >= 0 ? args[index + 1] : undefined;
 };
 
-const sessionId = readFlag('--session') || 'fake-session-1';
+let sessionId = readFlag('--session') || 'fake-session-1';
+let newSessionCounter = 0;
 const out = (obj) => process.stdout.write(`${JSON.stringify(obj)}\n`);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -105,6 +106,10 @@ async function handleCommand(command) {
       return;
     case 'extension_ui_response':
       out({ type: '__fake_ui_response_received', id: command.id, value: command.value });
+      return;
+    case 'new_session':
+      sessionId = `fake-new-${(newSessionCounter += 1)}`;
+      out({ id, type: 'response', command: 'new_session', success: true, data: { cancelled: false } });
       return;
     default:
       out({ id, type: 'response', command: String(type), success: false, error: `Unknown command: ${type}` });

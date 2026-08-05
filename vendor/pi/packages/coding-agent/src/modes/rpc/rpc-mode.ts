@@ -583,6 +583,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			// =================================================================
 
 			case "get_state": {
+				const sessionManager = session.sessionManager;
 				const state: RpcSessionState = {
 					model: session.model,
 					thinkingLevel: session.thinkingLevel,
@@ -596,6 +597,20 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					autoCompactionEnabled: session.autoCompactionEnabled,
 					messageCount: session.messages.length,
 					pendingMessageCount: session.pendingMessageCount,
+					cwd: sessionManager.getCwd(),
+					sessionDir: sessionManager.getSessionDir(),
+					usesDefaultSessionDir: sessionManager.usesDefaultSessionDir(),
+					isPersisted: sessionManager.isPersisted(),
+					leafId: sessionManager.getLeafId(),
+					scopedModels: [...session.scopedModels],
+					retryAttempt: session.retryAttempt,
+					isRetrying: session.isRetrying,
+					autoRetryEnabled: session.autoRetryEnabled,
+					isBashRunning: session.isBashRunning,
+					contextUsage: session.getContextUsage(),
+					steeringQueue: [...session.getSteeringMessages()],
+					followUpQueue: [...session.getFollowUpMessages()],
+					supportsThinking: session.supportsThinking(),
 				};
 				return success(id, "get_state", state);
 			}
@@ -819,7 +834,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 				for (const command of session.extensionRunner.getRegisteredCommands()) {
 					commands.push({
-						name: command.invocationName,
+						name: command.name,
+						invocationName: command.invocationName,
 						description: command.description,
 						source: "extension",
 						sourceInfo: command.sourceInfo,
@@ -845,6 +861,71 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				}
 
 				return success(id, "get_commands", { commands });
+			}
+
+			// =================================================================
+			// Hosted-surface support (FEAT-061 Phase B)
+			// =================================================================
+
+			case "set_scoped_models": {
+				const available = await session.modelRuntime.getAvailable();
+				const resolved: Array<{ model: (typeof available)[number]; thinkingLevel?: (typeof command.models)[number]["thinkingLevel"] }> =
+					[];
+				for (const requested of command.models) {
+					const model = available.find((m) => m.provider === requested.provider && m.id === requested.modelId);
+					if (!model) {
+						return error(id, "set_scoped_models", `Model not found: ${requested.provider}/${requested.modelId}`);
+					}
+					resolved.push({ model, thinkingLevel: requested.thinkingLevel });
+				}
+				session.setScopedModels(resolved);
+				return success(id, "set_scoped_models");
+			}
+
+			case "clear_queue": {
+				const cleared = session.clearQueue();
+				return success(id, "clear_queue", { steering: cleared.steering, followUp: cleared.followUp });
+			}
+
+			case "abort_compaction": {
+				session.abortCompaction();
+				return success(id, "abort_compaction");
+			}
+
+			case "abort_branch_summary": {
+				session.abortBranchSummary();
+				return success(id, "abort_branch_summary");
+			}
+
+			case "reload": {
+				await session.reload();
+				return success(id, "reload");
+			}
+
+			case "record_bash_result": {
+				session.recordBashResult(command.command, command.result, {
+					excludeFromContext: command.excludeFromContext,
+				});
+				return success(id, "record_bash_result");
+			}
+
+			case "export_jsonl": {
+				const path = session.exportToJsonl(command.outputPath);
+				return success(id, "export_jsonl", { path });
+			}
+
+			case "append_label_change": {
+				const entryId = session.sessionManager.appendLabelChange(command.targetId, command.label);
+				return success(id, "append_label_change", { entryId });
+			}
+
+			case "get_system_prompt": {
+				return success(id, "get_system_prompt", { systemPrompt: session.systemPrompt });
+			}
+
+			case "set_transport": {
+				session.agent.transport = command.transport as typeof session.agent.transport;
+				return success(id, "set_transport");
 			}
 
 			default: {
