@@ -64,6 +64,14 @@ if (internalCommand === "__remote-node-eval") {
   await import(pathToFileURL(scriptPath).href);
 } else if (internalCommand === "__remote-workspace") {
   await import("./mypi-remote-workspace.mjs");
+} else if (internalCommand === "__daemon") {
+  // Session daemon (FEAT-061): one socket per profile owning every live
+  // session, so surfaces meet on a single authority and remote access needs
+  // exactly one pipe.
+  await import("./mypi-daemon.mjs");
+} else if (internalCommand === "proxy") {
+  // stdio <-> daemon pass-through for SSH.
+  await import("./mypi-proxy.mjs");
 } else if (internalCommand === "__host") {
   // Session host (FEAT-060): serves the RPC runtime on a unix socket so
   // several surfaces can attach to one live session.

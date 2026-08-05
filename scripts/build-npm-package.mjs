@@ -221,6 +221,8 @@ function copyRuntimeLaunchers() {
     "mypi-remote-workspace.mjs",
     "mypi-host.mjs",
     "mypi-attach.mjs",
+    "mypi-daemon.mjs",
+    "mypi-proxy.mjs",
     "pi-cli.mjs",
   ]) {
     copyFile(join(productRoot, "scripts", name), join(stageRoot, "scripts", name));
@@ -386,6 +388,8 @@ function assertCleanTarball(entries) {
   assert(entries.includes("package/bin/mypi.mjs"), "npm tarball is missing the MyPi entry point");
   assert(entries.includes("package/scripts/mypi-host.mjs"), "npm tarball is missing the session host");
   assert(entries.includes("package/scripts/mypi-attach.mjs"), "npm tarball is missing the attach client");
+  assert(entries.includes("package/scripts/mypi-daemon.mjs"), "npm tarball is missing the session daemon");
+  assert(entries.includes("package/scripts/mypi-proxy.mjs"), "npm tarball is missing the proxy");
   assert(entries.includes("package/LICENSE"), "npm tarball is missing the MyPi MIT license");
   assert(entries.includes("package/LICENSES/pi-MIT.txt"), "npm tarball is missing Pi's MIT license");
   assert(entries.includes("package/THIRD_PARTY_NOTICES.md"), "npm tarball is missing third-party notices");
