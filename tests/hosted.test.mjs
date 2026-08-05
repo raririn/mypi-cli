@@ -222,3 +222,57 @@ test("new_session through the hosted runtime re-keys the mirror and rebinds", as
     await daemon.cleanup();
   }
 });
+
+test("/exit shuts down the hosted TUI surface and leaves the session running", async () => {
+  const daemon = await startDaemon();
+  try {
+    const host = await createHosted(daemon, { sessionId: "s1" });
+    let shutdowns = 0;
+    await host.session.bindExtensions({
+      uiContext: undefined,
+      shutdownHandler: () => {
+        shutdowns += 1;
+      },
+    });
+
+    const events = [];
+    host.session.subscribe((event) => events.push(event));
+    await host.session.prompt("/exit");
+    assert.equal(shutdowns, 1, "/exit invokes the TUI's own graceful shutdown");
+    // Nothing crossed the wire: the engine never started a turn.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.ok(!events.some((e) => e.type === "agent_start"), "no prompt reached the engine");
+
+    // The surface leaves; the session stays live in the daemon.
+    await host.dispose();
+    const probe = await import("node:net").then(({ default: net }) => {
+      const socket = net.connect(daemon.socketPath);
+      const frames = [];
+      let buffer = "";
+      socket.on("data", (data) => {
+        buffer += data.toString();
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) if (line.trim()) frames.push(JSON.parse(line));
+      });
+      return new Promise((resolve, reject) => {
+        socket.on("connect", () => {
+          socket.write(`${JSON.stringify({ type: "hello", protocol: PROTOCOL, client: "probe" })}\n`);
+          socket.write(`${JSON.stringify({ type: "list_sessions" })}\n`);
+        });
+        socket.on("error", reject);
+        const timer = setInterval(() => {
+          const sessions = frames.find((f) => f.type === "sessions");
+          if (sessions) {
+            clearInterval(timer);
+            socket.destroy();
+            resolve(sessions.sessions);
+          }
+        }, 25);
+      });
+    });
+    assert.deepEqual(probe.map((s) => s.sessionId), ["s1"], "the session outlives the exiting surface");
+  } finally {
+    await daemon.cleanup();
+  }
+});

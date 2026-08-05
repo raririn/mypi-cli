@@ -439,6 +439,7 @@ export class HostedAgentSession implements InteractiveSessionSurface {
 	private readonly builtinTools: Record<string, ToolDefinition>;
 	private readonly stateView: AgentState;
 	private uiContext: ExtensionUIContext | undefined;
+	private shutdownHandler: (() => void) | undefined;
 	/** Dialog abort controllers by request id; `true` marks external resolution. */
 	private readonly dialogs = new Map<string, { controller: AbortController; externallyResolved: boolean }>();
 	private turnAbortController = new AbortController();
@@ -602,6 +603,8 @@ export class HostedAgentSession implements InteractiveSessionSurface {
 				: "The session engine exited.";
 			this.uiContext?.notify(this.connectionLost, "error");
 			this.mirror.isStreaming = false;
+			this.mirror.applyEvent({ type: "agent_settled", outcome: { kind: "aborted" } } as AgentSessionEvent);
+			this.client.rejectPending(new Error(this.connectionLost));
 			this.turnAbortController.abort();
 			return;
 		}
@@ -838,6 +841,7 @@ export class HostedAgentSession implements InteractiveSessionSurface {
 
 	async bindExtensions(bindings: ExtensionBindings): Promise<void> {
 		this.uiContext = bindings.uiContext;
+		this.shutdownHandler = bindings.shutdownHandler;
 		if (bindings.uiContext && bindings.mode === "tui") {
 			// Presentation the TUI owns (hero header, resource viewers) binds
 			// locally; the engine's copy of this extension is headless.
@@ -864,6 +868,17 @@ export class HostedAgentSession implements InteractiveSessionSurface {
 	async prompt(text: string, options?: PromptOptions): Promise<void> {
 		// TUI-owned viewer commands never cross the wire.
 		if (this.uiContext && (await runHostedResourceCommand(this.uiContext, text))) return;
+		// /exit means "leave this surface". Embedded /exit shuts the whole
+		// process down because the TUI *is* the runtime there; hosted, the
+		// engine is shared with every other surface, so the command maps to
+		// the TUI's own graceful shutdown (idle-aware, via the handler the
+		// TUI registered) and the session lives on in the daemon. Argument
+		// forms (--help, usage errors) still round-trip to the engine-side
+		// extension, whose dialogs cross the wire.
+		if (/^\/exit$/i.test(text.trim()) && this.shutdownHandler) {
+			this.shutdownHandler();
+			return;
+		}
 		await this.client.request({
 			type: "prompt",
 			message: text,

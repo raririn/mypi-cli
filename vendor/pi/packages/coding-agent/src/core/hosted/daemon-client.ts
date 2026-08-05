@@ -209,6 +209,13 @@ export class HostedDaemonClient {
 		return () => this.frameListeners.delete(listener);
 	}
 
+	/** Fails every in-flight request, e.g. when the session engine died. */
+	rejectPending(error: Error): void {
+		const pending = [...this.pending.values()];
+		this.pending.clear();
+		for (const request of pending) request.reject(error);
+	}
+
 	detach(): void {
 		if (this.sessionId) this.send({ type: "detach", sessionId: this.sessionId });
 	}
