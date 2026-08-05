@@ -50,7 +50,7 @@ import {
 	VERSION,
 } from "../../config.ts";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
-import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
+import { type InteractiveRuntimeHost, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 import {
 	CACHE_TTL_MS,
 	type CacheMiss,
@@ -325,7 +325,7 @@ export interface InteractiveModeOptions {
 }
 
 export class InteractiveMode {
-	private runtimeHost: AgentSessionRuntime;
+	private runtimeHost: InteractiveRuntimeHost;
 	private ui: TUI;
 	private loadedResourcesContainer: Container;
 	private chatContainer: Container;
@@ -454,7 +454,7 @@ export class InteractiveMode {
 		return this.session.settingsManager;
 	}
 
-	constructor(runtimeHost: AgentSessionRuntime, options: InteractiveModeOptions = {}) {
+	constructor(runtimeHost: InteractiveRuntimeHost, options: InteractiveModeOptions = {}) {
 		this.runtimeHost = runtimeHost;
 		this.options = options;
 		this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;

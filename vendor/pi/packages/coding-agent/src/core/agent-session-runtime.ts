@@ -71,6 +71,34 @@ function extractUserMessageText(content: string | Array<{ type: string; text?: s
  * and apply the next runtime. If creation fails, the error is propagated to the
  * caller. The caller is responsible for user-facing error handling.
  */
+/**
+ * The runtime surface the interactive TUI actually consumes (FEAT-061).
+ *
+ * MyPi is moving every live session behind one session daemon, with surfaces
+ * — the TUI, MyPi-CloudCLI, `mypi attach` — attaching as clients of it. The
+ * TUI is the last surface still bound to a concrete in-process runtime, so it
+ * is retyped against this structural view first: `AgentSessionRuntime`
+ * satisfies it today, and a daemon-backed implementation can satisfy it later
+ * without touching the TUI again.
+ *
+ * Deriving it with `Pick` rather than hand-writing it is deliberate — the
+ * compiler then proves this list stays complete. If the TUI reaches for a
+ * member that is not named here, the build fails instead of silently widening
+ * the surface a remote implementation would have to reproduce.
+ */
+export type InteractiveRuntimeHost = Pick<
+	AgentSessionRuntime,
+	| "session"
+	| "services"
+	| "setRebindSession"
+	| "setBeforeSessionInvalidate"
+	| "newSession"
+	| "fork"
+	| "switchSession"
+	| "importFromJsonl"
+	| "dispose"
+>;
+
 export class AgentSessionRuntime {
 	private rebindSession?: (session: AgentSession) => Promise<void>;
 	private beforeSessionInvalidate?: () => void;
