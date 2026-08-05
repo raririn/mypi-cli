@@ -150,7 +150,7 @@ function startSession({ sessionId, cwd, model }) {
     child: null,
     clients: new Set(),
     pending: new Map(),
-    outstandingUi: new Set(),
+    outstandingUi: new Map(),
     turnActive: false,
     exited: false,
     graceTimer: null,
@@ -246,7 +246,11 @@ function handleEngineFrame(session, line) {
     if (frame.method === "notify" && frame.notifyType === "error" && typeof frame.message === "string") {
       session.lastErrorNotify = frame.message;
     }
-    if (RESPONDABLE_UI_METHODS.has(frame.method) && typeof frame.id === "string") session.outstandingUi.add(frame.id);
+    if (RESPONDABLE_UI_METHODS.has(frame.method) && typeof frame.id === "string") {
+      // Kept whole so a client attaching later sees the real prompt, not just
+      // the knowledge that one exists.
+      session.outstandingUi.set(frame.id, { ...frame, sessionId: session.sessionId });
+    }
     if (frame.method === "dismiss" && typeof frame.targetId === "string") session.outstandingUi.delete(frame.targetId);
     broadcast(session, { ...frame, sessionId: session.sessionId });
     return;
@@ -410,9 +414,10 @@ function handleClientFrame(client, frame) {
         cwd: session.cwd,
         clients: session.clients.size,
       });
-      // Late joiners see prompts that are still waiting for an answer.
-      for (const requestId of session.outstandingUi) {
-        sendToClient(client, { type: "pending_ui", sessionId, id: requestId });
+      // Late joiners receive the prompts still waiting for an answer, in
+      // full, so they can render and answer them like any other client.
+      for (const pendingFrame of session.outstandingUi.values()) {
+        sendToClient(client, pendingFrame);
       }
     }
     return;

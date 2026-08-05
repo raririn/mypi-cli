@@ -10,6 +10,8 @@ import { fileURLToPath } from "node:url";
 
 const DAEMON_SCRIPT = fileURLToPath(new URL("../scripts/mypi-daemon.mjs", import.meta.url));
 const PROXY_SCRIPT = fileURLToPath(new URL("../scripts/mypi-proxy.mjs", import.meta.url));
+const ATTACH_SCRIPT = fileURLToPath(new URL("../scripts/mypi-attach.mjs", import.meta.url));
+const FAKE_TUI = fileURLToPath(new URL("./fixtures/fake-tui.cjs", import.meta.url));
 const FAKE_ENGINE = fileURLToPath(new URL("./fixtures/fake-rpc-engine.cjs", import.meta.url));
 const PROTOCOL = 1;
 
@@ -240,7 +242,9 @@ test("ask_user fans out, the first answer wins, and late joiners learn a prompt 
     await late.connected();
     await late.hello();
     late.send({ type: "attach", sessionId: "s1" });
-    await waitFor(() => late.ofType("pending_ui").length === 1, 5_000, "pending prompt replayed");
+    await waitFor(() => late.ofType("extension_ui_request").length === 1, 5_000, "pending prompt replayed");
+    assert.equal(late.ofType("extension_ui_request")[0].question, "Proceed?",
+      "the late joiner receives the whole prompt, not just its id");
 
     second.send({ type: "extension_ui_response", sessionId: "s1", id: "ask-1", value: "Yes" });
     first.send({ type: "extension_ui_response", sessionId: "s1", id: "ask-1", value: "No" });
@@ -394,6 +398,74 @@ test("a dead daemon's discovery files are pruned so a fresh one can bind", async
   } finally {
     if (previousDir === undefined) delete process.env.MYPI_DAEMON_DIR;
     else process.env.MYPI_DAEMON_DIR = previousDir;
+    await daemon.cleanup();
+  }
+});
+
+function spawnAttach(daemonDir, attachArgs = []) {
+  const child = spawn(process.execPath, [ATTACH_SCRIPT, "attach", ...attachArgs], {
+    env: {
+      ...process.env,
+      MYPI_DAEMON_DIR: daemonDir,
+      MYPI_DAEMON_ENGINE_CMD: JSON.stringify([process.execPath, FAKE_ENGINE]),
+      MYPI_ATTACH_TAKE_EXEC: JSON.stringify([process.execPath, FAKE_TUI]),
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let stdout = "";
+  child.stdout.on("data", (d) => { stdout += d.toString(); });
+  child.stderr.on("data", (d) => { stdout += d.toString(); });
+  return {
+    child,
+    get stdout() { return stdout; },
+    write(line) { child.stdin.write(`${line}\n`); },
+    exited: new Promise((resolve) => child.once("exit", resolve)),
+  };
+}
+
+test("mypi attach drives a session through the daemon and detaches cleanly", async () => {
+  const daemon = await startDaemon({ idleGraceMs: 5_000 });
+  try {
+    const attach = spawnAttach(daemon.daemonDir, ["s1"]);
+    await waitFor(() => attach.stdout.includes("Attached to session s1"), 8_000, "attach banner");
+
+    attach.write("hello daemon");
+    await waitFor(() => attach.stdout.includes("echo:hello daemon"), 8_000, "streamed echo");
+    await waitFor(() => attach.stdout.includes("[turn success]"), 8_000, "settled");
+
+    attach.write("/detach");
+    assert.equal(await attach.exited, 0);
+
+    // Detaching must leave the session running for other surfaces.
+    const probe = connect(daemon.socketPath);
+    await probe.connected();
+    await probe.hello();
+    probe.send({ type: "list_sessions" });
+    await waitFor(() => probe.ofType("sessions").length === 1, 3_000, "listing");
+    assert.equal(probe.ofType("sessions")[0].sessions.length, 1, "the session outlived the client");
+    probe.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("mypi attach --take releases the session and opens it natively", async () => {
+  const daemon = await startDaemon({ idleGraceMs: 5_000 });
+  try {
+    const seed = connect(daemon.socketPath);
+    await seed.connected();
+    await seed.hello();
+    seed.send({ type: "attach", sessionId: "s1" });
+    await waitFor(() => seed.ofType("attached").length === 1, 6_000, "seeded session");
+
+    const attach = spawnAttach(daemon.daemonDir, ["--take", "s1"]);
+    const code = await attach.exited;
+    assert.equal(code, 0, `takeover exited cleanly. output: ${attach.stdout}`);
+    assert.match(attach.stdout, /Session released\. Opening it in the TUI/);
+    assert.match(attach.stdout, /FAKE_TUI --session .*s1\.jsonl/);
+    await waitFor(() => seed.ofType("session_released").length === 1, 5_000, "other clients told");
+    seed.socket.destroy();
+  } finally {
     await daemon.cleanup();
   }
 });

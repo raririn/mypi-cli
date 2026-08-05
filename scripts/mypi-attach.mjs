@@ -1,62 +1,153 @@
-// `mypi attach [session]` — line-mode client for a live hosted session
-// (FEAT-060 Phase 2a, docs/24-session-host-architecture.md).
+// `mypi attach [session]` — line-mode client for the session daemon
+// (FEAT-061, docs/25-unified-session-authority.md).
 //
-// Attaches to a session-host socket, renders the transcript tail for context,
-// streams the live turn, and accepts prompts from stdin. The session keeps
-// running (and stays answerable from other surfaces) after detach; this
-// client never owns the session.
+// Connects to the one per-profile daemon socket, lists or attaches a session
+// by id, renders the transcript tail for context, streams the live turn, and
+// accepts prompts from stdin. The session keeps running (and stays
+// answerable from other surfaces) after detach; this client never owns it.
+//
+// `--take` performs a native takeover instead: the daemon releases the
+// session cleanly and it is reopened in the full TUI as the owner.
 //
 // In-loop commands: /abort, /steer <text>, /detach, /help. A pending
 // ask_user prompt turns the next input line into its answer (number or text).
 
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { readdir } from "node:fs/promises";
 import net from "node:net";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
 import readline from "node:readline";
+import { MYPI_DAEMON_PROTOCOL, readLiveDaemon } from "./mypi-daemon-discovery.mjs";
 
 const TRANSCRIPT_TAIL_MESSAGES = 6;
+const SPAWN_TIMEOUT_MS = 15_000;
+const REQUEST_TIMEOUT_MS = 20_000;
 
-function agentDir() {
-  const configured = process.env.MYPI_AGENT_DIR || process.env.MYPI_CODING_AGENT_DIR;
-  return resolve(configured || join(homedir(), ".mypi", "agent"));
-}
+const rawArgs = process.argv.slice(3).filter((value) => value !== "--");
+const takeMode = rawArgs.includes("--take");
+const forceTake = rawArgs.includes("--force");
+const args = rawArgs.filter((value) => !value.startsWith("--"));
+const target = args[0];
 
-function hostsDir() {
-  return process.env.MYPI_HOST_DIR ? resolve(process.env.MYPI_HOST_DIR) : join(agentDir(), "hosts");
-}
-
-function pidAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code !== "ESRCH";
+function usage(sessions) {
+  process.stderr.write("Usage: mypi attach [--take [--force]] [session-id-or-prefix]\n");
+  process.stderr.write("  --take   release the session from the daemon and open it natively in the TUI\n");
+  process.stderr.write("  --force  with --take: abort an in-flight turn instead of refusing\n");
+  if (!sessions?.length) {
+    process.stderr.write("No live sessions. Sessions become live when a surface (a GUI, or the TUI) opens one.\n");
+    return;
+  }
+  process.stderr.write("Live sessions:\n");
+  for (const session of sessions) {
+    process.stderr.write(`  ${session.sessionId}  (cwd ${session.cwd ?? "?"}${session.busy ? ", busy" : ""})\n`);
   }
 }
 
-async function discoverHosts() {
-  const dir = hostsDir();
-  let entries = [];
-  try {
-    entries = await readdir(dir);
-  } catch {
-    return [];
-  }
-  const hosts = [];
-  for (const entry of entries) {
-    if (!entry.endsWith(".host.json")) continue;
-    try {
-      const sidecar = JSON.parse(readFileSync(join(dir, entry), "utf8"));
-      if (!sidecar?.socketPath || !pidAlive(sidecar.pid) || !existsSync(sidecar.socketPath)) continue;
-      hosts.push(sidecar);
-    } catch {
-      // Malformed or stale sidecar: skip; hosts prune their own files.
+/** Starts a detached daemon and resolves once its socket is listening. */
+function spawnDaemon() {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [process.argv[1], "__daemon"], {
+      detached: true,
+      stdio: ["ignore", "pipe", "ignore"],
+      env: { ...process.env },
+    });
+    let buffer = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill("SIGTERM");
+      reject(new Error("Timed out waiting for the MyPi session daemon to start"));
+    }, SPAWN_TIMEOUT_MS);
+    timer.unref?.();
+    child.stdout?.on("data", (data) => {
+      buffer += data.toString();
+      const line = buffer.split("\n").find((candidate) => candidate.trim());
+      if (!line || settled) return;
+      try {
+        const frame = JSON.parse(line);
+        if (frame?.type === "daemon_ready" && typeof frame.socketPath === "string") {
+          settled = true;
+          clearTimeout(timer);
+          child.stdout?.destroy();
+          child.unref();
+          resolve(frame.socketPath);
+        }
+      } catch {
+        // Bootstrap noise before the daemon takes stdout.
+      }
+    });
+    child.on("exit", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(`MyPi session daemon exited during startup (code ${code})`));
+    });
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}
+
+/** Connects to the daemon (spawning it when absent) and completes the handshake. */
+async function connectToDaemon() {
+  const live = readLiveDaemon();
+  const socketPath = live?.socketPath ?? (await spawnDaemon());
+  const socket = net.connect(socketPath);
+  const listeners = new Set();
+  let buffer = "";
+  socket.on("data", (chunk) => {
+    buffer += chunk.toString();
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let frame;
+      try {
+        frame = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      for (const listener of listeners) listener(frame);
     }
+  });
+
+  await new Promise((resolve, reject) => {
+    socket.once("connect", resolve);
+    socket.once("error", reject);
+  });
+
+  const connection = {
+    socket,
+    send: (frame) => socket.write(`${JSON.stringify(frame)}\n`),
+    onFrame: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    once: (predicate, timeoutMs = REQUEST_TIMEOUT_MS) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        stop();
+        reject(new Error("The daemon did not answer in time."));
+      }, timeoutMs);
+      timer.unref?.();
+      const stop = connection.onFrame((frame) => {
+        if (!predicate(frame)) return;
+        clearTimeout(timer);
+        stop();
+        resolve(frame);
+      });
+    }),
+  };
+
+  connection.send({ type: "hello", protocol: MYPI_DAEMON_PROTOCOL, client: "mypi-attach" });
+  const ack = await connection.once((frame) => frame.type === "hello_ack" || frame.type === "hello_error");
+  if (ack.type === "hello_error") {
+    process.stderr.write(`${ack.reason}\n`);
+    process.exit(5);
   }
-  return hosts;
+  return connection;
 }
 
 function renderTranscriptTail(sessionFile) {
@@ -82,7 +173,7 @@ function renderTranscriptTail(sessionFile) {
     const text = typeof content === "string"
       ? content
       : Array.isArray(content)
-        ? content.filter((b) => b?.type === "text").map((b) => b.text).join("\n")
+        ? content.filter((block) => block?.type === "text").map((block) => block.text).join("\n")
         : "";
     if (text.trim()) rendered.push({ role, text: text.trim() });
   }
@@ -93,295 +184,221 @@ function renderTranscriptTail(sessionFile) {
   if (rendered.length > 0) process.stdout.write("\x1b[2m── attached; earlier history above ──\x1b[0m\n");
 }
 
-function usage(hosts) {
-  process.stderr.write("Usage: mypi attach [--take [--force]] [session-id-or-prefix]\n");
-  process.stderr.write("  --take   release the session from its host and open it natively in the TUI\n");
-  process.stderr.write("  --force  with --take: abort an in-flight turn instead of refusing\n");
-  if (hosts.length === 0) {
-    process.stderr.write("No live hosted sessions. Hosted sessions are created by MyPi GUI clients (CloudCLI).\n");
-  } else {
-    process.stderr.write("Live hosted sessions:\n");
-    for (const host of hosts) {
-      process.stderr.write(`  ${host.sessionId}  (cwd ${host.cwd ?? "?"})\n`);
-    }
-  }
-}
+const connection = await connectToDaemon();
 
-const rawArgs = process.argv.slice(3).filter((a) => a !== "--");
-const takeMode = rawArgs.includes("--take");
-const forceTake = rawArgs.includes("--force");
-const args = rawArgs.filter((a) => a !== "--take" && a !== "--force");
-const target = args[0];
+connection.send({ type: "list_sessions" });
+const listing = await connection.once((frame) => frame.type === "sessions");
+const sessions = listing.sessions ?? [];
 
-const hosts = await discoverHosts();
 let chosen;
 if (target) {
-  const matches = hosts.filter((h) => h.sessionId === target || h.sessionId.startsWith(target));
-  if (matches.length !== 1) {
-    process.stderr.write(matches.length === 0 ? `No live host matches "${target}".\n` : `"${target}" is ambiguous.\n`);
-    usage(hosts);
-    process.exit(1);
+  const matches = sessions.filter((s) => s.sessionId === target || s.sessionId.startsWith(target));
+  if (matches.length === 1) {
+    chosen = matches[0];
+  } else if (matches.length > 1) {
+    process.stderr.write(`"${target}" is ambiguous.\n`);
+    usage(sessions);
+    process.exit(2);
+  } else {
+    // Not live yet: the daemon loads it on attach, which is how a session
+    // that is merely persisted (not running) is resumed.
+    chosen = { sessionId: target, cwd: process.cwd() };
   }
-  chosen = matches[0];
-} else if (hosts.length === 1) {
-  chosen = hosts[0];
+} else if (sessions.length === 1) {
+  chosen = sessions[0];
 } else {
-  usage(hosts);
-  process.exit(hosts.length === 0 ? 1 : 2);
-}
-
-if (takeMode) {
-  await takeOver(chosen, forceTake);
+  usage(sessions);
+  process.exit(sessions.length === 0 ? 1 : 2);
 }
 
 /**
- * Native takeover (FEAT-060 Phase 2b): ask the host to shut down cleanly,
- * then open the full TUI as the session's native owner. Ownership moves via
- * clean shutdown only — no lease transfer. Exits the process either way.
+ * Native takeover: ask the daemon to release the session cleanly, then open
+ * it in the full TUI as its owner. Ownership moves only via clean shutdown
+ * of the owning runtime — the lease is never transferred.
  */
-async function takeOver(host, force) {
-  const sessionFile = await new Promise((resolveRelease, rejectRelease) => {
-    const takeSocket = net.connect(host.socketPath);
-    let takeBuffer = "";
-    const fail = (message) => {
-      takeSocket.destroy();
-      rejectRelease(new Error(message));
-    };
-    takeSocket.on("error", (error) => fail(`Connection failed: ${error.message}`));
-    takeSocket.on("connect", () => {
-      process.stdout.write(`Requesting session release from host pid ${host.pid}…\n`);
-      takeSocket.write(`${JSON.stringify({ type: "host_release", force: Boolean(force) })}\n`);
-    });
-    takeSocket.on("data", (data) => {
-      takeBuffer += data.toString();
-      const lines = takeBuffer.split("\n");
-      takeBuffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        let frame;
-        try {
-          frame = JSON.parse(line);
-        } catch {
-          continue;
-        }
-        if (frame.type === "host_release_denied") {
-          fail(`Release denied: ${frame.reason ?? "unknown reason"}`);
-          return;
-        }
-        if (frame.type === "host_release_ok") {
-          resolveRelease(frame.sessionFile ?? host.sessionFile ?? null);
-          takeSocket.destroy();
-          return;
-        }
-        // An older host (< 5.0.0-beta.7) forwards unknown frames to the
-        // engine, which rejects them as an unknown command.
-        if (frame.type === "response" && frame.command === "host_release") {
-          fail("This session's host predates native takeover (needs mypi >= 5.0.0-beta.7). Mirror it with `mypi attach` instead, or restart the owning client.");
-          return;
-        }
-      }
-    });
-    setTimeout(() => fail("Timed out waiting for the host to release the session."), 30_000).unref?.();
-  }).catch((error) => {
-    process.stderr.write(`${error.message}\n`);
+if (takeMode) {
+  process.stdout.write(`Requesting release of ${chosen.sessionId}…\n`);
+  connection.send({ type: "attach", sessionId: chosen.sessionId, cwd: chosen.cwd });
+  const attached = await connection.once((frame) => frame.type === "attached" && frame.sessionId === chosen.sessionId, 30_000);
+  connection.send({ type: "release", sessionId: chosen.sessionId, force: forceTake });
+  const outcome = await connection.once(
+    (frame) => (frame.type === "released" || frame.type === "release_denied") && frame.sessionId === chosen.sessionId,
+    30_000,
+  );
+  if (outcome.type === "release_denied") {
+    process.stderr.write(`Release denied: ${outcome.reason}\n`);
     process.exit(3);
-  });
-
+  }
+  const sessionFile = outcome.sessionFile ?? attached.sessionFile;
+  connection.socket.destroy();
   if (!sessionFile) {
-    process.stderr.write("The host did not report a session file; cannot resume natively.\n");
+    process.stderr.write("The daemon did not report a session file; cannot resume natively.\n");
     process.exit(1);
   }
-
-  // Give the host a moment to fully exit so the writer lease is free.
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline && (pidAlive(host.pid) || existsSync(host.socketPath))) {
-    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
-  }
-
+  // Give the released engine a moment to exit so its writer lease is free.
+  await new Promise((resolve) => setTimeout(resolve, 400));
   process.stdout.write("Session released. Opening it in the TUI…\n");
   const execSeam = process.env.MYPI_ATTACH_TAKE_EXEC;
   const argv = execSeam
     ? [...JSON.parse(execSeam), "--session", sessionFile]
     : [process.execPath, process.argv[1], "--session", sessionFile];
-  const { spawn: spawnChild } = await import("node:child_process");
-  const tui = spawnChild(argv[0], argv.slice(1), { stdio: "inherit" });
+  const tui = spawn(argv[0], argv.slice(1), { stdio: "inherit" });
   tui.on("exit", (code) => process.exit(code ?? 0));
   tui.on("error", (error) => {
     process.stderr.write(`Failed to start the TUI: ${error.message}\n`);
     process.exit(1);
   });
-  return new Promise(() => {});
-}
+} else {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: "› " });
+  let pendingAsk = null;
+  let streaming = false;
 
-const socket = net.connect(chosen.socketPath);
-let pendingAsk = null; // { id, options: [{label}] }
-let streaming = false;
-
-const rl = readline.createInterface({ input: process.stdin, output: process.stdout, prompt: "› " });
-
-function send(frame) {
-  socket.write(`${JSON.stringify(frame)}\n`);
-}
-
-function showPrompt() {
-  rl.prompt(true);
-}
-
-function printAbove(text) {
-  // Keep the readline prompt at the bottom.
-  process.stdout.write(`\r\x1b[2K${text}\n`);
-  showPrompt();
-}
-
-socket.on("connect", () => {
-  process.stdout.write(`\x1b[2mAttached to session ${chosen.sessionId} (host pid ${chosen.pid}).\x1b[0m\n`);
-  renderTranscriptTail(chosen.sessionFile);
-  process.stdout.write("\x1b[2mType a prompt; /abort /steer <text> /detach /help.\x1b[0m\n");
-  showPrompt();
-});
-
-socket.on("error", (error) => {
-  process.stderr.write(`Connection failed: ${error.message}\n`);
-  process.exit(1);
-});
-
-socket.on("close", () => {
-  process.stdout.write("\nHost closed the connection.\n");
-  process.exit(0);
-});
-
-let buffer = "";
-socket.on("data", (data) => {
-  buffer += data.toString();
-  const lines = buffer.split("\n");
-  buffer = lines.pop() ?? "";
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    let frame;
-    try {
-      frame = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    handleFrame(frame);
-  }
-});
-
-function handleFrame(frame) {
-  switch (frame.type) {
-    case "host_hello":
-      return;
-    case "agent_start":
-      streaming = true;
-      printAbove("\x1b[2m[turn started]\x1b[0m");
-      return;
-    case "message_update": {
-      const event = frame.assistantMessageEvent;
-      if (event?.type === "text_delta" && typeof event.delta === "string") {
-        process.stdout.write(event.delta);
-      }
-      return;
-    }
-    case "message_end":
-      process.stdout.write("\n");
-      return;
-    case "tool_execution_start":
-      printAbove(`\x1b[2m[tool] ${frame.toolName ?? "?"}\x1b[0m`);
-      return;
-    case "agent_settled":
-      streaming = false;
-      printAbove(`\x1b[2m[turn ${frame.outcome?.kind ?? "settled"}]\x1b[0m`);
-      return;
-    case "extension_ui_request":
-      handleUiRequest(frame);
-      return;
-    case "host_engine_stderr":
-      printAbove(`\x1b[31m[engine] ${frame.text}\x1b[0m`);
-      return;
-    case "host_engine_exit":
-      process.stdout.write(`\nThe session runtime exited${frame.lastErrorNotify ? `: ${frame.lastErrorNotify}` : "."}\n`);
-      process.exit(frame.code === 0 ? 0 : 1);
-      return;
-    default:
-      return;
-  }
-}
-
-function handleUiRequest(frame) {
-  switch (frame.method) {
-    case "mypiAskUser": {
-      pendingAsk = { id: frame.id, options: frame.options ?? [] };
-      const lines = [`\x1b[36m? ${frame.question}\x1b[0m`];
-      pendingAsk.options.forEach((option, index) => {
-        lines.push(`  ${index + 1}. ${option.label}${option.description ? ` \x1b[2m— ${option.description}\x1b[0m` : ""}`);
-      });
-      lines.push("\x1b[2mAnswer with a number or free text (Enter alone skips).\x1b[0m");
-      printAbove(lines.join("\n"));
-      return;
-    }
-    case "dismiss":
-      if (pendingAsk?.id === frame.targetId) {
-        pendingAsk = null;
-        printAbove("\x1b[2m[question dismissed — answered on another surface]\x1b[0m");
-      }
-      return;
-    case "notify":
-      printAbove(`\x1b[33m[${frame.notifyType ?? "info"}] ${frame.message}\x1b[0m`);
-      return;
-    default:
-      return;
-  }
-}
-
-rl.on("line", (rawLine) => {
-  const line = rawLine.trim();
-
-  if (pendingAsk) {
-    const ask = pendingAsk;
-    pendingAsk = null;
-    if (!line) {
-      send({ type: "extension_ui_response", id: ask.id, cancelled: true });
-    } else {
-      const optionIndex = Number(line);
-      const option = Number.isInteger(optionIndex) ? ask.options[optionIndex - 1] : undefined;
-      send({ type: "extension_ui_response", id: ask.id, value: option ? option.label : line });
-    }
+  const showPrompt = () => rl.prompt(true);
+  const printAbove = (text) => {
+    process.stdout.write(`\r\x1b[2K${text}\n`);
     showPrompt();
-    return;
+  };
+
+  connection.onFrame((frame) => {
+    if (frame.sessionId && frame.sessionId !== chosen.sessionId) return;
+    switch (frame.type) {
+      case "attached":
+        process.stdout.write(`\x1b[2mAttached to session ${frame.sessionId}.\x1b[0m\n`);
+        renderTranscriptTail(frame.sessionFile);
+        process.stdout.write("\x1b[2mType a prompt; /abort /steer <text> /detach /help.\x1b[0m\n");
+        showPrompt();
+        return;
+      case "agent_start":
+        streaming = true;
+        printAbove("\x1b[2m[turn started]\x1b[0m");
+        return;
+      case "message_update": {
+        const event = frame.assistantMessageEvent;
+        if (event?.type === "text_delta" && typeof event.delta === "string") process.stdout.write(event.delta);
+        return;
+      }
+      case "message_end":
+        process.stdout.write("\n");
+        return;
+      case "tool_execution_start":
+        printAbove(`\x1b[2m[tool] ${frame.toolName ?? "?"}\x1b[0m`);
+        return;
+      case "agent_settled":
+        streaming = false;
+        printAbove(`\x1b[2m[turn ${frame.outcome?.kind ?? "settled"}]\x1b[0m`);
+        return;
+      case "extension_ui_request":
+        handleUiRequest(frame);
+        return;
+      case "session_stderr":
+        printAbove(`\x1b[31m[engine] ${frame.text}\x1b[0m`);
+        return;
+      case "session_released":
+        process.stdout.write("\nThe session was released to another surface.\n");
+        process.exit(0);
+        return;
+      case "session_exit":
+        process.stdout.write(`\nThe session runtime exited${frame.lastErrorNotify ? `: ${frame.lastErrorNotify}` : "."}\n`);
+        process.exit(frame.code === 0 ? 0 : 1);
+        return;
+      case "error":
+        printAbove(`\x1b[31m${frame.error}\x1b[0m`);
+        return;
+      default:
+        return;
+    }
+  });
+
+  function handleUiRequest(frame) {
+    switch (frame.method) {
+      case "mypiAskUser": {
+        pendingAsk = { id: frame.id, options: frame.options ?? [] };
+        const lines = [`\x1b[36m? ${frame.question}\x1b[0m`];
+        pendingAsk.options.forEach((option, index) => {
+          lines.push(`  ${index + 1}. ${option.label}${option.description ? ` \x1b[2m— ${option.description}\x1b[0m` : ""}`);
+        });
+        lines.push("\x1b[2mAnswer with a number or free text (Enter alone skips).\x1b[0m");
+        printAbove(lines.join("\n"));
+        return;
+      }
+      case "dismiss":
+        if (pendingAsk?.id === frame.targetId) {
+          pendingAsk = null;
+          printAbove("\x1b[2m[question dismissed — answered on another surface]\x1b[0m");
+        }
+        return;
+      case "notify":
+        printAbove(`\x1b[33m[${frame.notifyType ?? "info"}] ${frame.message}\x1b[0m`);
+        return;
+      default:
+        return;
+    }
   }
 
-  if (line === "/detach" || line === "/exit" || line === "/quit") {
-    process.stdout.write("Detached. The session keeps running.\n");
+  connection.socket.on("close", () => {
+    process.stdout.write("\nThe daemon closed the connection.\n");
     process.exit(0);
-  }
-  if (line === "/help") {
-    printAbove("/abort — stop the current turn; /steer <text> — steer it; /detach — leave the session running.");
-    return;
-  }
-  if (line === "/abort") {
-    send({ id: `a${Date.now()}`, type: "abort" });
-    showPrompt();
-    return;
-  }
-  if (line.startsWith("/steer ")) {
-    send({ id: `s${Date.now()}`, type: "steer", message: line.slice(7) });
-    showPrompt();
-    return;
-  }
-  if (!line) {
-    showPrompt();
-    return;
-  }
+  });
 
-  send({ id: `p${Date.now()}`, type: streaming ? "steer" : "prompt", message: line });
-  showPrompt();
-});
+  connection.send({ type: "attach", sessionId: chosen.sessionId, cwd: chosen.cwd });
 
-rl.on("SIGINT", () => {
-  process.stdout.write("\nDetached (Ctrl+C). The session keeps running; use /abort to stop a turn.\n");
-  process.exit(0);
-});
+  rl.on("line", (rawLine) => {
+    const line = rawLine.trim();
+    if (pendingAsk) {
+      const ask = pendingAsk;
+      pendingAsk = null;
+      if (!line) {
+        connection.send({ type: "extension_ui_response", sessionId: chosen.sessionId, id: ask.id, cancelled: true });
+      } else {
+        const optionIndex = Number(line);
+        const option = Number.isInteger(optionIndex) ? ask.options[optionIndex - 1] : undefined;
+        connection.send({
+          type: "extension_ui_response",
+          sessionId: chosen.sessionId,
+          id: ask.id,
+          value: option ? option.label : line,
+        });
+      }
+      showPrompt();
+      return;
+    }
 
-rl.on("close", () => {
-  process.exit(0);
-});
+    if (line === "/detach" || line === "/exit" || line === "/quit") {
+      connection.send({ type: "detach", sessionId: chosen.sessionId });
+      process.stdout.write("Detached. The session keeps running.\n");
+      process.exit(0);
+    }
+    if (line === "/help") {
+      printAbove("/abort — stop the current turn; /steer <text> — steer it; /detach — leave the session running.");
+      return;
+    }
+    if (line === "/abort") {
+      connection.send({ id: `a${Date.now()}`, type: "abort", sessionId: chosen.sessionId });
+      showPrompt();
+      return;
+    }
+    if (line.startsWith("/steer ")) {
+      connection.send({ id: `s${Date.now()}`, type: "steer", message: line.slice(7), sessionId: chosen.sessionId });
+      showPrompt();
+      return;
+    }
+    if (!line) {
+      showPrompt();
+      return;
+    }
+
+    connection.send({
+      id: `p${Date.now()}`,
+      type: streaming ? "steer" : "prompt",
+      message: line,
+      sessionId: chosen.sessionId,
+    });
+    showPrompt();
+  });
+
+  rl.on("SIGINT", () => {
+    process.stdout.write("\nDetached (Ctrl+C). The session keeps running; use /abort to stop a turn.\n");
+    process.exit(0);
+  });
+  rl.on("close", () => process.exit(0));
+}
