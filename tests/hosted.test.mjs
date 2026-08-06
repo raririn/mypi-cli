@@ -276,3 +276,58 @@ test("/exit shuts down the hosted TUI surface and leaves the session running", a
     await daemon.cleanup();
   }
 });
+
+test("a late-joining hosted TUI renders prompts parked before it bound its dialogs", async () => {
+  const daemon = await startDaemon({ mode: "ask-user" });
+  const net = (await import("node:net")).default;
+  try {
+    // Another surface starts a turn that parks on an ask_user prompt.
+    const other = net.connect(daemon.socketPath);
+    const otherFrames = [];
+    let otherBuf = "";
+    other.on("data", (data) => {
+      otherBuf += data.toString();
+      const lines = otherBuf.split("\n");
+      otherBuf = lines.pop() ?? "";
+      for (const line of lines) if (line.trim()) otherFrames.push(JSON.parse(line));
+    });
+    await new Promise((resolve) => other.on("connect", resolve));
+    other.write(`${JSON.stringify({ type: "hello", protocol: PROTOCOL, client: "gui" })}\n`);
+    other.write(`${JSON.stringify({ type: "attach", sessionId: "s1" })}\n`);
+    await waitFor(() => otherFrames.some((f) => f.type === "attached"), 5_000, "gui attached");
+    other.write(`${JSON.stringify({ id: "p1", type: "prompt", message: "go", sessionId: "s1" })}\n`);
+    await waitFor(
+      () => otherFrames.some((f) => f.type === "extension_ui_request" && f.method === "mypiAskUser"),
+      5_000,
+      "prompt parked",
+    );
+
+    // The TUI joins late: the daemon replays the prompt right after attach,
+    // well before the TUI binds its dialog context.
+    const host = await createHosted(daemon, { sessionId: "s1" });
+    const seen = [];
+    await host.session.bindExtensions({
+      uiContext: {
+        select: async (title, options) => {
+          seen.push({ title, options });
+          return options[0];
+        },
+        notify: () => {},
+        setStatus: () => {},
+        setWidget: () => {},
+        setTitle: () => {},
+        setEditorText: () => {},
+        confirm: async () => false,
+        input: async () => undefined,
+        editor: async () => undefined,
+      },
+    });
+    await waitFor(() => seen.length === 1, 5_000, "queued prompt rendered on bind");
+    assert.equal(seen[0].title, "Proceed?");
+
+    other.destroy();
+    await host.dispose();
+  } finally {
+    await daemon.cleanup();
+  }
+});

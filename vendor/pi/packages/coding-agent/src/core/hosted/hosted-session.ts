@@ -440,6 +440,13 @@ export class HostedAgentSession implements InteractiveSessionSurface {
 	private readonly stateView: AgentState;
 	private uiContext: ExtensionUIContext | undefined;
 	private shutdownHandler: (() => void) | undefined;
+	/**
+	 * UI requests that arrived before the TUI bound its dialog context — the
+	 * daemon replays outstanding prompts immediately after attach, which is
+	 * earlier than InteractiveMode calls bindExtensions. Drained on bind so a
+	 * late-joining TUI still renders questions parked by other surfaces.
+	 */
+	private pendingUiFrames: Frame[] = [];
 	/** Dialog abort controllers by request id; `true` marks external resolution. */
 	private readonly dialogs = new Map<string, { controller: AbortController; externallyResolved: boolean }>();
 	private turnAbortController = new AbortController();
@@ -564,10 +571,19 @@ export class HostedAgentSession implements InteractiveSessionSurface {
 	private handleFrame(frame: Frame): void {
 		const type = String(frame.type ?? "");
 		if (type === "extension_ui_request") {
+			if (!this.uiContext) {
+				if (frame.method === "dismiss") {
+					this.pendingUiFrames = this.pendingUiFrames.filter((queued) => queued.id !== frame.targetId);
+				} else {
+					this.pendingUiFrames.push(frame);
+				}
+				return;
+			}
 			void this.handleUiRequest(frame);
 			return;
 		}
 		if (type === "extension_ui_resolved") {
+			this.pendingUiFrames = this.pendingUiFrames.filter((queued) => queued.id !== frame.id);
 			const dialog = this.dialogs.get(String(frame.id));
 			if (dialog) {
 				dialog.externallyResolved = true;
@@ -852,6 +868,9 @@ export class HostedAgentSession implements InteractiveSessionSurface {
 			});
 		}
 		await this.refreshCommands();
+		const queued = this.pendingUiFrames;
+		this.pendingUiFrames = [];
+		for (const frame of queued) void this.handleUiRequest(frame);
 	}
 
 	async refreshCommands(): Promise<void> {
