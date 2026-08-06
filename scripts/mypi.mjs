@@ -110,12 +110,23 @@ if (internalCommand === "__remote-node-eval") {
   }
 
   const { runWebSearchCommand } = await import("./mypi-web-search-config.mjs");
+  let handledByWebSearch = false;
+  let webSearchFailed = false;
   try {
-    if (!(await runWebSearchCommand(process.argv.slice(2)))) {
-      await import("./pi-cli.mjs");
-    }
+    handledByWebSearch = await runWebSearchCommand(process.argv.slice(2));
   } catch (error) {
+    // Scope the web-search branding to web-search failures only — a CLI
+    // failure below is its own error and must not wear this label.
     process.stderr.write(`MyPi web search: ${error instanceof Error ? error.message : String(error)}\n`);
     process.exitCode = 1;
+    webSearchFailed = true;
+  }
+  if (!webSearchFailed && !handledByWebSearch) {
+    try {
+      await import("./pi-cli.mjs");
+    } catch (error) {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      process.exitCode = 1;
+    }
   }
 }

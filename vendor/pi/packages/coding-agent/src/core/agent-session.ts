@@ -1258,10 +1258,17 @@ export class AgentSession {
 			// Handle extension commands first (execute immediately, even during streaming)
 			// Extension commands manage their own LLM interaction via pi.sendMessage()
 			if (expandPromptTemplates && text.startsWith("/")) {
-				const handled = await this._tryExecuteExtensionCommand(text);
-				if (handled) {
-					// Extension command executed, no prompt to send
+				// Acknowledge dispatch as soon as the command is found, before the
+				// handler runs: handlers may park indefinitely on interactive
+				// dialogs, and an RPC client waiting on the prompt response would
+				// otherwise time out mid-dialog.
+				let dispatchAcked = false;
+				const handled = await this._tryExecuteExtensionCommand(text, () => {
+					dispatchAcked = true;
 					preflightResult?.(true);
+				});
+				if (handled) {
+					if (!dispatchAcked) preflightResult?.(true);
 					return;
 				}
 			}
@@ -1425,7 +1432,7 @@ export class AgentSession {
 	/**
 	 * Try to execute an extension command. Returns true if command was found and executed.
 	 */
-	private async _tryExecuteExtensionCommand(text: string): Promise<boolean> {
+	private async _tryExecuteExtensionCommand(text: string, onDispatch?: () => void): Promise<boolean> {
 		// Parse command name and args
 		const spaceIndex = text.indexOf(" ");
 		const commandName = spaceIndex === -1 ? text.slice(1) : text.slice(1, spaceIndex);
@@ -1433,6 +1440,7 @@ export class AgentSession {
 
 		const command = this._extensionRunner.getCommand(commandName);
 		if (!command) return false;
+		onDispatch?.();
 
 		// Get command context from extension runner (includes session control methods)
 		const ctx = this._extensionRunner.createCommandContext();

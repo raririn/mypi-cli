@@ -190,6 +190,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		string,
 		{ resolve: (value: RpcExtensionUIResponse) => void; reject: (error: Error) => void }
 	>();
+	let agentRunsStarted = 0;
 	const activeTrustedAskUserCalls = new Map<string, AskUserMetadata>();
 
 	// Shutdown request flag
@@ -484,6 +485,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		unsubscribeBackpressure?.();
 		activeTrustedAskUserCalls.clear();
 		unsubscribe = session.subscribe((event) => {
+			if (event.type === "agent_start") agentRunsStarted += 1;
 			if (event.type === "tool_execution_start" && event.toolName === "ask_user" && isTrustedMyPiAskUser(session)) {
 				const args = isRecord(event.args) ? event.args : {};
 				const metadata = parseAskUserMetadata({ toolCallId: event.toolCallId, ...args });
@@ -534,6 +536,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				// Start prompt handling immediately, but emit the authoritative response only after
 				// prompt preflight succeeds. Queued and immediately handled prompts also count as success.
 				let preflightSucceeded = false;
+				const runsBefore = agentRunsStarted;
 				void session
 					.prompt(command.message, {
 						images: command.images,
@@ -545,6 +548,15 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 								output(success(id, "prompt"));
 							}
 						},
+					})
+					.then(() => {
+						// Extension commands and input-hook-handled prompts can
+						// complete without ever starting an agent run; RPC clients
+						// gate the turn on agent_settled, which would never come.
+						// Emit a synthetic settle so the turn closes.
+						if (preflightSucceeded && agentRunsStarted === runsBefore && !session.isStreaming) {
+							output({ type: "agent_settled", outcome: { kind: "success" } } as Parameters<typeof output>[0]);
+						}
 					})
 					.catch((e) => {
 						if (!preflightSucceeded) {
