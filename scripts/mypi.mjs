@@ -101,6 +101,10 @@ if (internalCommand === "__remote-node-eval") {
       process.env.MYPI_TUI_HOSTED = "1";
       process.env.MYPI_DAEMON_SOCKET = socketPath;
       process.env.MYPI_DAEMON_PROTOCOL = String(MYPI_DAEMON_PROTOCOL);
+      // Start the engine spawn now, while the TUI child still has its own
+      // ~5s module import ahead of it; see mypi-preattach.mjs.
+      const { startPreattach } = await import("./mypi-preattach.mjs");
+      startPreattach({ socketPath, protocol: MYPI_DAEMON_PROTOCOL, argv: cliArgs });
     } catch (error) {
       delete process.env.MYPI_TUI_HOSTED;
       process.stderr.write(

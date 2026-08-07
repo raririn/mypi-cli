@@ -562,6 +562,29 @@ export default function guiControlExtension(pi: ExtensionAPI): void {
   pi.registerCommand('gui-control', commandDefinition)
   pi.registerCommand('gc', commandDefinition)
 
+  // An ownership refusal must survive the TUI's alternate-screen teardown and
+  // must not read as success: a launcher wrapper (CloudCLI runs
+  // `mypi --session <id> || mypi` in a terminal) can only offer its fallback
+  // when the refused process exits nonzero, and the reason is invisible
+  // unless it also lands on stderr.
+  function refuseAndShutdown(ctx: ExtensionContext, message: string): void {
+    ctx.ui.notify(message, 'error')
+    process.stderr.write(`${message}\n`)
+    process.exitCode = 1
+    setTimeout(() => ctx.shutdown(), 0)
+    // session_start can fire while the runtime is still being assembled, when
+    // the surface's shutdown bridge is not bound yet — the request above is
+    // then a silent no-op and the session would keep running *without* the
+    // writer lease. Enforce the refusal: if graceful shutdown has not exited
+    // the process shortly, leave the alternate screen (harmless when it was
+    // never entered), restore the cursor, and exit nonzero ourselves.
+    const enforce = setTimeout(() => {
+      process.stderr.write('\u001b[?1049l\u001b[?25h')
+      process.exit(1)
+    }, 1500)
+    enforce.unref?.()
+  }
+
   pi.on('session_before_switch', (event, ctx) => {
     if ((ctx.mode !== 'tui' && ctx.mode !== 'rpc') || !event.targetSessionFile) return
     const holder = readLiveForeignLease(event.targetSessionFile)
@@ -588,13 +611,10 @@ export default function guiControlExtension(pi: ExtensionAPI): void {
       if (holder) {
         const owner = holder.pid > 0 ? `${holder.surface} (pid ${holder.pid})` : 'another or unverifiable Pi writer'
         const liveHost = findLiveHostForSessionFile(agentDir, sessionFile)
-        ctx.ui.notify(
-          liveHost
-            ? `This session is live in a session host (${owner}). Take it over with \`mypi attach --take ${liveHost.sessionId}\` or mirror it with \`mypi attach ${liveHost.sessionId}\`.`
-            : `This session is owned by ${owner} and cannot be continued in TUI. Continue it in MyPi GUI, or close/release the other session first.`,
-          'error',
-        )
-        setTimeout(() => ctx.shutdown(), 0)
+        const message = liveHost
+          ? `This session is live in a session host (${owner}). Take it over with \`mypi attach --take ${liveHost.sessionId}\` or mirror it with \`mypi attach ${liveHost.sessionId}\`.`
+          : `This session is owned by ${owner} and cannot be continued in TUI. Continue it in MyPi GUI, or close/release the other session first.`
+        refuseAndShutdown(ctx, message)
         return
       }
       try {
@@ -602,13 +622,11 @@ export default function guiControlExtension(pi: ExtensionAPI): void {
           reuseExisting: event.reason === 'reload',
           surface: ctx.mode === 'rpc' ? 'mypi-gui-rpc' : 'pi-cli',
           onCompromised: (error) => {
-            ctx.ui.notify(`Session writer lock was compromised: ${error.message}. Shutting down to prevent concurrent writes.`, 'error')
-            setTimeout(() => ctx.shutdown(), 0)
+            refuseAndShutdown(ctx, `Session writer lock was compromised: ${error.message}. Shutting down to prevent concurrent writes.`)
           },
         })
       } catch (error) {
-        ctx.ui.notify(`Could not acquire the session writer lock: ${error instanceof Error ? error.message : String(error)}`, 'error')
-        setTimeout(() => ctx.shutdown(), 0)
+        refuseAndShutdown(ctx, `Could not acquire the session writer lock: ${error instanceof Error ? error.message : String(error)}`)
         return
       }
     }

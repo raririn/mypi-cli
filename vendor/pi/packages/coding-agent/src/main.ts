@@ -5,7 +5,7 @@
  * createAgentSession() options. The SDK does the heavy lifting.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { type ImageContent, modelsAreEqual } from "@earendil-works/pi-ai";
 import chalk from "chalk";
@@ -98,6 +98,33 @@ function reportDiagnostics(diagnostics: readonly AgentSessionRuntimeDiagnostic[]
 function isTruthyEnvFlag(value: string | undefined): boolean {
 	if (!value) return false;
 	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
+}
+
+/** How long to wait for the launcher's pre-attach handoff before creating a
+ * fresh session ourselves. The engine spawn it announces takes a few seconds;
+ * waiting is strictly faster than triggering a second spawn. */
+const PREATTACH_WAIT_MS = 15_000;
+const PREATTACH_POLL_MS = 100;
+
+/** Reads the session id the launcher pre-attached, if any (best-effort). */
+async function readPreattachedSessionId(): Promise<string | undefined> {
+	const handoffFile = process.env.MYPI_TUI_PREATTACH_FILE;
+	if (!handoffFile) return undefined;
+	delete process.env.MYPI_TUI_PREATTACH_FILE;
+	const deadline = Date.now() + PREATTACH_WAIT_MS;
+	while (Date.now() < deadline) {
+		if (existsSync(handoffFile)) {
+			try {
+				const payload = JSON.parse(readFileSync(handoffFile, "utf8")) as { sessionId?: string; failed?: boolean };
+				if (payload.failed) return undefined;
+				if (typeof payload.sessionId === "string" && payload.sessionId) return payload.sessionId;
+			} catch {
+				// Mid-rename read; poll again.
+			}
+		}
+		await new Promise((resolve) => setTimeout(resolve, PREATTACH_POLL_MS));
+	}
+	return undefined;
 }
 
 /**
@@ -826,11 +853,18 @@ export async function main(args: string[], options?: MainOptions) {
 				]);
 				const sessionFileOnDisk = sessionManager.getSessionFile();
 				const resumeExisting = !!sessionFileOnDisk && existsSync(sessionFileOnDisk);
+				// The launcher may have pre-attached a fresh session so the
+				// engine boots during this process's module import; adopt it
+				// instead of creating a second one (see mypi-preattach.mjs).
+				let hostedSessionId = resumeExisting ? sessionManager.getSessionId() : undefined;
+				if (!hostedSessionId) {
+					hostedSessionId = await readPreattachedSessionId();
+				}
 				let hostedRuntime: Awaited<ReturnType<typeof createHostedRuntime>> | undefined;
 				try {
 					hostedRuntime = await createHostedRuntime({
 						services: hostedServices,
-						sessionId: resumeExisting ? sessionManager.getSessionId() : undefined,
+						sessionId: hostedSessionId,
 						cwd: hostedCwd,
 						model: parsed.model,
 					});

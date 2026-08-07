@@ -1884,6 +1884,13 @@ export class InteractiveMode {
 			hasPendingMessages: () => this.session.pendingMessageCount > 0,
 			shutdown: () => {
 				this.shutdownRequested = true;
+				// An idle surface never reaches agent_settled (the only poll
+				// site for the flag), so honor the request now — otherwise an
+				// extension refusing the session at start (e.g. a foreign
+				// writer lease) strands a live TUI the user believes exited.
+				if (this.session.isIdle) {
+					void this.shutdown();
+				}
 			},
 			getContextUsage: () => this.session.getContextUsage(),
 			compact: (options) => {
@@ -3682,7 +3689,10 @@ export class InteractiveMode {
 			this.themeController.disableAutoSync();
 			await this.ui.terminal.drainInput(1000);
 			this.stop();
-			process.exit(0);
+			// Honor an exit code staged by an extension (e.g. an ownership
+			// refusal): launcher wrappers distinguish a refused resume from a
+			// normal quit only through a nonzero status.
+			process.exit(process.exitCode ?? 0);
 		}
 
 		// Interactive quit (Ctrl+D, Ctrl+C, /quit, extension shutdown()). Stop the
@@ -3701,7 +3711,10 @@ export class InteractiveMode {
 			process.stdout.write(`${chalk.dim("To resume this session:")} ${resumeCommand}\n`);
 		}
 
-		process.exit(0);
+		// Honor an exit code staged by an extension (e.g. an ownership
+		// refusal): launcher wrappers distinguish a refused resume from a
+		// normal quit only through a nonzero status.
+		process.exit(process.exitCode ?? 0);
 	}
 
 	private emergencyTerminalExit(): never {

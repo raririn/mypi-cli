@@ -153,26 +153,47 @@ export interface CreateHostedRuntimeOptions {
 	model?: string;
 }
 
+const HOSTED_ATTACH_RETRIES = 2;
+const HOSTED_ATTACH_RETRY_DELAY_MS = 750;
+
 /**
  * Dial the daemon the launcher pointed us at, attach (or create) the
  * session, seed the mirror, and hand back a runtime host the TUI can use.
+ *
+ * Connect/attach failures are retried a couple of times before giving up: a
+ * transient daemon state (restarting, the target session's engine mid-spawn
+ * or mid-turn) must not dump an eligible launch into the embedded runtime —
+ * for a daemon-owned session, embedded can only lose the writer-lease check
+ * afterwards, so riding out the blip here is strictly better.
  */
 export async function createHostedRuntime(options: CreateHostedRuntimeOptions): Promise<HostedRuntimeHost> {
 	const env = readHostedDaemonEnv();
 	if (!env) {
 		throw new Error("Hosted TUI requested without daemon coordinates (MYPI_DAEMON_SOCKET/MYPI_DAEMON_PROTOCOL).");
 	}
-	const client = new HostedDaemonClient(env);
-	await client.connect();
-	const attached = await client.attach({
-		sessionId: options.sessionId,
-		cwd: options.cwd,
-		model: options.model,
-	});
-	const mirror = new HostedStateMirror(attached.cwd);
-	mirror.sessionId = attached.sessionId;
-	mirror.sessionFile = attached.sessionFile ?? undefined;
-	const session = new HostedAgentSession({ client, services: options.services, mirror });
-	await session.seed();
-	return new HostedRuntimeHost(client, options.services, session);
+	let lastError: unknown;
+	for (let attempt = 0; attempt <= HOSTED_ATTACH_RETRIES; attempt += 1) {
+		if (attempt > 0) {
+			await new Promise((resolve) => setTimeout(resolve, HOSTED_ATTACH_RETRY_DELAY_MS * attempt));
+		}
+		const client = new HostedDaemonClient(env);
+		try {
+			await client.connect();
+			const attached = await client.attach({
+				sessionId: options.sessionId,
+				cwd: options.cwd,
+				model: options.model,
+			});
+			const mirror = new HostedStateMirror(attached.cwd);
+			mirror.sessionId = attached.sessionId;
+			mirror.sessionFile = attached.sessionFile ?? undefined;
+			const session = new HostedAgentSession({ client, services: options.services, mirror });
+			await session.seed();
+			return new HostedRuntimeHost(client, options.services, session);
+		} catch (error) {
+			client.close();
+			lastError = error;
+		}
+	}
+	throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
