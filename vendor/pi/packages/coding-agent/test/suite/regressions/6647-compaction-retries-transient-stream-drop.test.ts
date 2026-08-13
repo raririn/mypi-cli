@@ -30,6 +30,45 @@ describe("#6647 compaction retries transient summarization failures", () => {
 		};
 	}
 
+	function checkpointSummary(marker: string): string {
+		return `## Active Request
+- Primary goal: message to compact
+- Latest controlling user mandate: message to compact
+- Intended end state: Preserve retry behavior.
+
+## User Intent Ledger
+- [U1] message to compact
+
+## Governing Constraints
+- Preserve retry semantics.
+
+## Progress
+### Done
+- [x] ${marker}
+
+### In Progress
+- [ ] Continue.
+
+### Blocked
+- None.
+
+## Working Set
+- ${marker}
+
+## Decisions and Error History
+- None.
+
+## Open Loops
+- Continue.
+
+## Handoff
+- Last completed operation: ${marker}
+- Immediate next operation: Continue the active request.
+- Ordered follow-up work: Verify completion.
+- Continuation behavior: Act immediately.
+- Do not repeat, revert, publish, or claim: Do not invent completion.`;
+	}
+
 	function seedCompactableSession(harness: Harness): void {
 		harness.settingsManager.applyOverrides({ compaction: { keepRecentTokens: 1 } });
 		const now = Date.now();
@@ -91,7 +130,7 @@ describe("#6647 compaction retries transient summarization failures", () => {
 			usage: createUsage(10),
 		});
 		const success: AssistantMessage = {
-			...fauxAssistantMessage("recovered summary"),
+			...fauxAssistantMessage(checkpointSummary("recovered summary")),
 			usage: createUsage(10),
 		};
 		const getCallCount = useScriptedStreamFn(harness, [error("terminated"), error("terminated"), success]);

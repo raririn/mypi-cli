@@ -449,15 +449,15 @@ describe("ToolExecutionComponent parity", () => {
 			title: "SKILL.md",
 			path: join(process.cwd(), "attio", "SKILL.md"),
 			content: "---\nname: attio\ndescription: CRM helper\n---\n\n# Hidden skill instructions",
-			compact: "[skill] attio",
+			compact: "[read skill] attio",
 			hidden: "Hidden skill instructions",
 			absent: "read skill attio",
 		},
 		{
 			title: "AGENTS.md",
-			path: join(process.cwd(), ".pi", "AGENTS.md"),
+			path: join(process.cwd(), ".mypi", "AGENTS.md"),
 			content: "Hidden resource instructions",
-			compact: "read resource .pi/AGENTS.md",
+			compact: "read resource .mypi/AGENTS.md",
 			hidden: "Hidden resource instructions",
 			absent: undefined,
 		},
@@ -507,7 +507,11 @@ describe("ToolExecutionComponent parity", () => {
 	}
 
 	for (const scenario of [
-		{ title: "SKILL.md", path: join(process.cwd(), "attio", "SKILL.md"), compact: "[skill] attio:120-329" },
+		{
+			title: "SKILL.md",
+			path: join(process.cwd(), "attio", "SKILL.md"),
+			compact: "[read skill] attio:120-329",
+		},
 		{ title: "Pi documentation", path: getReadmePath(), compact: "read docs README.md:120-329" },
 	] as const) {
 		test(`shows the read line range in compact ${scenario.title} reads before the expand hint`, () => {

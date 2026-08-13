@@ -9,7 +9,7 @@ source-built [Pi](https://github.com/earendil-works/pi) runtime.
 - Sandboxed execution via `@anthropic-ai/sandbox-runtime`
 - Web search/fetch with Brave search API or curl
 - Atomic lifecycle and session lease (required by MyPi GUI)
-- Read-only and safe modes
+- Read-only mode and deprecated safe-mode compatibility
 - Chat mode
 - Agent-led session archiving and deletion
 - Keyword-triggered skill support

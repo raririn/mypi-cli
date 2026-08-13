@@ -505,6 +505,70 @@ describe("prepareCompaction with previous compaction", () => {
 	});
 });
 
+describe("raw user retention", () => {
+	it("summarizes user messages older than the five-message raw tail", () => {
+		const entries: SessionEntry[] = [];
+		const users: SessionMessageEntry[] = [];
+		for (let index = 1; index <= 7; index++) {
+			const user = createMessageEntry(createUserMessage(`user-${index}`));
+			users.push(user);
+			entries.push(user, createMessageEntry(createAssistantMessage(`assistant-${index}`)));
+		}
+
+		const preparation = prepareCompaction(entries, {
+			...DEFAULT_COMPACTION_SETTINGS,
+			keepRecentTokens: Number.MAX_SAFE_INTEGER,
+		});
+
+		expect(preparation).toBeDefined();
+		expect(preparation!.firstKeptEntryId).toBe(users[2].id);
+		expect(extractText(preparation!.messagesToSummarize)).toContain("user-1");
+		expect(extractText(preparation!.messagesToSummarize)).toContain("user-2");
+		expect(extractText(preparation!.messagesToSummarize)).not.toContain("user-3");
+		expect(preparation!.retainedUserMessages).toEqual([]);
+	});
+
+	it("reinjects at most five latest raw user messages after the checkpoint", () => {
+		const users = Array.from({ length: 6 }, (_, index) =>
+			createMessageEntry(createUserMessage(`raw-user-${index + 1}`)),
+		);
+		const keptAssistant = createMessageEntry(createAssistantMessage("kept assistant"));
+		const compaction = createCompactionEntry("checkpoint", users[5].id);
+		compaction.details = {
+			checkpointVersion: 2,
+			checkpointId: "checkpoint-five-users",
+			source: {
+				firstSummarizedEntryId: users[0].id,
+				lastSummarizedEntryId: users[4].id,
+				firstKeptEntryId: users[5].id,
+				sourceBranchHeadId: keptAssistant.id,
+			},
+			retainedUserMessages: users.slice(1, 5).map((entry) => ({ entryId: entry.id, message: entry.message })),
+			evidence: { userMessages: [], toolResults: [], readFiles: [], modifiedFiles: [] },
+			validation: {
+				valid: true,
+				gaps: [],
+				deterministicRepairs: [],
+				generationAttempts: 1,
+				method: "single-pass",
+			},
+			readFiles: [],
+			modifiedFiles: [],
+		};
+
+		const context = buildSessionContext([...users, keptAssistant, compaction]);
+		const rawUsers = context.messages.filter((message) => message.role === "user");
+
+		expect(rawUsers.map((message) => extractText([message]))).toEqual([
+			"raw-user-2",
+			"raw-user-3",
+			"raw-user-4",
+			"raw-user-5",
+			"raw-user-6",
+		]);
+	});
+});
+
 // ============================================================================
 // Integration tests with real session data
 // ============================================================================

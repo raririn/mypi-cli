@@ -20,7 +20,7 @@ Pi has two summarization mechanisms:
 | Compaction | Context exceeds threshold, or `/compact` | Summarize old messages to free up context |
 | Branch summarization | `/tree` navigation | Preserve context when switching branches |
 
-Both use the same structured summary format and track file operations cumulatively. Compaction and branch-summary requests use fresh routing session IDs and, where supported by the provider, disable prompt-cache writes because these one-off prompts are unlikely to be reused.
+Both track file operations cumulatively. Native MyPi compaction uses the durable checkpoint format below; branch summaries keep their smaller navigation-oriented format. Compaction and branch-summary requests use fresh routing session IDs and, where supported by the provider, disable prompt-cache writes because these one-off prompts are unlikely to be reused.
 
 ## Compaction
 
@@ -32,17 +32,19 @@ Auto-compaction triggers when:
 contextTokens > contextWindow - reserveTokens
 ```
 
-By default, `reserveTokens` is 16384 tokens (configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`). This leaves room for the LLM's response.
+By default, `reserveTokens` is 16384 tokens (configurable in MyPi settings under `~/.mypi/agent` or the effective `MYPI_AGENT_DIR`). This leaves room for the LLM's response.
 
 You can also trigger manually with `/compact [instructions]`, where optional instructions focus the summary.
 
 ### How It Works
 
-1. **Find cut point**: Walk backwards from newest message, accumulating token estimates until `keepRecentTokens` (default 20k, configurable in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`) is reached
-2. **Extract messages**: Collect messages from the previous kept boundary (or session start) up to the cut point
-3. **Generate summary**: Call LLM to summarize with structured format, passing the previous summary as iterative context when present
-4. **Append entry**: Save `CompactionEntry` with summary and `firstKeptEntryId`
-5. **Reload**: Session reloads, using summary + messages from `firstKeptEntryId` onwards
+1. **Find a safe cut point**: Walk backwards to the recent-token window, never separate a tool result from its call, and move the boundary forward when necessary so no more than five raw user messages survive.
+2. **Seal source state**: For persisted sessions, atomically copy the exact JSONL to private MyPi checkpoint storage with 0700/0600 permissions, SHA-256, byte count, source-branch head, and pending status.
+3. **Extract evidence**: Label summarized user messages chronologically as `U1`, `U2`, and so on; collect bounded tool diagnostics and cumulative read/modified files.
+4. **Synthesize**: Use one model call for ordinary inputs. Inputs above 45,000 estimated tokens use at most five pair-safe segment calls plus one assembly call, with user IDs remaining global across segments.
+5. **Verify**: Deterministically repair provable omissions, reject malformed order/duplicates/contradictory blockers/empty handoff, permit one bounded semantic repair, and fall back to an evidence-only checkpoint. Output-limit responses are invalid.
+6. **Gate and append**: For contexts of at least 5,000 tokens, require at least ten percent estimated context reduction. Append `CompactionEntry`, then mark the sealed backup applied.
+7. **Reload**: Rebuild input as the checkpoint, up to five latest original raw user messages, then the kept tail from `firstKeptEntryId` onward.
 
 ```
 Before compaction:
@@ -134,8 +136,15 @@ interface CompactionEntry<T = unknown> {
   details?: T;         // implementation-specific data
 }
 
-// Default compaction uses this for details (from compaction.ts):
-interface CompactionDetails {
+// Native MyPi compaction uses versioned checkpoint details:
+interface CompactionCheckpointDetails {
+  checkpointVersion: 2;
+  checkpointId: string;
+  backup?: { checkpointId: string; sessionId: string; sourceBranchHeadId: string; sha256: string; bytes: number };
+  source: { firstSummarizedEntryId?: string; lastSummarizedEntryId?: string; firstKeptEntryId: string; sourceBranchHeadId: string };
+  retainedUserMessages: Array<{ entryId: string; message: AgentMessage }>; // at most five total with kept users
+  evidence: CheckpointEvidence;
+  validation: CheckpointValidation;
   readFiles: string[];
   modifiedFiles: string[];
 }
@@ -143,7 +152,7 @@ interface CompactionDetails {
 
 Extensions can store any JSON-serializable data in `details`. The default compaction tracks file operations, but custom extension implementations can use their own structure. Generated and extension-provided summaries store their LLM `usage` when available so session totals include summarization work.
 
-See [`prepareCompaction()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) and [`compact()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) for the implementation. For direct programmatic summarization, `generateSummary()` returns the summary text and `generateSummaryWithUsage()` returns `{ text, usage }`.
+See [`prepareCompaction()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) and [`compact()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/compaction.ts) for the implementation. For direct programmatic summarization, `generateSummary()` returns the summary text and `generateSummaryWithUsage()` also returns usage, synthesis method, and generation-attempt count.
 
 ## Branch Summarization
 
@@ -214,14 +223,19 @@ See [`collectEntriesForBranchSummary()`](https://github.com/earendil-works/pi-mo
 
 ## Summary Format
 
-Both compaction and branch summarization use the same structured format:
+Native compaction uses this canonical checkpoint shape:
 
 ```markdown
-## Goal
-[What the user is trying to accomplish]
+## Active Request
+- Primary goal: ...
+- Latest controlling user mandate: ...
+- Intended end state: ...
 
-## Constraints & Preferences
-- [Requirements mentioned by user]
+## User Intent Ledger
+- [U1] ...
+
+## Governing Constraints
+- ...
 
 ## Progress
 ### Done
@@ -233,14 +247,21 @@ Both compaction and branch summarization use the same structured format:
 ### Blocked
 - [Issues, if any]
 
-## Key Decisions
-- **[Decision]**: [Rationale]
+## Working Set
+- path — state and caveats
 
-## Next Steps
-1. [What should happen next]
+## Decisions and Error History
+- **Decision or exact error** — rationale, resolution, and risk
 
-## Critical Context
-- [Data needed to continue]
+## Open Loops
+- [priority] ...
+
+## Handoff
+- Last completed operation: ...
+- Immediate next operation: ...
+- Ordered follow-up work: ...
+- Continuation behavior: ...
+- Do not repeat, revert, publish, or claim: ...
 
 <read-files>
 path/to/file1.ts
@@ -257,16 +278,18 @@ path/to/changed.ts
 Before summarization, messages are serialized to text via [`serializeConversation()`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/compaction/utils.ts):
 
 ```
-[User]: What they said
+[User U1]: What they said
 [Assistant thinking]: Internal reasoning
 [Assistant]: Response text
 [Assistant tool calls]: read(path="foo.ts"); edit(path="bar.ts", ...)
-[Tool result]: Output from tool
+[Tool result: read#call-id]: Output from tool
 ```
 
 This prevents the model from treating it as a conversation to continue.
 
-Tool results are truncated to 2000 characters during serialization. Content beyond that limit is replaced with a marker indicating how many characters were truncated. This keeps summarization requests within reasonable token budgets, since tool results (especially from `read` and `bash`) are typically the largest contributors to context size.
+Ordinary tool results retain 2,400 characters and errors retain 4,000, preserving both head and tail with a middle-omission marker. Tool calls, reasoning, names, call IDs, paths, commands, and exact diagnostic tails are independently bounded. A single user or assistant prose block is explicitly head/tail-bounded at 48,000 characters so it cannot overflow a segment by itself; the byte-exact sealed source remains available through bounded recall.
+
+The visible checkpoint begins with `This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.` and ends with the exact instruction to resume directly without acknowledging or recapping the summary. When a continuation-critical detail is absent, the built-in `recall_compacted_history` tool can read a bounded, integrity-checked slice of the sealed source branch by checkpoint ID. It cannot accept or expose a filesystem path or read sibling branches.
 
 ## Custom Summarization via Extensions
 
@@ -380,7 +403,7 @@ See `SessionBeforeTreeEvent` and `TreePreparation` in the types file.
 
 ## Settings
 
-Configure compaction in `~/.pi/agent/settings.json` or `<project-dir>/.pi/settings.json`:
+Configure compaction in the effective MyPi profile settings (`~/.mypi/agent/settings.json` by default):
 
 ```json
 {

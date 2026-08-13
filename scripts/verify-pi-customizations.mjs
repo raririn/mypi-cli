@@ -196,13 +196,47 @@ for (const fragment of [
   "await this._mypiEmitDispatchFailureIfUnsettled(settlementEpoch, err)",
   "kind: \"compaction-error\"",
   "outcome: this._mypiSettledOutcome",
-  "goalState?.schemaVersion === 2",
+  "goalState?.schemaVersion === 3",
   "goalState.workflow === \"goal\"",
   "goalState.status === \"active\"",
   'assistant.stopReason !== "error" && assistant.usage',
 ]) {
   if (!agentSession.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing a tracked agent-session customization (${fragment}).`);
+  }
+}
+
+const compaction = await readFile(join(packageRoot, "dist", "core", "compaction", "compaction.js"), "utf8");
+for (const fragment of ["## Active Request", "## User Intent Ledger", "## Governing Constraints", "## Working Set", "## Decisions and Error History", "## Open Loops", "## Handoff", "Immediate next operation", "yield-gate:deterministic-fallback"]) {
+  if (!compaction.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing the continuation-safe compaction checkpoint (${fragment}).`);
+  }
+}
+const checkpoint = await readFile(join(packageRoot, "dist", "core", "compaction", "checkpoint.js"), "utf8");
+for (const fragment of [
+  "This session is being continued from a previous conversation that ran out of context.",
+  "Continue the conversation from where it left off without asking the user any further questions.",
+  "compaction-backups",
+  "Compaction backup integrity check failed",
+  "recall_compacted_history",
+]) {
+  if (!checkpoint.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing durable compaction checkpoint behavior (${fragment}).`);
+  }
+}
+const compactionRecall = await readFile(
+  join(packageRoot, "dist", "extensions", "mypi", "compaction-recall.js"),
+  "utf8",
+);
+for (const fragment of ["recall_compacted_history", "current session branch", "sealed pre-compaction transcript"]) {
+  if (!compactionRecall.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing bounded compaction recall (${fragment}).`);
+  }
+}
+const compactionUtils = await readFile(join(packageRoot, "dist", "core", "compaction", "utils.js"), "utf8");
+for (const fragment of ["characters omitted from the middle", "Tool result: ${msg.toolName}#${msg.toolCallId}", "untrusted records"]) {
+  if (!compactionUtils.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing provenance-safe compaction serialization (${fragment}).`);
   }
 }
 

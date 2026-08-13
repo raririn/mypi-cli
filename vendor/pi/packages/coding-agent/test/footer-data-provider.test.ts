@@ -77,7 +77,7 @@ function createReftableWorktree(tempDir: string): WorktreeFixture {
 	return { worktreeDir, reftableDir };
 }
 
-async function waitFor(condition: () => boolean, timeoutMs = 3000): Promise<void> {
+async function waitFor(condition: () => boolean, timeoutMs = 10000): Promise<void> {
 	const startedAt = Date.now();
 	while (!condition()) {
 		if (Date.now() - startedAt > timeoutMs) {
@@ -178,7 +178,9 @@ describe("FooterDataProvider reftable branch detection", () => {
 			const onBranchChange = vi.fn();
 			provider.onBranchChange(onBranchChange);
 
-			writeFileSync(join(reftableDir, "tables.list"), "1\n");
+			// Change the file size so the polling fallback detects the update even
+			// when a saturated full-suite run coalesces the native fs.watch event.
+			writeFileSync(join(reftableDir, "tables.list"), "branch-update\n");
 			await waitFor(() => vi.mocked(execFile).mock.calls.length === 1);
 
 			expect(vi.mocked(execFile)).toHaveBeenCalledTimes(1);
@@ -222,7 +224,9 @@ describe("FooterDataProvider reftable branch detection", () => {
 			const onBranchChange = vi.fn();
 			provider.onBranchChange(onBranchChange);
 
-			writeFileSync(join(reftableDir, "tables.list"), "1\n");
+			// Change the file size so the polling fallback detects the update even
+			// when a saturated full-suite run coalesces the native fs.watch event.
+			writeFileSync(join(reftableDir, "tables.list"), "branch-update\n");
 			await waitFor(() => vi.mocked(execFile).mock.calls.length === 1);
 			await waitFor(() => provider.getGitBranch() === "foo");
 

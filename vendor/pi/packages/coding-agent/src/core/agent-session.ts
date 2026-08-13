@@ -53,6 +53,8 @@ import { formatNoApiKeyFoundMessage, formatNoModelSelectedMessage } from "./auth
 import { type BashResult, executeBashWithOperations } from "./bash-executor.ts";
 import {
 	type CompactionResult,
+	type CheckpointBackupRef,
+	backupSessionJsonl,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
 	compact,
@@ -60,6 +62,7 @@ import {
 	estimateTokens,
 	generateBranchSummary,
 	prepareCompaction,
+	markBackupStatus,
 	shouldCompact,
 } from "./compaction/index.ts";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.ts";
@@ -116,8 +119,7 @@ interface MyPiGoalState {
 	schemaVersion?: unknown;
 	workflow?: unknown;
 	status?: unknown;
-	lastCompleteItems?: unknown;
-	lastTotalItems?: unknown;
+	plan?: unknown;
 }
 
 interface MyPiCompactionContinuationInput {
@@ -155,7 +157,7 @@ function latestMyPiGoalState(branchEntries: unknown[]): MyPiGoalState | undefine
 			"type" in entry &&
 			entry.type === "custom" &&
 			"customType" in entry &&
-			entry.customType === "mypi-plan-goal" &&
+			(entry.customType === "mypi-goal" || entry.customType === "mypi-plan-goal") &&
 			"data" in entry &&
 			entry.data &&
 			typeof entry.data === "object"
@@ -175,14 +177,14 @@ export function mypiShouldContinueAfterThresholdCompaction(input: MyPiCompaction
 	if (input.reason !== "threshold" || input.willRetry || input.aborted || input.errorMessage) return false;
 	if (!input.compactionId || input.hasQueuedMessages || input.budgetRemaining < 1) return false;
 	const goalState = latestMyPiGoalState(input.branchEntries);
-	if (goalState?.schemaVersion === 2) {
-		if (goalState.workflow === "planning") return false;
+	if (goalState?.schemaVersion === 3) {
+		if (goalState.workflow === "planning" || goalState.workflow === "goal-planning") return false;
 		if (goalState.workflow === "goal") {
-			return (
-				goalState.status === "active" &&
-				typeof goalState.lastCompleteItems === "number" &&
-				typeof goalState.lastTotalItems === "number" &&
-				goalState.lastCompleteItems < goalState.lastTotalItems
+			const plan = goalState.plan && typeof goalState.plan === "object"
+				? goalState.plan as { items?: unknown }
+				: undefined;
+			return goalState.status === "active" && Array.isArray(plan?.items) && plan.items.some((item) =>
+				Boolean(item) && typeof item === "object" && "checked" in item && item.checked === false,
 			);
 		}
 	} else if (goalState !== undefined) {
@@ -1989,6 +1991,8 @@ export class AgentSession {
 		await this.abort();
 		this._compactionAbortController = new AbortController();
 		this._emit({ type: "compaction_start", reason: "manual" });
+		let checkpointBackup: CheckpointBackupRef | undefined;
+		let checkpointApplied = false;
 
 		try {
 			if (!this.model) {
@@ -2009,6 +2013,12 @@ export class AgentSession {
 				}
 				throw new Error("Nothing to compact (session too small)");
 			}
+			checkpointBackup = backupSessionJsonl({
+				sessionFile: this.sessionManager.getSessionFile(),
+				sessionId: this.sessionManager.getSessionId(),
+				sourceBranchHeadId: pathEntries.at(-1)?.id,
+			});
+			preparation.backup = checkpointBackup;
 
 			let extensionCompaction: CompactionResult | undefined;
 			let fromExtension = false;
@@ -2074,6 +2084,8 @@ export class AgentSession {
 			}
 
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
+			markBackupStatus(checkpointBackup, "applied");
+			checkpointApplied = true;
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
@@ -2123,6 +2135,7 @@ export class AgentSession {
 			});
 			throw error;
 		} finally {
+			if (checkpointBackup && !checkpointApplied) markBackupStatus(checkpointBackup, "failed");
 			this._compactionAbortController = undefined;
 			this._reconnectToAgent();
 		}
@@ -2251,6 +2264,8 @@ export class AgentSession {
 	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings();
 		let started = false;
+		let checkpointBackup: CheckpointBackupRef | undefined;
+		let checkpointApplied = false;
 
 		try {
 			if (!this.model) {
@@ -2272,6 +2287,12 @@ export class AgentSession {
 			if (!preparation) {
 				return false;
 			}
+			checkpointBackup = backupSessionJsonl({
+				sessionFile: this.sessionManager.getSessionFile(),
+				sessionId: this.sessionManager.getSessionId(),
+				sourceBranchHeadId: pathEntries.at(-1)?.id,
+			});
+			preparation.backup = checkpointBackup;
 
 			this._emit({ type: "compaction_start", reason });
 			this._autoCompactionAbortController = new AbortController();
@@ -2355,6 +2376,8 @@ export class AgentSession {
 			}
 
 			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
+			markBackupStatus(checkpointBackup, "applied");
+			checkpointApplied = true;
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
@@ -2437,6 +2460,7 @@ export class AgentSession {
 			}
 			return false;
 		} finally {
+			if (checkpointBackup && !checkpointApplied) markBackupStatus(checkpointBackup, "failed");
 			this._autoCompactionAbortController = undefined;
 		}
 	}

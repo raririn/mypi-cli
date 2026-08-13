@@ -31,9 +31,10 @@ The following provenance-verified read-only tools pass through:
 
 - Upstream-runtime built-in read, grep, find, and ls
 - MyPi built-in web_search and web_fetch
+- MyPi built-in recall_compacted_history for the active session's sealed checkpoint
 - MyPi @mypi/core ask_user for non-mutating clarification
 
-The web tools use constrained GET requests, block private/local targets, and treat returned pages as untrusted content. The question tool only waits for or records user direction. Custom-tool trust requires the expected package source and a manifest that resolves to the active entrypoint; a matching name alone carries no trust.
+The web tools use constrained GET requests, block private/local targets, and treat returned pages as untrusted content. Checkpoint recall is bounded to an integrity-checked source branch and treats non-user content as historical evidence. The question tool only waits for or records user direction. Custom-tool trust requires the expected package source and a manifest that resolves to the active entrypoint; a matching name alone carries no trust.
 
 Read-only here identifies verified implementations designed to preserve project state. Secret reads and outbound queries carry separate confidentiality implications. Safe mode gates execution and mutation; sandboxing and network isolation are separate controls.
 

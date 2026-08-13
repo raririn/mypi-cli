@@ -1,46 +1,44 @@
-import { complete, resetApiProviders } from "@earendil-works/pi-ai/compat";
-import { describe, expect, it, vi } from "vitest";
+import {
+	type Api,
+	type AssistantMessage,
+	createAssistantMessageEventStream,
+	type Model,
+	type ProviderStreams,
+	type SimpleStreamOptions,
+} from "@earendil-works/pi-ai";
+import { cloudflareStreams, resolveCloudflareModel } from "@earendil-works/pi-ai/providers/cloudflare-stream";
+import { describe, expect, it } from "vitest";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRegistry } from "../src/core/model-registry.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 
-const openAIState = vi.hoisted(() => ({ clientOptions: undefined as unknown }));
+type CapturedRequest = {
+	model: Model<Api>;
+	options?: SimpleStreamOptions;
+};
 
-vi.mock("openai", () => {
-	class FakeOpenAI {
-		constructor(options: unknown) {
-			openAIState.clientOptions = options;
-		}
-
-		chat = {
-			completions: {
-				create: () => {
-					const stream = {
-						async *[Symbol.asyncIterator]() {
-							yield {
-								choices: [{ delta: {}, finish_reason: "stop" }],
-								usage: { prompt_tokens: 1, completion_tokens: 1 },
-							};
-						},
-					};
-					const promise = Promise.resolve(stream) as Promise<typeof stream> & {
-						withResponse(): Promise<{
-							data: typeof stream;
-							response: { status: number; headers: Headers };
-						}>;
-					};
-					promise.withResponse = async () => ({
-						data: stream,
-						response: { status: 200, headers: new Headers() },
-					});
-					return promise;
-				},
-			},
-		};
-	}
-
-	return { default: FakeOpenAI };
-});
+function createDoneStream(model: Model<Api>) {
+	const stream = createAssistantMessageEventStream();
+	const message: AssistantMessage = {
+		role: "assistant",
+		content: [{ type: "text", text: "ok" }],
+		api: model.api,
+		provider: model.provider,
+		model: model.id,
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "stop",
+		timestamp: Date.now(),
+	};
+	stream.end(message);
+	return stream;
+}
 
 async function createCloudflareRuntime(): Promise<{ modelRuntime: ModelRuntime; modelRegistry: ModelRegistry }> {
 	const authStorage = AuthStorage.inMemory();
@@ -60,36 +58,59 @@ describe("ModelRegistry Cloudflare compat streaming", () => {
 	it("materializes the Cloudflare endpoint through ModelRuntime streaming", async () => {
 		const { modelRuntime } = await createCloudflareRuntime();
 		const model = modelRuntime.getModel("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.5");
+		const provider = modelRuntime.getProvider("cloudflare-ai-gateway");
 		expect(model).toBeDefined();
+		expect(provider).toBeDefined();
+		if (!model || !provider) throw new Error("Cloudflare provider fixture is unavailable");
 
-		resetApiProviders();
-		await modelRuntime.completeSimple(model!, { messages: [] });
-
-		const clientOptions = openAIState.clientOptions as {
-			baseURL?: string;
-			defaultHeaders?: Record<string, unknown>;
+		let captured: CapturedRequest | undefined;
+		const captureStreams: ProviderStreams = {
+			stream: (requestModel, _context, options) => {
+				captured = { model: requestModel, options: options as SimpleStreamOptions | undefined };
+				return createDoneStream(requestModel);
+			},
+			streamSimple: (requestModel, _context, options) => {
+				captured = { model: requestModel, options };
+				return createDoneStream(requestModel);
+			},
 		};
-		expect(clientOptions.baseURL).toBe("https://gateway.ai.cloudflare.com/v1/test-account/test-gateway/compat");
-		expect(clientOptions.defaultHeaders?.["cf-aig-authorization"]).toBe("Bearer test-token");
+		const wrapped = cloudflareStreams(captureStreams);
+		modelRuntime.registerNativeProvider({
+			id: provider.id,
+			name: provider.name,
+			auth: provider.auth,
+			getModels: () => provider.getModels(),
+			stream: wrapped.stream,
+			streamSimple: wrapped.streamSimple,
+		});
+
+		await modelRuntime.completeSimple(model, { messages: [] });
+
+		expect(captured?.model.baseUrl).toBe(
+			"https://gateway.ai.cloudflare.com/v1/test-account/test-gateway/compat",
+		);
+		expect(captured?.options?.headers?.["cf-aig-authorization"]).toBe("Bearer test-token");
 	});
 
 	it("materializes the Cloudflare endpoint after extension-style auth resolution", async () => {
 		const { modelRegistry } = await createCloudflareRuntime();
 		const model = modelRegistry.find("cloudflare-ai-gateway", "workers-ai/@cf/moonshotai/kimi-k2.5");
 		expect(model).toBeDefined();
+		if (!model) throw new Error("Cloudflare model fixture is unavailable");
 
-		resetApiProviders();
-		const auth = await modelRegistry.getApiKeyAndHeaders(model!);
-		expect(auth.ok).toBe(true);
+		const auth = await modelRegistry.getApiKeyAndHeaders(model);
+		expect(auth).toEqual({
+			ok: true,
+			headers: { "cf-aig-authorization": "Bearer test-token" },
+			env: {
+				CLOUDFLARE_ACCOUNT_ID: "test-account",
+				CLOUDFLARE_GATEWAY_ID: "test-gateway",
+			},
+		});
 		if (!auth.ok) throw new Error(auth.error);
 
-		await complete(model!, { messages: [] }, auth);
-
-		const clientOptions = openAIState.clientOptions as {
-			baseURL?: string;
-			defaultHeaders?: Record<string, unknown>;
-		};
-		expect(clientOptions.baseURL).toBe("https://gateway.ai.cloudflare.com/v1/test-account/test-gateway/compat");
-		expect(clientOptions.defaultHeaders?.["cf-aig-authorization"]).toBe("Bearer test-token");
+		expect(resolveCloudflareModel(model, auth.env).baseUrl).toBe(
+			"https://gateway.ai.cloudflare.com/v1/test-account/test-gateway/compat",
+		);
 	});
 });

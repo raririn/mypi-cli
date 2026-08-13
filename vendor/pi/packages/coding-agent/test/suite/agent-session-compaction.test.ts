@@ -24,6 +24,45 @@ function createUsage(totalTokens: number) {
 	};
 }
 
+function checkpointSummary(marker: string): string {
+	return `## Active Request
+- Primary goal: message to compact
+- Latest controlling user mandate: message to compact
+- Intended end state: Preserve the tested compaction lifecycle.
+
+## User Intent Ledger
+- [U1] message to compact
+
+## Governing Constraints
+- Preserve runtime behavior under test.
+
+## Progress
+### Done
+- [x] ${marker}
+
+### In Progress
+- [ ] Continue the active request.
+
+### Blocked
+- None.
+
+## Working Set
+- ${marker}
+
+## Decisions and Error History
+- None.
+
+## Open Loops
+- Continue.
+
+## Handoff
+- Last completed operation: ${marker}
+- Immediate next operation: Continue the active request.
+- Ordered follow-up work: Verify completion.
+- Continuation behavior: Act immediately.
+- Do not repeat, revert, publish, or claim: Do not invent completion.`;
+}
+
 function createAssistant(
 	harness: Harness,
 	options: {
@@ -54,7 +93,7 @@ function useSummaryStreamFn(harness: Harness, summary: string): () => number {
 		const stream = createAssistantMessageEventStream();
 		queueMicrotask(() => {
 			const message: AssistantMessage = {
-				...fauxAssistantMessage(summary),
+				...fauxAssistantMessage(checkpointSummary(summary)),
 				api: model.api,
 				provider: model.provider,
 				model: model.id,
@@ -200,7 +239,7 @@ describe("AgentSession compaction characterization", () => {
 			(_context, options) => {
 				expect(options?.apiKey).toBeUndefined();
 				expect(options?.headers).toEqual({ Authorization: "Bearer ambient-token" });
-				return fauxAssistantMessage("summary with bearer auth");
+				return fauxAssistantMessage(checkpointSummary("summary with bearer auth"));
 			},
 		]);
 

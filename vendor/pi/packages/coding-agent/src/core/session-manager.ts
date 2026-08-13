@@ -26,6 +26,7 @@ import {
 	createCompactionSummaryMessage,
 	createCustomMessage,
 } from "./messages.ts";
+import { isCompactionCheckpointDetails } from "./compaction/checkpoint.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
 
@@ -402,7 +403,9 @@ export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage
 		return [createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp)];
 	}
 	if (entry.type === "compaction") {
-		return [createCompactionSummaryMessage(entry.summary, entry.tokensBefore, entry.timestamp)];
+		const summary = createCompactionSummaryMessage(entry.summary, entry.tokensBefore, entry.timestamp);
+		if (!isCompactionCheckpointDetails(entry.details)) return [summary];
+		return [summary, ...entry.details.retainedUserMessages.map((retained) => retained.message)];
 	}
 	return [];
 }

@@ -85,3 +85,24 @@ test("trusts web reads only at the exact runtime-owned MyPi core entrypoint", ()
   }];
   assert.equal(isTrustedWebReadTool(pi, "web_search"), false);
 });
+
+test("trusts sealed compaction recall only as a runtime-owned session read", () => {
+  const sourceInfo = {
+    path: "<builtin:mypi-core>",
+    source: "builtin",
+    scope: "temporary" as const,
+    origin: "top-level" as const,
+  };
+  const pi = {
+    getAllTools: () => [{ name: "recall_compacted_history", sourceInfo }],
+  } as unknown as ExtensionAPI;
+
+  assert.equal(isTrustedReadOnlyTool(pi, "recall_compacted_history"), true);
+  assert.equal(isTrustedWebReadTool(pi, "recall_compacted_history"), false);
+
+  (pi.getAllTools as () => any[]) = () => [{
+    name: "recall_compacted_history",
+    sourceInfo: { ...sourceInfo, path: "<inline:mypi-core>" },
+  }];
+  assert.equal(isTrustedReadOnlyTool(pi, "recall_compacted_history"), false);
+});

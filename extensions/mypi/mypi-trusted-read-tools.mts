@@ -4,6 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const BUILTIN_READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const MYPI_WEB_READ_TOOLS = new Set(["web_search", "web_fetch"]);
+const MYPI_SESSION_READ_TOOLS = new Set(["recall_compacted_history"]);
 const MYPI_BUILTIN_CORE_PATH = "<builtin:mypi-core>";
 const MYPI_CORE_PACKAGE_NAME = "@mypi/core";
 const MYPI_USER_INTERACTION_TOOLS = new Set(["ask_user"]);
@@ -77,5 +78,8 @@ export function isTrustedReadOnlyTool(pi: ExtensionAPI, toolName: string): boole
   const tool = pi.getAllTools().find((candidate) => candidate.name === toolName);
   if (!tool) return false;
   if (BUILTIN_READ_TOOLS.has(toolName)) return tool.sourceInfo.source === "builtin";
+  if (MYPI_SESSION_READ_TOOLS.has(toolName)) {
+    return tool.sourceInfo.source === "builtin" && tool.sourceInfo.path === MYPI_BUILTIN_CORE_PATH;
+  }
   return isTrustedWebReadTool(pi, toolName) || isTrustedUserInteractionTool(pi, toolName);
 }

@@ -95,7 +95,7 @@ describe("regression #3592: no-builtin-tools keeps extension tools enabled", () 
 		session.dispose();
 	});
 
-	it("propagates noTools through service-based session creation", async () => {
+	it("propagates noTools while retaining bundled MyPi extension tools", async () => {
 		const settingsManager = SettingsManager.create(tempDir, agentDir);
 		const sessionManager = SessionManager.inMemory(tempDir);
 		const services = await createAgentSessionServices({
@@ -111,9 +111,11 @@ describe("regression #3592: no-builtin-tools keeps extension tools enabled", () 
 			noTools: "builtin",
 		});
 
-		expect(session.getActiveToolNames()).toEqual([]);
-		expect(session.systemPrompt).toContain("Available tools:\n(none)");
+		expect(session.getActiveToolNames()).toEqual(
+			expect.arrayContaining(["get_goal", "recall_compacted_history"]),
+		);
 		expect(session.systemPrompt).not.toContain("- read:");
+		expect(session.systemPrompt).toContain("- recall_compacted_history:");
 		session.dispose();
 	});
 });
