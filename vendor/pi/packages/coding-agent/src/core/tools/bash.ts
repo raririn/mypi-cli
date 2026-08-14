@@ -16,6 +16,7 @@ import {
 	untrackDetachedChildPid,
 } from "../../utils/shell.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
+import { isSandboxActive } from "../mypi-exec-mode.ts";
 import { createMyPiSandboxProcessLaunch } from "../mypi-sandbox.ts";
 import { OutputAccumulator } from "./output-accumulator.ts";
 import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
@@ -95,7 +96,10 @@ export function createLocalBashOperations(options?: { shellPath?: string }): Bas
 			}
 
 			const commandFromStdin = shellConfig.commandTransport === "stdin";
-			const sandboxLaunch = createMyPiSandboxProcessLaunch(command, cwd, shellConfig.shell, env ?? getShellEnv());
+			// Sandboxing is a per-session mode; only wrap when this session enabled it.
+			const sandboxLaunch = isSandboxActive()
+				? createMyPiSandboxProcessLaunch(command, cwd, shellConfig.shell, env ?? getShellEnv())
+				: undefined;
 			const child = spawn(
 				sandboxLaunch?.command ?? shellConfig.shell,
 				sandboxLaunch?.args ?? (commandFromStdin ? shellConfig.args : [...shellConfig.args, command]),

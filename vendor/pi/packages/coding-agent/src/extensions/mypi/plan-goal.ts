@@ -308,9 +308,10 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 		}
 		if (state.workflow === "goal") {
 			const snapshot = currentSnapshot()!;
-			const reason = snapshot.reason ? ` · ${snapshot.reason}` : "";
-			const turns = snapshot.mode === "unbounded" ? `YOLO · ${snapshot.turnsUsed} turns` : `${snapshot.turnsUsed}/${snapshot.turnBudget} · ${snapshot.mode}`;
-			ctx.ui.setStatus("plan-goal", `GOAL ${snapshot.status.toUpperCase()}${reason} · ${turns} · ${snapshot.checkedItems}/${snapshot.totalItems} · ${snapshot.tokensUsed} tok · ${snapshot.timeUsedSeconds}s`);
+			// Compact footer line: status, checklist, and turns only. Reason,
+			// token, and time detail live in the GUI Goal dock and the snapshot.
+			const turns = snapshot.mode === "unbounded" ? `${snapshot.turnsUsed} turns` : `${snapshot.turnsUsed}/${snapshot.turnBudget}`;
+			ctx.ui.setStatus("plan-goal", `GOAL ${snapshot.status.toUpperCase()} · ${snapshot.checkedItems}/${snapshot.totalItems} · ${turns}`);
 			if (ctx.mode === "rpc") ctx.ui.setStatus(GOAL_SNAPSHOT_STATUS_KEY, JSON.stringify(snapshot));
 			pi.events.emit("mypi:goal-snapshot", { snapshot });
 			return;

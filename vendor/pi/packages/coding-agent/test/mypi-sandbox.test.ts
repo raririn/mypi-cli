@@ -10,6 +10,12 @@ import {
 	resolveMyPiSandboxPreference,
 	saveMyPiSandboxPreference,
 } from "../src/core/mypi-sandbox.ts";
+import {
+	__resetExecutionModeForTest,
+	getExecutionMode,
+	isSandboxActive,
+	setExecutionMode,
+} from "../src/core/mypi-exec-mode.ts";
 import { createLocalBashOperations } from "../src/core/tools/bash.ts";
 
 describe("MyPi shell sandbox", () => {
@@ -17,10 +23,34 @@ describe("MyPi shell sandbox", () => {
 
 	beforeEach(() => {
 		agentDir = mkdtempSync(join(tmpdir(), "mypi-sandbox-agent-"));
+		__resetExecutionModeForTest();
 	});
 
 	afterEach(() => {
 		rmSync(agentDir, { recursive: true, force: true });
+		__resetExecutionModeForTest();
+	});
+
+	it("gates execution on the per-session mode, seeded from the global preference", () => {
+		const previousAgentDir = process.env.MYPI_CODING_AGENT_DIR;
+		try {
+			process.env.MYPI_CODING_AGENT_DIR = agentDir;
+			// Seeds from the global preference on first read.
+			saveMyPiSandboxPreference(true, agentDir);
+			expect(isSandboxActive()).toBe(true);
+			expect(getExecutionMode()).toBe("sandbox");
+
+			// The per-session hotkey/command overrides without rewriting the file.
+			setExecutionMode("safe");
+			expect(isSandboxActive()).toBe(false);
+			expect(resolveMyPiSandboxPreference(agentDir).enabled).toBe(true);
+
+			setExecutionMode("off");
+			expect(isSandboxActive()).toBe(false);
+		} finally {
+			if (previousAgentDir === undefined) delete process.env.MYPI_CODING_AGENT_DIR;
+			else process.env.MYPI_CODING_AGENT_DIR = previousAgentDir;
+		}
 	});
 
 	it("defaults off and persists a strict versioned global preference", () => {
@@ -99,11 +129,7 @@ describe("MyPi shell sandbox", () => {
 		expect(pruned).toEqual({ PATH: "/usr/bin", VISIBLE_SETTING: "kept" });
 	});
 
-	it("selects the helper only when the global preference is enabled", () => {
-		expect(
-			createMyPiSandboxProcessLaunch("echo off", "/tmp/workspace", "/bin/bash", { PATH: "/usr/bin" }, { agentDir }),
-		).toBeUndefined();
-
+	it("builds the helper launch with a pruned environment and workspace-scoped policy", () => {
 		saveMyPiSandboxPreference(true, agentDir);
 		const launch = createMyPiSandboxProcessLaunch(
 			"echo on",

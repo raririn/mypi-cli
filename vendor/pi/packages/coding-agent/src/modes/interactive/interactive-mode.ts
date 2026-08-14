@@ -357,6 +357,8 @@ export class InteractiveMode {
 	private pendingClipboardImages: Array<{ marker: string; image: ImageContent }> = [];
 	private clipboardImageSequence = 0;
 	private activeStatusIndicator: StatusIndicator | undefined = undefined;
+	/** Which cycle shift+tab drives; toggled by shift+ctrl+s or `/shift-tab`. */
+	private shiftTabTarget: "thinking" | "safety" = "thinking";
 	private readonly idleStatus = new IdleStatus();
 	private workingMessage: string | undefined = undefined;
 	private workingVisible = true;
@@ -496,6 +498,7 @@ export class InteractiveMode {
 		this.footerDataProvider = new FooterDataProvider(this.sessionManager.getCwd());
 		this.footer = new FooterComponent(this.session, this.footerDataProvider);
 		this.footer.setAutoCompactEnabled(this.session.autoCompactionEnabled);
+		this.footer.setShiftTabTarget(this.shiftTabTarget);
 
 		// Load hide thinking block setting
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
@@ -759,7 +762,8 @@ export class InteractiveMode {
 				hint("app.exit", "to exit (empty)"),
 				hint("app.suspend", "to suspend"),
 				keyHint("tui.editor.deleteToLineEnd", "to delete to end"),
-				hint("app.thinking.cycle", "to cycle thinking level"),
+				hint("app.thinking.cycle", "to cycle thinking/safety"),
+				hint("app.cycleTarget.toggle", "to switch what shift+tab cycles"),
 				rawKeyHint(`${keyText("app.model.cycleForward")}/${keyText("app.model.cycleBackward")}`, "to cycle models"),
 				hint("app.model.select", "to select model"),
 				hint("app.tools.expand", "to expand tools"),
@@ -2689,7 +2693,8 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.clear", () => this.handleCtrlC());
 		this.defaultEditor.onCtrlD = () => this.handleCtrlD();
 		this.defaultEditor.onAction("app.suspend", () => this.handleCtrlZ());
-		this.defaultEditor.onAction("app.thinking.cycle", () => this.cycleThinkingLevel());
+		this.defaultEditor.onAction("app.thinking.cycle", () => this.cycleShiftTabTarget());
+		this.defaultEditor.onAction("app.cycleTarget.toggle", () => this.toggleShiftTabTarget());
 		this.defaultEditor.onAction("app.model.cycleForward", () => this.cycleModel("forward"));
 		this.defaultEditor.onAction("app.model.cycleBackward", () => this.cycleModel("backward"));
 
@@ -2781,6 +2786,18 @@ export class InteractiveMode {
 			if (text === "/settings") {
 				this.showSettingsSelector();
 				this.editor.setText("");
+				return;
+			}
+			if (text === "/shift-tab" || text.startsWith("/shift-tab ")) {
+				const arg = text.slice("/shift-tab".length).trim().toLowerCase();
+				this.editor.setText("");
+				if (arg === "thinking" || arg === "safety") {
+					this.setShiftTabTarget(arg);
+				} else if (!arg) {
+					this.toggleShiftTabTarget();
+				} else {
+					this.showWarning("Usage: /shift-tab [thinking|safety]");
+				}
 				return;
 			}
 			if (text === "/scoped-models") {
@@ -3908,6 +3925,47 @@ export class InteractiveMode {
 			this.editor.borderColor = theme.getThinkingBorderColor(level);
 		}
 		this.ui.requestRender();
+	}
+
+	private cycleExecutionMode(): void {
+		// Run the `/mode` command in the session so the per-session execution mode
+		// cycles and the footer indicator refreshes. Routing it as a command (not
+		// a direct call) keeps it working when the engine is a hosted daemon child.
+		// After it settles, show the new mode as a single transient status line
+		// (replaced on the next cycle), matching the thinking-level cycle.
+		void this.session
+			.prompt("/mode")
+			.then(() => {
+				const status = this.footerDataProvider.getExtensionStatuses().get("exec-mode");
+				if (status) this.showStatus(status);
+			})
+			.catch(() => {});
+	}
+
+	/** shift+tab: cycle whichever target is active (thinking level or safety mode). */
+	private cycleShiftTabTarget(): void {
+		// On a model without reasoning, thinking isn't cyclable; fall back to safety
+		// so shift+tab always does something useful.
+		const canThink = this.session.model?.reasoning ?? false;
+		if (this.shiftTabTarget === "safety" || !canThink) this.cycleExecutionMode();
+		else this.cycleThinkingLevel();
+	}
+
+	/** shift+ctrl+s / `/shift-tab`: switch what shift+tab cycles. */
+	private setShiftTabTarget(target: "thinking" | "safety"): void {
+		this.shiftTabTarget = target;
+		this.footer.setShiftTabTarget(target);
+		this.footer.invalidate();
+		this.ui.requestRender();
+		this.showStatus(
+			target === "safety"
+				? "shift+tab now cycles safety mode (Sandbox Off / On / Safe Mode)"
+				: "shift+tab now cycles thinking level",
+		);
+	}
+
+	private toggleShiftTabTarget(): void {
+		this.setShiftTabTarget(this.shiftTabTarget === "safety" ? "thinking" : "safety");
 	}
 
 	private cycleThinkingLevel(): void {
@@ -5872,7 +5930,7 @@ export class InteractiveMode {
 			if (id.startsWith("tui.select.")) return "TUI selection";
 			if (id.startsWith("app.session.")) return "Sessions";
 			if (id.startsWith("app.models.")) return "Scoped models selector";
-			if (id.startsWith("app.model.") || id.startsWith("app.thinking.")) {
+			if (id.startsWith("app.model.") || id.startsWith("app.thinking.") || id.startsWith("app.cycleTarget.")) {
 				return "Models and thinking";
 			}
 			if (id.startsWith("app.message.") || id.startsWith("app.tools.")) {

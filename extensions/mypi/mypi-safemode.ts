@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isSafeModeActive, setExecutionMode } from "@earendil-works/pi-coding-agent";
 import { isTrustedReadOnlyTool } from "./mypi-trusted-read-tools.mts";
 const OPTIONS = ["Approve", "Deny and interrupt", "Always approve (turn safe mode off)"];
 
@@ -116,13 +117,10 @@ function describeCall(toolName: string, input: Record<string, unknown>): string 
 }
 
 export default function safemodeExtension(pi: ExtensionAPI) {
-  // Intentionally process-local and off by default. A reload/new MyPi process resets it.
-  let enabled = false;
-
-  const updateStatus = (ctx: { ui: { setStatus(key: string, text?: string): void } }) => {
-    ctx.ui.setStatus("safemode", enabled ? "SAFE MODE" : undefined);
-  };
-
+  // Safe Mode is one of the three per-session execution modes owned by the
+  // runtime (Sandbox Off / Sandbox On / Safe Mode); this extension is the
+  // /safemode alias plus the approval gate. The runtime's mode controller owns
+  // the footer indicator, so this extension no longer sets its own status.
   const handleSafemodeCommand = async (args: string, ctx: ExtensionContext) => {
     const option = args.trim().toLowerCase();
     if (option === "--help") {
@@ -130,16 +128,20 @@ export default function safemodeExtension(pi: ExtensionAPI) {
       return;
     }
     if (!option) {
-      ctx.ui.notify(`Safe mode is ${enabled ? "on" : "off"}. Usage: /safemode [on|off]`, "info");
+      ctx.ui.notify(`Safe mode is ${isSafeModeActive() ? "on" : "off"}. Usage: /safemode [on|off]`, "info");
       return;
     }
     if (option !== "on" && option !== "off") {
       ctx.ui.notify("Usage: /safemode [on|off]", "warning");
       return;
     }
-    enabled = option === "on";
-    updateStatus(ctx);
-    ctx.ui.notify(`Safe mode ${enabled ? "enabled" : "disabled"}.`, enabled ? "warning" : "info");
+    if (option === "on") {
+      setExecutionMode("safe");
+    } else if (isSafeModeActive()) {
+      // Leaving Safe Mode returns to normal; it never forces a sandbox off.
+      setExecutionMode("off");
+    }
+    ctx.ui.notify(`Safe mode ${option === "on" ? "enabled" : "disabled"}.`, option === "on" ? "warning" : "info");
   };
 
   pi.registerCommand("safemode", {
@@ -160,10 +162,8 @@ export default function safemodeExtension(pi: ExtensionAPI) {
     return { action: "handled" };
   });
 
-  pi.on("session_start", (_event, ctx) => updateStatus(ctx));
-
   pi.on("tool_call", async (event, ctx) => {
-    if (!enabled || isTrustedReadOnlyTool(pi, event.toolName)) return undefined;
+    if (!isSafeModeActive() || isTrustedReadOnlyTool(pi, event.toolName)) return undefined;
 
     if (!ctx.hasUI) {
       ctx.abort();
@@ -178,8 +178,7 @@ export default function safemodeExtension(pi: ExtensionAPI) {
 
     if (choice === OPTIONS[0]) return undefined;
     if (choice === OPTIONS[2]) {
-      enabled = false;
-      updateStatus(ctx);
+      setExecutionMode("off");
       ctx.ui.notify("Safe mode disabled; this tool call was approved.", "warning");
       return undefined;
     }
@@ -190,7 +189,7 @@ export default function safemodeExtension(pi: ExtensionAPI) {
 
   // Direct !/!! shell commands bypass tool_call, so gate those separately.
   pi.on("user_bash", async (event, ctx) => {
-    if (!enabled) return undefined;
+    if (!isSafeModeActive()) return undefined;
     if (!ctx.hasUI) {
       return { result: { output: "Safe mode blocked shell execution: no approval UI is available", exitCode: 126, cancelled: true, truncated: false } };
     }
@@ -201,8 +200,7 @@ export default function safemodeExtension(pi: ExtensionAPI) {
     finally { pi.events.emit("mypi:approval-state", { waiting: false, toolName: "user_bash" }); }
     if (choice === OPTIONS[0]) return undefined;
     if (choice === OPTIONS[2]) {
-      enabled = false;
-      updateStatus(ctx);
+      setExecutionMode("off");
       ctx.ui.notify("Safe mode disabled; this shell command was approved.", "warning");
       return undefined;
     }
