@@ -39,6 +39,12 @@ export class HostedRuntimeHost implements InteractiveRuntimeHost {
 		});
 	}
 
+	/** The running daemon's product version (from its handshake), or null on an
+	 *  older daemon that predates version reporting. */
+	get daemonVersion(): string | null {
+		return this.client.daemonVersion;
+	}
+
 	setRebindSession(rebindSession?: (session: InteractiveSessionSurface) => Promise<void>): void {
 		this.rebindSession = rebindSession;
 	}

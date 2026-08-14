@@ -222,6 +222,7 @@ function copyRuntimeLaunchers() {
     "mypi-host.mjs",
     "mypi-attach.mjs",
     "mypi-daemon.mjs",
+    "mypi-daemon-control.mjs",
     "mypi-daemon-discovery.mjs",
     "mypi-preattach.mjs",
     "mypi-proxy.mjs",
@@ -391,6 +392,7 @@ function assertCleanTarball(entries) {
   assert(entries.includes("package/scripts/mypi-host.mjs"), "npm tarball is missing the session host");
   assert(entries.includes("package/scripts/mypi-attach.mjs"), "npm tarball is missing the attach client");
   assert(entries.includes("package/scripts/mypi-daemon.mjs"), "npm tarball is missing the session daemon");
+  assert(entries.includes("package/scripts/mypi-daemon-control.mjs"), "npm tarball is missing daemon control (mypi daemon restart)");
   assert(entries.includes("package/scripts/mypi-daemon-discovery.mjs"), "npm tarball is missing daemon discovery");
   assert(entries.includes("package/scripts/mypi-preattach.mjs"), "npm tarball is missing the engine pre-warm");
   assert(entries.includes("package/scripts/mypi-proxy.mjs"), "npm tarball is missing the proxy");
