@@ -21,6 +21,11 @@ export class RuntimeCredentials implements CredentialStore {
 		return this.overrides.has(providerId);
 	}
 
+	/** Re-read persisted credentials when the backing store supports it. */
+	reload(): void {
+		(this.store as { reload?: () => void }).reload?.();
+	}
+
 	async read(providerId: string): Promise<Credential | undefined> {
 		const override = this.overrides.get(providerId);
 		return override ? { type: "api_key", key: override } : this.store.read(providerId);
