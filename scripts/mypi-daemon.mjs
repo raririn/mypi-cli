@@ -18,6 +18,8 @@
 //   client -> daemon
 //     {type:"hello", protocol:N, client:"name"}       required first frame
 //     {type:"list_sessions"}
+//     {type:"daemon_status"}                           version/pid/turn counts
+//     {type:"restart", force?}                         graceful drain + exit
 //     {type:"attach", sessionId?, cwd?, model?}       subscribe (spawns child)
 //       Omitting sessionId creates a fresh engine session; the daemon keys
 //       it under the native session id once the child reports it, and the
@@ -30,6 +32,10 @@
 //   daemon -> client
 //     {type:"hello_ack", protocol, daemonVersion, pid}
 //     {type:"hello_error", reason, protocol}          then close
+//     {type:"daemon_status", runtimeVersion, pid, draining, sessions, activeTurns, ...}
+//     {type:"restart_ack", draining, force, activeSessions, activeTurns}
+//     {type:"daemon_restarting", force}               broadcast when a drain starts
+//     {type:"daemon_draining", reason}                new attach refused mid-drain
 //     {type:"sessions", sessions:[{sessionId, cwd, sessionFile, clients, busy}]}
 //     {type:"attached", sessionId, sessionFile, cwd, clients}
 //       Re-broadcast whenever the child's identity changes (new_session,
@@ -105,6 +111,11 @@ const clients = new Set();
 
 let server = null;
 let shuttingDown = false;
+// A graceful restart (post-update) drains in place: stop accepting new
+// sessions, let in-flight turns settle, then exit so the next launch spawns a
+// fresh daemon on the updated code. See `mypi daemon restart`.
+let draining = false;
+const daemonStartedAt = new Date().toISOString();
 
 function sendToClient(client, frame) {
   if (client.socket.destroyed) return;
@@ -119,8 +130,11 @@ function writeSidecar(socketPath) {
   writeFileSync(daemonSidecarPath(), `${JSON.stringify({
     pid: process.pid,
     protocol: MYPI_DAEMON_PROTOCOL,
+    // The product version this daemon is running, so discovery and
+    // `mypi daemon status` can spot a post-update skew without connecting.
+    runtimeVersion: process.env.MYPI_RUNTIME_DISPLAY_VERSION ?? null,
     socketPath,
-    startedAt: new Date().toISOString(),
+    startedAt: daemonStartedAt,
   }, null, 2)}\n`, { mode: 0o600 });
 }
 
@@ -284,6 +298,8 @@ function handleEngineFrame(session, line) {
   if (frame?.type === "agent_settled") {
     session.turnActive = false;
     broadcast(session, { ...frame, sessionId: session.sessionId ?? session.key });
+    // A drain in progress exits as soon as the last turn settles.
+    if (draining) maybeFinishDrain();
     if (session.pendingRelease) {
       completeRelease(session);
       return;
@@ -328,6 +344,46 @@ function rekeySession(session, nativeSessionId) {
     client.sessions.delete(previousKey);
     client.sessions.add(nativeSessionId);
   }
+}
+
+function activeTurnCount() {
+  let count = 0;
+  for (const session of sessions.values()) if (session.turnActive) count += 1;
+  return count;
+}
+
+/**
+ * Begin (or re-report) a graceful restart drain. New attaches are refused so
+ * the daemon can reach zero active turns and exit; `force` skips the wait and
+ * aborts in-flight turns immediately. The next `mypi` launch spawns a fresh
+ * daemon on the updated code; persisted sessions re-attach losslessly.
+ */
+function beginDrain(requester, force) {
+  if (!draining) {
+    draining = true;
+    for (const client of clients) sendToClient(client, { type: "daemon_restarting", force: Boolean(force) });
+  }
+  if (requester) {
+    sendToClient(requester, {
+      type: "restart_ack",
+      draining: true,
+      force: Boolean(force),
+      activeSessions: sessions.size,
+      activeTurns: activeTurnCount(),
+    });
+  }
+  if (force) {
+    void shutdown();
+    return;
+  }
+  maybeFinishDrain();
+}
+
+function maybeFinishDrain() {
+  if (!draining || shuttingDown) return;
+  // Any in-flight turn keeps the daemon alive; its agent_settled re-checks.
+  if (activeTurnCount() > 0) return;
+  void shutdown();
 }
 
 function scheduleSessionGrace(session) {
@@ -450,7 +506,35 @@ function handleClientFrame(client, frame) {
     return;
   }
 
+  if (frame?.type === "daemon_status") {
+    sendToClient(client, {
+      type: "daemon_status",
+      pid: process.pid,
+      protocol: MYPI_DAEMON_PROTOCOL,
+      runtimeVersion: process.env.MYPI_RUNTIME_DISPLAY_VERSION ?? null,
+      startedAt: daemonStartedAt,
+      draining,
+      sessions: sessions.size,
+      activeTurns: activeTurnCount(),
+    });
+    return;
+  }
+
+  if (frame?.type === "restart") {
+    beginDrain(client, frame.force === true);
+    return;
+  }
+
   if (frame?.type === "attach") {
+    if (draining) {
+      // Refuse new work so the drain can complete; the caller retries once a
+      // fresh daemon has taken over the socket.
+      sendToClient(client, {
+        type: "daemon_draining",
+        reason: "The MyPi session daemon is restarting; retry in a moment.",
+      });
+      return;
+    }
     const sessionId = String(frame.sessionId ?? "");
     // No sessionId creates a fresh engine session; the daemon re-keys it and
     // broadcasts `attached` once the child reports its native id.

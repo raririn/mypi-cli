@@ -328,6 +328,8 @@ export interface InteractiveModeOptions {
 	initialMessages?: string[];
 	/** Force verbose startup (overrides quietStartup setting) */
 	verbose?: boolean;
+	/** One-time notices shown as warnings at startup (e.g. a pending update). */
+	startupWarnings?: string[];
 }
 
 export class InteractiveMode {
@@ -890,6 +892,10 @@ export class InteractiveMode {
 
 		if (modelFallbackMessage) {
 			this.showWarning(modelFallbackMessage);
+		}
+
+		for (const notice of this.options.startupWarnings ?? []) {
+			this.showWarning(notice);
 		}
 
 		void this.maybeWarnAboutAnthropicSubscriptionAuth();

@@ -27,7 +27,7 @@ function waitFor(predicate, timeoutMs = 5_000, label = "condition") {
   });
 }
 
-async function startDaemon({ mode, idleGraceMs = 300 } = {}) {
+async function startDaemon({ mode, idleGraceMs = 300, version, turnMs } = {}) {
   const daemonDir = await mkdtemp(join(tmpdir(), "mypi-daemon-test-"));
   const child = spawn(
     process.execPath,
@@ -38,6 +38,8 @@ async function startDaemon({ mode, idleGraceMs = 300 } = {}) {
         MYPI_DAEMON_DIR: daemonDir,
         MYPI_DAEMON_ENGINE_CMD: JSON.stringify([process.execPath, FAKE_ENGINE]),
         FAKE_ENGINE_MODE: mode ?? "",
+        ...(version !== undefined ? { MYPI_RUNTIME_DISPLAY_VERSION: version } : {}),
+        ...(turnMs !== undefined ? { FAKE_ENGINE_TURN_MS: String(turnMs) } : {}),
       },
       stdio: ["ignore", "pipe", "pipe"],
     },
@@ -568,6 +570,89 @@ test("a successful new_session re-learns the child identity and re-broadcasts at
     assert.match(client.ofType("error")[0].error, /No live session/);
     client.socket.destroy();
     watcher.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("daemon_status reports the running version, session count, and active turns", async () => {
+  const daemon = await startDaemon({ version: "9.9.9 (pi-core 0.0.0)" });
+  try {
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    // Sidecar records the running version for connect-free discovery.
+    const sidecar = JSON.parse(readFileSync(join(daemon.daemonDir, "daemon.json"), "utf8"));
+    assert.equal(sidecar.runtimeVersion, "9.9.9 (pi-core 0.0.0)");
+
+    client.send({ type: "daemon_status" });
+    await waitFor(() => client.ofType("daemon_status").length === 1, 3_000, "status reply");
+    const status = client.ofType("daemon_status")[0];
+    assert.equal(status.runtimeVersion, "9.9.9 (pi-core 0.0.0)");
+    assert.equal(status.sessions, 0);
+    assert.equal(status.activeTurns, 0);
+    assert.equal(status.draining, false);
+    client.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("restart drains an idle daemon and exits", async () => {
+  const daemon = await startDaemon();
+  try {
+    const exited = new Promise((resolve) => daemon.child.once("exit", resolve));
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    client.send({ type: "restart" });
+    await waitFor(() => client.ofType("restart_ack").length === 1, 3_000, "restart ack");
+    assert.equal(client.ofType("restart_ack")[0].activeTurns, 0);
+    await exited;
+    assert.equal(existsSync(join(daemon.daemonDir, "daemon.json")), false, "sidecar removed on exit");
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("restart waits for an active turn, refuses new attaches while draining, then exits", async () => {
+  const daemon = await startDaemon({ turnMs: 800 });
+  try {
+    const driver = connect(daemon.socketPath);
+    await driver.connected();
+    await driver.hello();
+    driver.send({ type: "attach", cwd: daemon.daemonDir });
+    await waitFor(() => driver.ofType("attached").length === 1, 5_000, "attached");
+    const sessionId = driver.ofType("attached")[0].sessionId;
+
+    // Start a turn, then request a restart while it is still running.
+    driver.send({ type: "prompt", message: "hi", sessionId });
+    await waitFor(() => driver.frames.some((f) => f.type === "agent_start"), 3_000, "turn started");
+
+    const exited = new Promise((resolve) => daemon.child.once("exit", resolve));
+    const ctl = connect(daemon.socketPath);
+    await ctl.connected();
+    await ctl.hello();
+    ctl.send({ type: "restart" });
+    await waitFor(() => ctl.ofType("restart_ack").length === 1, 3_000, "restart ack");
+    assert.equal(ctl.ofType("restart_ack")[0].activeTurns, 1, "sees the in-flight turn");
+    // Attached surfaces are told a restart is underway.
+    await waitFor(() => driver.ofType("daemon_restarting").length === 1, 3_000, "restart broadcast");
+
+    // A new attach mid-drain is refused rather than spawning more work.
+    const late = connect(daemon.socketPath);
+    await late.connected();
+    await late.hello();
+    late.send({ type: "attach", cwd: daemon.daemonDir });
+    await waitFor(() => late.ofType("daemon_draining").length === 1, 3_000, "attach refused");
+    late.socket.destroy();
+
+    // The daemon stays up until the turn settles, then exits.
+    assert.equal(daemon.child.exitCode, null, "still running during the turn");
+    await waitFor(() => driver.frames.some((f) => f.type === "agent_settled"), 3_000, "turn settled");
+    await exited;
+    driver.socket.destroy();
+    ctl.socket.destroy();
   } finally {
     await daemon.cleanup();
   }

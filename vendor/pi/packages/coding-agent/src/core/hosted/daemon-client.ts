@@ -77,6 +77,9 @@ export class HostedDaemonClient {
 	private closed = false;
 	/** The session id every routed frame carries; adopted from `attached`. */
 	sessionId: string | null = null;
+	/** The daemon's running product version, from its `hello_ack`. Null on old
+	 *  daemons that predate version reporting; used to warn on a post-update skew. */
+	daemonVersion: string | null = null;
 
 	constructor(env: HostedDaemonEnv) {
 		this.env = env;
@@ -106,6 +109,7 @@ export class HostedDaemonClient {
 				if (frame.type === "hello_ack") {
 					clearTimeout(timer);
 					this.frameListeners.delete(listener);
+					this.daemonVersion = (frame.daemonVersion as string | null) ?? null;
 					resolve();
 				} else if (frame.type === "hello_error") {
 					clearTimeout(timer);

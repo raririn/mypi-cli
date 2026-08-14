@@ -893,6 +893,18 @@ export async function main(args: string[], options?: MainOptions) {
 					if (!offlineMode) {
 						void hostedServices.modelRuntime.refresh().catch(() => {});
 					}
+					// The daemon may predate this launch's on-disk version (a fresh
+					// `npm i -g` while the daemon kept running the old code). Surface
+					// it once so the user can `mypi daemon restart` to apply it.
+					const installedVersion = process.env.MYPI_RUNTIME_DISPLAY_VERSION;
+					const runningVersion = hostedRuntime.daemonVersion;
+					const startupWarnings: string[] = [];
+					if (installedVersion && runningVersion && installedVersion !== runningVersion) {
+						startupWarnings.push(
+							`MyPi ${installedVersion} is installed, but this session is running ${runningVersion} from the background session daemon. ` +
+								"Run `mypi daemon restart` to apply the update (it waits for active turns, then the next launch starts fresh).",
+						);
+					}
 					const interactiveMode = new InteractiveMode(hostedRuntime, {
 						migratedProviders,
 						autoTrustOnReloadCwd,
@@ -900,6 +912,7 @@ export async function main(args: string[], options?: MainOptions) {
 						initialImages,
 						initialMessages: parsed.messages,
 						verbose: parsed.verbose,
+						startupWarnings,
 					});
 					printTimings();
 					await interactiveMode.run();

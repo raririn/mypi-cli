@@ -69,6 +69,11 @@ if (internalCommand === "__remote-node-eval") {
   // session, so surfaces meet on a single authority and remote access needs
   // exactly one pipe.
   await import("./mypi-daemon.mjs");
+} else if (internalCommand === "daemon") {
+  // Operator control for the per-profile session daemon: `mypi daemon status`
+  // and `mypi daemon restart` (graceful drain so a post-update runtime takes
+  // effect on the next launch).
+  await import("./mypi-daemon-control.mjs");
 } else if (internalCommand === "proxy") {
   // stdio <-> daemon pass-through for SSH.
   await import("./mypi-proxy.mjs");
