@@ -5,6 +5,11 @@ source-built [Pi](https://github.com/earendil-works/pi) runtime.
 
 ## Features
 
+- Comprehensive default system prompt (tool usage, autonomy, destructive-action
+  and formatting guidance), switchable to a lean preset via the
+  `systemPromptPreset` setting or overridable with a `SYSTEM.md` file
+- `deep_thinking` tool: makes model reasoning and progress visible, and gives
+  chain-of-thought to models whose native reasoning is absent or hidden
 - Plan and goal workflows
 - Sandboxed execution via `@anthropic-ai/sandbox-runtime`
 - Web search/fetch with Brave search API or curl
