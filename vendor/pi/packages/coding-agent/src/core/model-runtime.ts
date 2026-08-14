@@ -423,6 +423,15 @@ export class ModelRuntime implements Models {
 		return this.credentials.list();
 	}
 
+	/**
+	 * Re-read persisted credentials from the backing store. A long-lived engine
+	 * (daemon/RPC) must call this before resolving availability so a login
+	 * completed by another process on the same profile becomes visible.
+	 */
+	reloadCredentials(): void {
+		this.credentials.reload();
+	}
+
 	getProviderAuthStatus(providerId: string): AuthStatus {
 		if (this.credentials.hasRuntimeApiKey(providerId)) return { configured: true, source: "runtime" };
 		if (this.snapshot.storedProviders.has(providerId)) return { configured: true, source: "stored" };
@@ -502,7 +511,17 @@ export class ModelRuntime implements Models {
 
 	async login(providerId: string, type: AuthType, interaction: AuthInteraction): Promise<Credential> {
 		const credential = await this.models.login(providerId, type, interaction);
-		await this.refresh({ allowNetwork: this.modelNetworkEnabled });
+		// The TUI keeps its login dialog mounted until this returns, so the
+		// post-login catalog refresh must be bounded exactly like create():
+		// one stalled provider endpoint must not freeze the session after a
+		// successful sign-in. Aborted refreshes fall back to cached catalogs.
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), 15_000);
+		try {
+			await this.refresh({ allowNetwork: this.modelNetworkEnabled, signal: controller.signal });
+		} finally {
+			clearTimeout(timeout);
+		}
 		return credential;
 	}
 

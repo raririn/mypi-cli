@@ -13,6 +13,8 @@ const OAUTH_SCOPE = "openid email profile offline_access inference";
 const CATALOG_MAX_AGE_MS = 4 * 60 * 60 * 1000;
 const REDPANDA_MANIFEST_MAX_MODELS = 20;
 const TOKEN_EXPIRY_SKEW_MS = 30_000;
+const MANIFEST_FETCH_TIMEOUT_MS = 15_000;
+const OAUTH_FETCH_TIMEOUT_MS = 30_000;
 
 type ProviderConfig = Parameters<ExtensionAPI["registerProvider"]>[1];
 type ProviderModelConfig = NonNullable<ProviderConfig["models"]>[number];
@@ -206,6 +208,16 @@ function encodeForm(values: Record<string, string>): URLSearchParams {
   return form;
 }
 
+/**
+ * A stalled RedPanda endpoint must never hang the caller: the model runtime
+ * awaits refreshModels/login before completing /login, so an unbounded fetch
+ * freezes the session right after OAuth reports success.
+ */
+function boundedSignal(timeoutMs: number, signal?: AbortSignal): AbortSignal {
+  const timeout = AbortSignal.timeout(timeoutMs);
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
 async function readJsonResponse<T>(response: Response, operation: string): Promise<T> {
   const payload = await response.json().catch(() => null) as (T & { error?: string; error_description?: string }) | null;
   if (!response.ok || !payload) {
@@ -254,7 +266,7 @@ export function createRedPandaProviderConfig(dependencies: ProviderDependencies 
       try {
         const response = await fetchImpl(REDPANDA_MANIFEST_URL, {
           headers: { accept: "application/json" },
-          signal: context.signal,
+          signal: boundedSignal(MANIFEST_FETCH_TIMEOUT_MS, context.signal ?? undefined),
         });
         const manifestModels = parseRedPandaManifest(await readJsonResponse<unknown>(response, "RedPanda model refresh"));
         const refreshed = selectProviderModels(manifestModels);
@@ -283,6 +295,7 @@ export function createRedPandaProviderConfig(dependencies: ProviderDependencies 
           method: "POST",
           headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
           body: encodeForm({ client_id: REDPANDA_OAUTH_CLIENT_ID, scope: OAUTH_SCOPE }),
+          signal: boundedSignal(OAUTH_FETCH_TIMEOUT_MS),
         });
         const device = await readJsonResponse<DeviceAuthorizationResponse>(deviceResponse, "RedPanda device authorization");
         if (!device.device_code || !device.user_code || !device.verification_uri || !Number.isFinite(device.expires_in)) {
@@ -300,15 +313,22 @@ export function createRedPandaProviderConfig(dependencies: ProviderDependencies 
         let intervalMs = Math.max(1, device.interval ?? 5) * 1000;
         while (now() < deadline) {
           await sleep(intervalMs);
-          const tokenResponse = await fetchImpl(TOKEN_URL, {
-            method: "POST",
-            headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-            body: encodeForm({
-              grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-              client_id: REDPANDA_OAUTH_CLIENT_ID,
-              device_code: device.device_code,
-            }),
-          });
+          let tokenResponse: Response;
+          try {
+            tokenResponse = await fetchImpl(TOKEN_URL, {
+              method: "POST",
+              headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
+              body: encodeForm({
+                grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+                client_id: REDPANDA_OAUTH_CLIENT_ID,
+                device_code: device.device_code,
+              }),
+              signal: boundedSignal(OAUTH_FETCH_TIMEOUT_MS),
+            });
+          } catch {
+            // Transient network stalls keep polling until the device-code deadline.
+            continue;
+          }
           const tokens = await tokenResponse.json().catch(() => null) as OAuthTokenResponse | null;
           if (tokenResponse.ok && tokens?.access_token) {
             callbacks.onProgress?.("RedPanda AI sign-in complete.");
@@ -333,6 +353,7 @@ export function createRedPandaProviderConfig(dependencies: ProviderDependencies 
             client_id: REDPANDA_OAUTH_CLIENT_ID,
             refresh_token: credentials.refresh,
           }),
+          signal: boundedSignal(OAUTH_FETCH_TIMEOUT_MS),
         });
         const tokens = await readJsonResponse<OAuthTokenResponse>(response, "RedPanda token refresh");
         return credentialsFromTokens(tokens, credentials.refresh);

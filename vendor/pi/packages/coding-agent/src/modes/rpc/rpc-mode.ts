@@ -632,6 +632,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			// =================================================================
 
 			case "set_model": {
+				// A surface (TUI/GUI) may have completed /login in another process;
+				// pick up its credentials before deciding what is available.
+				session.modelRuntime.reloadCredentials();
 				const models = await session.modelRuntime.getAvailable();
 				const model = models.find((m) => m.provider === command.provider && m.id === command.modelId);
 				if (!model) {
@@ -650,6 +653,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "get_available_models": {
+				session.modelRuntime.reloadCredentials();
 				const models = await session.modelRuntime.getAvailable();
 				return success(id, "get_available_models", { models });
 			}

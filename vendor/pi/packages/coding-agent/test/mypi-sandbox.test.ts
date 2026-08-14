@@ -279,4 +279,25 @@ describe("MyPi shell sandbox", () => {
 		expect(config.filesystem.allowWrite).not.toContain(homedir());
 		expect(config.filesystem.denyRead).toContain(join(homedir(), ".ssh"));
 	});
+
+	it("keeps the bash tool registered and active regardless of the sandbox preference", async () => {
+		// The sandbox wraps bash execution; it must never remove the tool from the
+		// agent's registry, active set, or system prompt.
+		const previousAgentDir = process.env.MYPI_CODING_AGENT_DIR;
+		const workspace = mkdtempSync(join(tmpdir(), "mypi-sandbox-session-"));
+		try {
+			process.env.MYPI_CODING_AGENT_DIR = agentDir;
+			const { createAgentSession } = await import("../src/index.ts");
+			for (const enabled of [false, true]) {
+				saveMyPiSandboxPreference(enabled, agentDir);
+				const { session } = await createAgentSession({ cwd: workspace });
+				expect(session.getActiveToolNames()).toContain("bash");
+				expect(session.getToolDefinition("bash")).toBeDefined();
+			}
+		} finally {
+			if (previousAgentDir === undefined) delete process.env.MYPI_CODING_AGENT_DIR;
+			else process.env.MYPI_CODING_AGENT_DIR = previousAgentDir;
+			rmSync(workspace, { recursive: true, force: true });
+		}
+	}, 30_000);
 });

@@ -253,4 +253,31 @@ describe("ModelRuntime auth options", () => {
 			method: { name: "Extension subscription" },
 		});
 	});
+
+	it("reloadCredentials picks up a login persisted by another process", async () => {
+		const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const agentDir = mkdtempSync(join(tmpdir(), "mypi-runtime-reload-"));
+		const authPath = join(agentDir, "auth.json");
+		try {
+			writeFileSync(authPath, "{}", { mode: 0o600 });
+			const runtime = await ModelRuntime.create({
+				credentials: AuthStorage.create(authPath),
+				modelsPath: null,
+			});
+			expect((await runtime.getAuth("anthropic"))?.auth.apiKey).toBeUndefined();
+
+			// Another process (a surface running /login) rewrites auth.json.
+			writeFileSync(authPath, JSON.stringify({ anthropic: { type: "api_key", key: "external-key" } }), {
+				mode: 0o600,
+			});
+			expect((await runtime.getAuth("anthropic"))?.auth.apiKey).toBeUndefined();
+
+			runtime.reloadCredentials();
+			expect((await runtime.getAuth("anthropic"))?.auth.apiKey).toBe("external-key");
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true });
+		}
+	});
 });
