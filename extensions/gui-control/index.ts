@@ -243,9 +243,10 @@ export default function guiControlExtension(pi: ExtensionAPI): void {
   const handledRequests = new Map<string, { accepted: boolean; error?: string; result?: unknown }>()
   const keywordSkillRouter = createKeywordSkillRouter(pi)
 
-  function status(ctx: ExtensionContext, state: ControllerState): void {
-    const labels: Partial<Record<ControllerState, string>> = { connected: 'GUI CONTROL · TUI OWNER', connecting: 'GUI CONTROL · CONNECTING', handshaking: 'GUI CONTROL · HANDSHAKE', discovering: 'GUI CONTROL · DISCOVERING', backoff: 'GUI CONTROL · WAITING FOR GUI' }
-    ctx.ui.setStatus('gui-control', labels[state])
+  function status(_ctx: ExtensionContext, state: ControllerState): void {
+    // GUI control state is intentionally not shown in the footer: the surface
+    // structure never assumes GUI control is inactive, and the row was noise.
+    // Consumers that need the state still receive the event.
     pi.events.emit(GUI_CONTROL_STATE_EVENT, { state, connected: state === 'connected' })
   }
 

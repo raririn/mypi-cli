@@ -211,6 +211,11 @@ function sandboxHelperPath(): string {
 	return join(dirname(sourcePath), `mypi-sandbox-helper${extension}`);
 }
 
+/**
+ * Build the sandbox-helper launch for one command. Whether to sandbox at all is
+ * decided per session by the caller via `isSandboxActive()` (see the bash tool);
+ * this builder assumes the decision was already made and always returns a launch.
+ */
 export function createMyPiSandboxProcessLaunch(
 	command: string,
 	cwd: string,
@@ -219,9 +224,6 @@ export function createMyPiSandboxProcessLaunch(
 	options: { agentDir?: string; helperPath?: string; executablePath?: string } = {},
 ): MyPiSandboxProcessLaunch | undefined {
 	const agentDir = options.agentDir ?? getAgentDir();
-	if (!resolveMyPiSandboxPreference(agentDir).enabled) {
-		return undefined;
-	}
 	const helperPath = options.helperPath ?? sandboxHelperPath();
 	const helperArgs = helperPath.endsWith(".ts") ? ["--experimental-strip-types", helperPath] : [helperPath];
 	const request: MyPiSandboxHelperRequest = {
