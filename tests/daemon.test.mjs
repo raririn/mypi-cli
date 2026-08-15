@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,7 +27,16 @@ function waitFor(predicate, timeoutMs = 5_000, label = "condition") {
   });
 }
 
-async function startDaemon({ mode, idleGraceMs = 300, version, turnMs } = {}) {
+async function startDaemon({
+  mode,
+  idleGraceMs = 300,
+  version,
+  turnMs,
+  failSession,
+  ownershipConflict,
+  signalGraceMs,
+  ownerControlTimeoutMs,
+} = {}) {
   const daemonDir = await mkdtemp(join(tmpdir(), "mypi-daemon-test-"));
   const child = spawn(
     process.execPath,
@@ -40,6 +49,14 @@ async function startDaemon({ mode, idleGraceMs = 300, version, turnMs } = {}) {
         FAKE_ENGINE_MODE: mode ?? "",
         ...(version !== undefined ? { MYPI_RUNTIME_DISPLAY_VERSION: version } : {}),
         ...(turnMs !== undefined ? { FAKE_ENGINE_TURN_MS: String(turnMs) } : {}),
+        ...(failSession !== undefined ? { FAKE_ENGINE_FAIL_SESSION: failSession } : {}),
+        ...(ownershipConflict !== undefined
+          ? { FAKE_ENGINE_OWNERSHIP_CONFLICT: JSON.stringify(ownershipConflict) }
+          : {}),
+        ...(signalGraceMs !== undefined ? { MYPI_DAEMON_SIGNAL_GRACE_MS: String(signalGraceMs) } : {}),
+        ...(ownerControlTimeoutMs !== undefined
+          ? { MYPI_DAEMON_OWNER_CONTROL_TIMEOUT_MS: String(ownerControlTimeoutMs) }
+          : {}),
       },
       stdio: ["ignore", "pipe", "pipe"],
     },
@@ -187,6 +204,276 @@ test("attach spawns a session child, list_sessions reports it, and events fan ou
     second.socket.destroy();
   } finally {
     await daemon.cleanup();
+  }
+});
+
+test("an external writer produces a typed conflict and authenticated handoff routing", async () => {
+  const ownerDir = await mkdtemp(join(tmpdir(), "mypi-external-owner-test-"));
+  const sessionFile = join(ownerDir, "blocked.jsonl");
+  const socketPath = join(ownerDir, "owner.sock");
+  const ownerId = "test-external-owner";
+  const token = "test-owner-token";
+  const owner = {
+    version: 2,
+    pid: process.pid,
+    processStartTime: Math.round(performance.timeOrigin),
+    hostname: (await import("node:os")).hostname(),
+    startedAt: new Date().toISOString(),
+    surface: "pi-cli",
+    ownerId,
+    control: { protocol: 1, socketPath, token },
+  };
+  await writeFile(sessionFile, "{}\n");
+  await writeFile(`${sessionFile}.lease`, `${JSON.stringify(owner)}\n`);
+
+  const requests = [];
+  const ownerServer = net.createServer((socket) => {
+    let buffer = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) return;
+      const request = JSON.parse(buffer.slice(0, newline));
+      requests.push(request);
+      if (request.force) {
+        void rm(`${sessionFile}.lease`, { force: true }).then(() => {
+          socket.end(`${JSON.stringify({ type: "handoff_result", status: "accepted" })}\n`);
+        });
+      } else if (requests.length === 1) {
+        socket.end(`${JSON.stringify({ type: "handoff_result", status: "busy", message: "active turn" })}\n`);
+      }
+    });
+  });
+  await new Promise((resolve, reject) => {
+    ownerServer.once("error", reject);
+    ownerServer.listen(socketPath, resolve);
+  });
+
+  const daemon = await startDaemon({
+    failSession: "blocked",
+    ownershipConflict: { sessionFile, owner },
+    ownerControlTimeoutMs: 100,
+  });
+  try {
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    client.send({ type: "attach", sessionId: "blocked" });
+    await waitFor(() => client.ofType("ownership_conflict").length === 1, 5_000, "typed conflict");
+    const conflict = client.ofType("ownership_conflict")[0];
+    assert.equal(conflict.owner.pid, process.pid);
+    assert.equal(conflict.owner.surface, "pi-cli");
+    assert.equal(conflict.owner.cooperativeHandoffAvailable, true);
+    assert.equal("control" in conflict.owner, false, "the control capability is not exposed to clients");
+
+    client.send({
+      id: "h1",
+      type: "request_handoff",
+      targetSessionId: "blocked",
+      expectedOwnerId: ownerId,
+    });
+    await waitFor(
+      () => client.ofType("response").some((frame) => frame.id === "h1"),
+      5_000,
+      "busy handoff response",
+    );
+    assert.equal(client.ofType("response").find((frame) => frame.id === "h1").data.status, "busy");
+
+    client.send({
+      id: "h-timeout",
+      type: "request_handoff",
+      targetSessionId: "blocked",
+      expectedOwnerId: ownerId,
+    });
+    await waitFor(
+      () => client.ofType("response").some((frame) => frame.id === "h-timeout"),
+      5_000,
+      "handoff timeout response",
+    );
+    assert.equal(
+      client.ofType("response").find((frame) => frame.id === "h-timeout").data.status,
+      "unavailable",
+    );
+
+    client.send({
+      id: "h2",
+      type: "request_handoff",
+      targetSessionId: "blocked",
+      expectedOwnerId: ownerId,
+      force: true,
+    });
+    await waitFor(
+      () => client.ofType("response").some((frame) => frame.id === "h2"),
+      5_000,
+      "forced cooperative release",
+    );
+    assert.equal(client.ofType("response").find((frame) => frame.id === "h2").data.status, "released");
+    assert.deepEqual(requests.map((request) => request.force), [false, false, true]);
+    client.socket.destroy();
+  } finally {
+    ownerServer.close();
+    await daemon.cleanup();
+    await rm(ownerDir, { recursive: true, force: true });
+  }
+});
+
+test("Rob uses verified SIGTERM and requires a separate request before SIGKILL", async () => {
+  const ownerDir = await mkdtemp(join(tmpdir(), "mypi-signal-owner-test-"));
+  const sessionFile = join(ownerDir, "blocked.jsonl");
+  const child = spawn(process.execPath, ["-e", `
+    process.on('SIGTERM', () => {});
+    process.stdout.write(JSON.stringify({ pid: process.pid, processStartTime: Math.round(performance.timeOrigin) }) + '\\n');
+    setInterval(() => {}, 1000);
+  `], { stdio: ["ignore", "pipe", "ignore"] });
+  const childExit = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal })));
+  const identity = await new Promise((resolve, reject) => {
+    let buffer = "";
+    child.once("error", reject);
+    child.stdout.on("data", (chunk) => {
+      buffer += chunk.toString();
+      const newline = buffer.indexOf("\n");
+      if (newline >= 0) resolve(JSON.parse(buffer.slice(0, newline)));
+    });
+  });
+  const owner = {
+    version: 2,
+    pid: identity.pid,
+    processStartTime: identity.processStartTime,
+    hostname: (await import("node:os")).hostname(),
+    startedAt: new Date().toISOString(),
+    surface: "pi-cli",
+    ownerId: "signal-owner-id",
+  };
+  await writeFile(sessionFile, "{}\n");
+  await writeFile(`${sessionFile}.lease`, `${JSON.stringify(owner)}\n`);
+
+  const daemon = await startDaemon({
+    failSession: "blocked",
+    ownershipConflict: { sessionFile, owner },
+    signalGraceMs: 300,
+  });
+  try {
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    client.send({ type: "attach", sessionId: "blocked" });
+    await waitFor(() => client.ofType("ownership_conflict").length === 1, 5_000, "signal conflict");
+
+    client.send({
+      id: "term",
+      type: "request_handoff",
+      targetSessionId: "blocked",
+      expectedOwnerId: owner.ownerId,
+      force: true,
+    });
+    await waitFor(
+      () => client.ofType("response").some((frame) => frame.id === "term"),
+      5_000,
+      "SIGTERM result",
+    );
+    const termResult = client.ofType("response").find((frame) => frame.id === "term").data;
+    assert.equal(termResult.status, "needs-sigkill");
+    assert.equal(typeof termResult.confirmationToken, "string");
+    assert.doesNotThrow(() => process.kill(owner.pid, 0), "the SIGTERM-resistant owner remains alive");
+
+    client.send({
+      id: "kill-without-confirmation",
+      type: "request_handoff",
+      targetSessionId: "blocked",
+      expectedOwnerId: owner.ownerId,
+      force: true,
+      hard: true,
+    });
+    await waitFor(
+      () => client.ofType("response").some((frame) => frame.id === "kill-without-confirmation"),
+      5_000,
+      "unconfirmed SIGKILL refusal",
+    );
+    assert.equal(
+      client.ofType("response").find((frame) => frame.id === "kill-without-confirmation").data.status,
+      "confirmation-required",
+    );
+    assert.doesNotThrow(() => process.kill(owner.pid, 0), "an unconfirmed SIGKILL was not sent");
+
+    client.send({
+      id: "kill",
+      type: "request_handoff",
+      targetSessionId: "blocked",
+      expectedOwnerId: owner.ownerId,
+      force: true,
+      hard: true,
+      confirmationToken: termResult.confirmationToken,
+    });
+    await waitFor(
+      () => client.ofType("response").some((frame) => frame.id === "kill"),
+      5_000,
+      "SIGKILL result",
+    );
+    assert.equal(client.ofType("response").find((frame) => frame.id === "kill").data.status, "released");
+    assert.equal((await childExit).signal, "SIGKILL");
+    client.socket.destroy();
+  } finally {
+    try { child.kill("SIGKILL"); } catch {}
+    await daemon.cleanup();
+    await rm(ownerDir, { recursive: true, force: true });
+  }
+});
+
+test("Rob refuses a reused PID whose process start time does not match", async () => {
+  const ownerDir = await mkdtemp(join(tmpdir(), "mypi-pid-reuse-test-"));
+  const sessionFile = join(ownerDir, "blocked.jsonl");
+  const child = spawn(process.execPath, ["-e", `
+    process.stdout.write(JSON.stringify({ pid: process.pid, processStartTime: Math.round(performance.timeOrigin) }) + '\\n');
+    setInterval(() => {}, 1000);
+  `], { stdio: ["ignore", "pipe", "ignore"] });
+  const identity = await new Promise((resolve, reject) => {
+    let buffer = "";
+    child.once("error", reject);
+    child.stdout.on("data", (chunk) => {
+      buffer += chunk.toString();
+      const newline = buffer.indexOf("\n");
+      if (newline >= 0) resolve(JSON.parse(buffer.slice(0, newline)));
+    });
+  });
+  const owner = {
+    version: 2,
+    pid: identity.pid,
+    processStartTime: identity.processStartTime - 60_000,
+    hostname: (await import("node:os")).hostname(),
+    startedAt: new Date().toISOString(),
+    surface: "pi-cli",
+    ownerId: "reused-pid-owner-id",
+  };
+  await writeFile(sessionFile, "{}\n");
+  await writeFile(`${sessionFile}.lease`, `${JSON.stringify(owner)}\n`);
+
+  const daemon = await startDaemon({ failSession: "blocked", ownershipConflict: { sessionFile, owner } });
+  try {
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    client.send({ type: "attach", sessionId: "blocked" });
+    await waitFor(() => client.ofType("ownership_conflict").length === 1, 5_000, "PID-reuse conflict");
+    client.send({
+      id: "rob",
+      type: "request_handoff",
+      targetSessionId: "blocked",
+      expectedOwnerId: owner.ownerId,
+      force: true,
+    });
+    await waitFor(
+      () => client.ofType("response").some((frame) => frame.id === "rob"),
+      5_000,
+      "PID-reuse refusal",
+    );
+    assert.equal(client.ofType("response").find((frame) => frame.id === "rob").data.status, "unverifiable");
+    assert.doesNotThrow(() => process.kill(owner.pid, 0), "the unrelated live process was not signaled");
+    client.socket.destroy();
+  } finally {
+    child.kill("SIGKILL");
+    await daemon.cleanup();
+    await rm(ownerDir, { recursive: true, force: true });
   }
 });
 
@@ -451,6 +738,35 @@ test("mypi attach drives a session through the daemon and detaches cleanly", asy
   }
 });
 
+test("two mypi attach CLIs co-drive one daemon child without takeover", async () => {
+  const daemon = await startDaemon({ idleGraceMs: 5_000 });
+  try {
+    const first = spawnAttach(daemon.daemonDir, ["s1"]);
+    const second = spawnAttach(daemon.daemonDir, ["s1"]);
+    await waitFor(
+      () => first.stdout.includes("Attached to session s1") && second.stdout.includes("Attached to session s1"),
+      8_000,
+      "both CLI attachments",
+    );
+
+    first.write("from first cli");
+    await waitFor(
+      () => first.stdout.includes("echo:from first cli") && second.stdout.includes("echo:from first cli"),
+      8_000,
+      "shared CLI stream",
+    );
+    assert.doesNotMatch(`${first.stdout}\n${second.stdout}`, /owned by|Rob session|writer lock/i,
+      "ordinary CLI/CLI attachment never enters lease negotiation");
+
+    first.write("/detach");
+    second.write("/detach");
+    assert.equal(await first.exited, 0);
+    assert.equal(await second.exited, 0);
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
 test("mypi attach --take releases the session and opens it natively", async () => {
   const daemon = await startDaemon({ idleGraceMs: 5_000 });
   try {
@@ -541,7 +857,7 @@ test("the first prompt answer wins and other surfaces are told it resolved", asy
   }
 });
 
-test("a successful new_session re-learns the child identity and re-broadcasts attached", async () => {
+test("a legacy identity-changing command cannot move clients sharing a child", async () => {
   const daemon = await startDaemon();
   try {
     const client = connect(daemon.socketPath);
@@ -553,21 +869,78 @@ test("a successful new_session re-learns the child identity and re-broadcasts at
     await waitFor(() => watcher.ofType("attached").length === 1, 5_000, "attached");
 
     client.send({ id: "n1", type: "new_session", sessionId: "s1" });
-    await waitFor(() => client.ofType("response").length === 1, 5_000, "new_session response");
-    assert.equal(client.ofType("response")[0].success, true);
+    await waitFor(() => client.ofType("error").length === 1, 5_000, "shared identity change refused");
+    assert.equal(client.ofType("error")[0].code, "shared_session_identity_change_refused");
+    assert.match(client.ofType("error")[0].error, /only the requester moves/);
+    assert.equal(watcher.ofType("attached").length, 1, "the watcher was never rebound");
 
-    // Both surfaces learn the child's new identity without re-attaching.
-    await waitFor(() => watcher.ofType("attached").length === 2, 5_000, "identity re-broadcast");
-    const rebroadcast = watcher.ofType("attached")[1];
-    assert.equal(rebroadcast.sessionId, "fake-new-1");
+    client.send({ id: "s2", type: "get_state", sessionId: "s1" });
+    await waitFor(() => client.ofType("response").length === 1, 5_000, "source still routes");
+    assert.equal(client.ofType("response")[0].data.sessionId, "s1");
+    client.socket.destroy();
+    watcher.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
 
-    // The new id routes; the old id no longer does.
-    client.send({ id: "s2", type: "get_state", sessionId: "fake-new-1" });
-    await waitFor(() => client.ofType("response").length === 2, 5_000, "routed by new id");
-    assert.equal(client.ofType("response")[1].data.sessionId, "fake-new-1");
-    client.send({ id: "s3", type: "get_state", sessionId: "s1" });
-    await waitFor(() => client.ofType("error").length === 1, 5_000, "old id refused");
-    assert.match(client.ofType("error")[0].error, /No live session/);
+test("a daemon client can prepare and attach a requester-local target while its source stays live", async () => {
+  const daemon = await startDaemon();
+  try {
+    const client = connect(daemon.socketPath);
+    const watcher = connect(daemon.socketPath);
+    await Promise.all([client.connected(), watcher.connected()]);
+    await Promise.all([client.hello(), watcher.hello()]);
+    client.send({ type: "attach", sessionId: "source", cwd: daemon.daemonDir });
+    watcher.send({ type: "attach", sessionId: "source", cwd: daemon.daemonDir });
+    await waitFor(() => watcher.ofType("attached").length === 1, 5_000, "source attached");
+
+    client.send({
+      id: "prepare",
+      type: "prepare_surface_session",
+      sourceSessionId: "source",
+      operation: "new",
+    });
+    await waitFor(
+      () => client.ofType("response").some((frame) => frame.id === "prepare"),
+      5_000,
+      "prepared target",
+    );
+    const prepared = client.ofType("response").find((frame) => frame.id === "prepare");
+    assert.equal(prepared.command, "prepare_surface_session");
+    assert.equal(prepared.data.cancelled, false);
+    assert.notEqual(prepared.data.target.sessionId, "source");
+    assert.equal(watcher.ofType("attached").length, 1, "preparation did not move the watcher");
+
+    client.send({
+      type: "attach",
+      sessionId: prepared.data.target.sessionId,
+      cwd: prepared.data.target.cwd,
+      sessionStart: { reason: "new" },
+    });
+    await waitFor(
+      () => client.ofType("attached").some((frame) => frame.sessionId === prepared.data.target.sessionId),
+      5_000,
+      "target attached",
+    );
+    await waitFor(
+      () => client.ofType("__fake_session_start").some((frame) => frame.sessionId === prepared.data.target.sessionId),
+      5_000,
+      "target lifecycle metadata",
+    );
+    assert.deepEqual(
+      client.ofType("__fake_session_start").find((frame) => frame.sessionId === prepared.data.target.sessionId).value,
+      { reason: "new" },
+    );
+    client.send({ type: "detach", sessionId: "source" });
+    client.send({ id: "target-state", type: "get_state", sessionId: prepared.data.target.sessionId });
+    await waitFor(
+      () => client.ofType("response").some((frame) => frame.id === "target-state"),
+      5_000,
+      "target routes",
+    );
+    assert.equal(watcher.ofType("attached")[0].sessionId, "source");
+
     client.socket.destroy();
     watcher.socket.destroy();
   } finally {

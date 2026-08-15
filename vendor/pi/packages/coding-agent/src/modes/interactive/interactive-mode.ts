@@ -93,6 +93,13 @@ import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../cor
 import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session-manager.ts";
 import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
+import { HostedOwnershipConflictError, type HostedHandoffResult } from "../../core/hosted/daemon-client.ts";
+import {
+	canOfferRob,
+	formatRequestHandoffPrompt,
+	formatRobPrompt,
+	formatSigkillPrompt,
+} from "../../core/hosted/ownership-conflict-ui.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
@@ -5031,6 +5038,9 @@ export class InteractiveMode {
 			this.showStatus("Resumed session");
 			return result;
 		} catch (error: unknown) {
+			if (error instanceof HostedOwnershipConflictError) {
+				return this.handleHostedOwnershipConflict(sessionPath, error);
+			}
 			if (error instanceof MissingSessionCwdError) {
 				const selectedCwd = await this.promptForMissingSessionCwd(error);
 				if (!selectedCwd) {
@@ -5050,6 +5060,86 @@ export class InteractiveMode {
 			}
 			return this.handleFatalRuntimeError("Failed to resume session", error);
 		}
+	}
+
+	private async handleHostedOwnershipConflict(
+		sessionPath: string,
+		error: HostedOwnershipConflictError,
+	): Promise<{ cancelled: boolean }> {
+		const { owner } = error.conflict;
+		const requestCopy = formatRequestHandoffPrompt(owner);
+		const firstChoice = await this.showExtensionSelector(
+			requestCopy.title,
+			[requestCopy.requestOption, requestCopy.cancelOption],
+		);
+		if (firstChoice !== requestCopy.requestOption) {
+			this.showStatus(`Resume cancelled. ${requestCopy.manualAdvice}`);
+			return { cancelled: true };
+		}
+
+		let result: HostedHandoffResult;
+		try {
+			this.showStatus(`Requesting a clean handoff from ${requestCopy.ownerLabel}…`);
+			result = await error.requestHandoff(false);
+		} catch (requestError) {
+			result = {
+				status: "error",
+				message: requestError instanceof Error ? requestError.message : String(requestError),
+			};
+		}
+		if (result.status === "released") return this.handleResumeSession(sessionPath);
+		if (result.status === "owner-changed" || !canOfferRob(owner, os.hostname())) {
+			this.showStatus(
+				`Rob is unavailable because MyPi cannot verify the exact same-host owner identity. ${result.message ?? ""} ${requestCopy.manualAdvice}`.trim(),
+			);
+			return { cancelled: true };
+		}
+
+		const detail = result.message ?? `Clean handoff ended with status: ${result.status}.`;
+		const robCopy = formatRobPrompt(owner, detail);
+		const robChoice = await this.showExtensionSelector(
+			robCopy.title,
+			[robCopy.cancelOption, robCopy.robOption],
+		);
+		if (robChoice !== robCopy.robOption) {
+			this.showStatus(`Resume cancelled. ${robCopy.manualAdvice}`);
+			return { cancelled: true };
+		}
+
+		try {
+			this.showStatus(`Rob requested for ${robCopy.ownerLabel}; waiting for verified release…`);
+			result = await error.requestHandoff(true);
+		} catch (requestError) {
+			result = {
+				status: "error",
+				message: requestError instanceof Error ? requestError.message : String(requestError),
+			};
+		}
+		if (result.status === "released") return this.handleResumeSession(sessionPath);
+
+		if (result.status === "needs-sigkill") {
+			const killCopy = formatSigkillPrompt(owner);
+			const killConfirmed = await this.showExtensionConfirm(
+				killCopy.title,
+				killCopy.message,
+			);
+			if (!killConfirmed) {
+				this.showStatus(`SIGKILL cancelled. ${killCopy.manualAdvice}`);
+				return { cancelled: true };
+			}
+			try {
+				result = await error.requestHandoff(true, true);
+			} catch (requestError) {
+				result = {
+					status: "error",
+					message: requestError instanceof Error ? requestError.message : String(requestError),
+				};
+			}
+			if (result.status === "released") return this.handleResumeSession(sessionPath);
+		}
+
+		this.showStatus(`Could not rob the session safely: ${result.message ?? result.status}. ${robCopy.manualAdvice}`);
+		return { cancelled: true };
 	}
 
 	private getLoginProviderOptions(authType?: "oauth" | "api_key"): AuthSelectorProvider[] {

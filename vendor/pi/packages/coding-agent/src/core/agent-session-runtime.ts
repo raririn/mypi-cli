@@ -317,6 +317,46 @@ export class AgentSessionRuntime {
 		return { cancelled: result?.cancel === true };
 	}
 
+	/** Run the cancellable extension hook for a new-session operation without
+	 * replacing this runtime. Daemon-backed surfaces use this preflight before
+	 * they prepare and attach a distinct target child. */
+	async prepareNewSession(): Promise<{ cancelled: boolean }> {
+		return this.emitBeforeSwitch("new");
+	}
+
+	/**
+	 * Run fork preflight and resolve the exact source leaf without mutating this
+	 * runtime. The returned preparation can be materialized by another process,
+	 * leaving every surface that remains on this runtime untouched.
+	 */
+	async prepareFork(
+		entryId: string,
+		options?: { position?: "before" | "at" },
+	): Promise<{ cancelled: boolean; targetLeafId?: string | null; selectedText?: string }> {
+		const position = options?.position ?? "before";
+		const beforeResult = await this.emitBeforeFork(entryId, { position });
+		if (beforeResult.cancelled) {
+			return { cancelled: true };
+		}
+
+		const selectedEntry = this.session.sessionManager.getEntry(entryId);
+		if (!selectedEntry) {
+			throw new Error("Invalid entry ID for forking");
+		}
+
+		if (position === "at") {
+			return { cancelled: false, targetLeafId: selectedEntry.id };
+		}
+		if (selectedEntry.type !== "message" || selectedEntry.message.role !== "user") {
+			throw new Error("Invalid entry ID for forking");
+		}
+		return {
+			cancelled: false,
+			targetLeafId: selectedEntry.parentId,
+			selectedText: extractUserMessageText(selectedEntry.message.content),
+		};
+	}
+
 	private async teardownCurrent(reason: SessionShutdownEvent["reason"], targetSessionFile?: string): Promise<void> {
 		await emitSessionShutdownEvent(this.session.extensionRunner, {
 			type: "session_shutdown",
@@ -378,7 +418,7 @@ export class AgentSessionRuntime {
 		setup?: (sessionManager: SessionManager) => Promise<void>;
 		withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
 	}): Promise<{ cancelled: boolean }> {
-		const beforeResult = await this.emitBeforeSwitch("new");
+		const beforeResult = await this.prepareNewSession();
 		if (beforeResult.cancelled) {
 			return beforeResult;
 		}
@@ -413,28 +453,12 @@ export class AgentSessionRuntime {
 		entryId: string,
 		options?: { position?: "before" | "at"; withSession?: (ctx: ReplacedSessionContext) => Promise<void> },
 	): Promise<{ cancelled: boolean; selectedText?: string }> {
-		const position = options?.position ?? "before";
-		const beforeResult = await this.emitBeforeFork(entryId, { position });
-		if (beforeResult.cancelled) {
+		const preparation = await this.prepareFork(entryId, options);
+		if (preparation.cancelled) {
 			return { cancelled: true };
 		}
-		let targetLeafId: string | null;
-		let selectedText: string | undefined;
-
-		const selectedEntry = this.session.sessionManager.getEntry(entryId);
-		if (!selectedEntry) {
-			throw new Error("Invalid entry ID for forking");
-		}
-
-		if (position === "at") {
-			targetLeafId = selectedEntry.id;
-		} else {
-			if (selectedEntry.type !== "message" || selectedEntry.message.role !== "user") {
-				throw new Error("Invalid entry ID for forking");
-			}
-			targetLeafId = selectedEntry.parentId;
-			selectedText = extractUserMessageText(selectedEntry.message.content);
-		}
+		const targetLeafId = preparation.targetLeafId ?? null;
+		const selectedText = preparation.selectedText;
 
 		const previousSessionFile = this.session.sessionFile;
 		if (this.session.sessionManager.isPersisted()) {

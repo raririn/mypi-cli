@@ -1,9 +1,11 @@
 /**
  * Daemon-backed `InteractiveRuntimeHost` (FEAT-061 Phase B).
  *
- * Session replacement flows (new, fork, resume, import) become routed RPC
- * commands; the engine replaces its session in place and the daemon
- * re-broadcasts the new identity to every surface. Disposal detaches — the
+ * Session replacement flows are requester-local. New/fork prepare a distinct
+ * persisted target and attach its daemon child; resume/import attach an
+ * existing target child. In every case the target is ready before this one
+ * surface leaves its source, so co-attached surfaces keep their session and a
+ * failed target startup cannot strand the requester. Disposal detaches — the
  * session keeps running in the daemon, which is the point.
  */
 
@@ -18,23 +20,42 @@ import { SessionImportFileNotFoundError } from "../agent-session-runtime.ts";
 import type { AgentSessionServices } from "../agent-session-services.ts";
 import { getMissingSessionCwdIssue, MissingSessionCwdError } from "../session-cwd.ts";
 import { SessionManager } from "../session-manager.ts";
-import { HostedDaemonClient, readHostedDaemonEnv } from "./daemon-client.ts";
+import {
+	HostedDaemonClient,
+	HostedOwnershipConflictError,
+	readHostedDaemonEnv,
+	type HostedDaemonEnv,
+	type HostedHandoffResult,
+} from "./daemon-client.ts";
 import { HostedAgentSession, HostedStateMirror } from "./hosted-session.ts";
 
 export class HostedRuntimeHost implements InteractiveRuntimeHost {
-	readonly session: HostedAgentSession;
+	session: HostedAgentSession;
 	readonly services: AgentSessionServices;
-	private readonly client: HostedDaemonClient;
+	private client: HostedDaemonClient;
+	private readonly env: HostedDaemonEnv;
 	private rebindSession?: (session: InteractiveSessionSurface) => Promise<void>;
 	private beforeSessionInvalidate?: () => void;
+	private stopIdentityListener?: () => void;
 
-	constructor(client: HostedDaemonClient, services: AgentSessionServices, session: HostedAgentSession) {
+	constructor(
+		client: HostedDaemonClient,
+		services: AgentSessionServices,
+		session: HostedAgentSession,
+		env: HostedDaemonEnv,
+	) {
 		this.client = client;
 		this.services = services;
 		this.session = session;
+		this.env = env;
+		this.bindIdentityListener(session);
+	}
+
+	private bindIdentityListener(session: HostedAgentSession): void {
+		this.stopIdentityListener?.();
 		// Another surface replaced the child's session: mirror is already
 		// re-seeded, so re-render against the new target.
-		this.session.onIdentityChanged(() => {
+		this.stopIdentityListener = session.onIdentityChanged(() => {
 			void this.finishReplacement();
 		});
 	}
@@ -60,21 +81,82 @@ export class HostedRuntimeHost implements InteractiveRuntimeHost {
 		}
 	}
 
-	private async replace<T extends { cancelled: boolean }>(run: () => Promise<T>): Promise<T> {
-		this.session.replacementInFlight = true;
+	private async stageTarget(options: {
+		sessionId: string;
+		cwd: string;
+		sessionStart?: { reason: "new" | "fork"; previousSessionFile?: string };
+	}): Promise<{ client: HostedDaemonClient; session: HostedAgentSession }> {
+		const client = new HostedDaemonClient(this.env);
 		try {
-			const adoption = this.session.waitForNextAttached();
-			const result = await run();
-			if (result.cancelled) return result;
-			// The daemon re-learns the child's identity after the command; wait
-			// for the re-broadcast so the mirror seeds against the new target.
-			await adoption;
-			await this.session.seed();
-			await this.finishReplacement();
-			return result;
-		} finally {
-			this.session.replacementInFlight = false;
+			await client.connect();
+			const attached = await client.attach(options);
+			const mirror = new HostedStateMirror(attached.cwd);
+			mirror.sessionId = attached.sessionId;
+			mirror.sessionFile = attached.sessionFile ?? undefined;
+			const session = new HostedAgentSession({ client, services: this.services, mirror });
+			await session.seed();
+			return { client, session };
+		} catch (error) {
+			client.close();
+			throw error;
 		}
+	}
+
+	private async adoptStagedTarget(staged: {
+		client: HostedDaemonClient;
+		session: HostedAgentSession;
+	}): Promise<void> {
+		const sourceClient = this.client;
+		const sourceSession = this.session;
+		this.client = staged.client;
+		this.session = staged.session;
+		this.bindIdentityListener(staged.session);
+		try {
+			await this.finishReplacement();
+		} catch (error) {
+			// Presentation failed after the target was ready. The source is still
+			// attached, so restore it before releasing the speculative target.
+			this.client = sourceClient;
+			this.session = sourceSession;
+			this.bindIdentityListener(sourceSession);
+			staged.client.detach();
+			staged.client.close();
+			await this.finishReplacement().catch(() => {});
+			throw error;
+		}
+
+		sourceClient.detach();
+		sourceClient.close();
+	}
+
+	private async adoptPreparedTarget(
+		target: SessionManager,
+		reason: "new" | "fork",
+		previousSessionFile?: string,
+	): Promise<void> {
+		const sessionFile = target.materialize();
+		if (!sessionFile) throw new Error("A daemon-backed session target must be persisted before attach.");
+		await this.adoptTargetInfo(
+			{ sessionId: target.getSessionId(), sessionFile, cwd: target.getCwd() },
+			reason,
+			previousSessionFile,
+		);
+	}
+
+	private async adoptTargetInfo(
+		target: { sessionId: string; sessionFile: string; cwd: string },
+		reason: "new" | "fork",
+		previousSessionFile?: string,
+	): Promise<void> {
+		const staged = await this.stageTarget({
+			sessionId: target.sessionId,
+			cwd: target.cwd,
+			sessionStart: {
+				reason,
+				...(previousSessionFile ? { previousSessionFile } : {}),
+			},
+		});
+		await this.adoptStagedTarget(staged);
 	}
 
 	async newSession(options?: {
@@ -82,27 +164,66 @@ export class HostedRuntimeHost implements InteractiveRuntimeHost {
 		setup?: (sessionManager: SessionManager) => Promise<void>;
 		withSession?: unknown;
 	}): Promise<{ cancelled: boolean }> {
-		return this.replace(async () => {
-			const response = await this.client.request<{ data: { cancelled: boolean } }>({
-				type: "new_session",
-				parentSession: options?.parentSession,
+		const source = this.session.sessionManager;
+		if (!source.isPersisted()) {
+			throw new Error("Daemon-backed /new requires a persisted source session.");
+		}
+		if (!options?.setup) {
+			const response = await this.client.request<{
+				data: {
+					cancelled: boolean;
+					target?: { sessionId: string; sessionFile: string; cwd: string };
+				};
+			}>({
+				type: "prepare_surface_session",
+				sourceSessionId: source.getSessionId(),
+				operation: "new",
+				...(options?.parentSession ? { parentSession: options.parentSession } : {}),
 			});
-			return { cancelled: response.data.cancelled };
-		});
+			if (response.data.cancelled) return { cancelled: true };
+			if (!response.data.target) throw new Error("The daemon did not return a prepared new-session target.");
+			await this.adoptTargetInfo(response.data.target, "new", source.getSessionFile());
+			return { cancelled: false };
+		}
+
+		// setup is an in-process callback and cannot cross the daemon wire. Keep
+		// its established API by running preflight in the source engine, then
+		// applying the callback to a requester-owned target before attach.
+		const preflight = await this.client.request<{ data: { cancelled: boolean } }>({ type: "prepare_new_session" });
+		if (preflight.data.cancelled) return { cancelled: true };
+		const target = SessionManager.create(
+			source.getCwd(),
+			source.getSessionDir(),
+			options?.parentSession ? { parentSession: options.parentSession } : undefined,
+		);
+		if (options?.setup) await options.setup(target);
+		await this.adoptPreparedTarget(target, "new", source.getSessionFile());
+		return { cancelled: false };
 	}
 
 	async fork(
 		entryId: string,
 		options?: { position?: "before" | "at"; withSession?: unknown },
 	): Promise<{ cancelled: boolean; selectedText?: string }> {
-		return this.replace(async () => {
-			const response = await this.client.request<{ data: { text?: string; cancelled: boolean } }>({
-				type: "fork",
-				entryId,
-				position: options?.position,
-			});
-			return { cancelled: response.data.cancelled, selectedText: response.data.text };
+		const position = options?.position ?? "before";
+		const response = await this.client.request<{
+			data: {
+				text?: string;
+				cancelled: boolean;
+				target?: { sessionId: string; sessionFile: string; cwd: string };
+			};
+		}>({
+			type: "prepare_surface_session",
+			sourceSessionId: this.session.sessionManager.getSessionId(),
+			operation: "fork",
+			entryId,
+			position,
 		});
+		if (response.data.cancelled) return { cancelled: true };
+		if (!response.data.target) throw new Error("The daemon did not return a prepared fork target.");
+		const sourceFile = this.session.sessionManager.getSessionFile();
+		await this.adoptTargetInfo(response.data.target, "fork", sourceFile);
+		return { cancelled: false, selectedText: response.data.text };
 	}
 
 	async switchSession(
@@ -115,19 +236,50 @@ export class HostedRuntimeHost implements InteractiveRuntimeHost {
 	): Promise<{ cancelled: boolean }> {
 		// The session file is local; check its stored cwd here so the TUI's
 		// missing-cwd prompt flow behaves exactly as embedded.
+		const resolvedSessionPath = resolvePath(sessionPath, process.cwd());
+		const target = SessionManager.open(resolvedSessionPath);
 		if (!options?.cwdOverride) {
-			const target = SessionManager.open(resolvePath(sessionPath, process.cwd()));
 			const issue = getMissingSessionCwdIssue(target, this.services.cwd);
 			if (issue) throw new MissingSessionCwdError(issue);
 		}
-		return this.replace(async () => {
-			const response = await this.client.request<{ data: { cancelled: boolean } }>({
-				type: "switch_session",
-				sessionPath: resolvePath(sessionPath, process.cwd()),
-				cwdOverride: options?.cwdOverride,
+
+		const targetSessionId = target.getSessionId();
+		if (targetSessionId === this.session.sessionManager.getSessionId()) {
+			return { cancelled: false };
+		}
+
+		// A hosted /resume moves this one surface between daemon children. It
+		// must not ask the current shared child to replace its identity: doing so
+		// moves every co-attached GUI/TUI client and collides when the target is
+		// already live in another child. Attach and seed the target first so any
+		// failure leaves the source connection and its UI completely intact.
+		let staged: { client: HostedDaemonClient; session: HostedAgentSession };
+		try {
+			staged = await this.stageTarget({
+				sessionId: targetSessionId,
+				cwd: options?.cwdOverride ?? target.getCwd(),
 			});
-			return { cancelled: response.data.cancelled };
-		});
+		} catch (error) {
+			if (error instanceof HostedOwnershipConflictError) {
+				error.bindHandoffRequester(async (force, hard, confirmationToken) => {
+					const response = await this.client.request<{ data: HostedHandoffResult }>(
+						{
+							type: "request_handoff",
+							targetSessionId,
+							expectedOwnerId: error.conflict.owner.ownerId,
+							force,
+							hard,
+							...(confirmationToken ? { confirmationToken } : {}),
+						},
+						{ timeoutMs: 90_000 },
+					);
+					return response.data;
+				});
+			}
+			throw error;
+		}
+		await this.adoptStagedTarget(staged);
+		return { cancelled: false };
 	}
 
 	async importFromJsonl(inputPath: string, cwdOverride?: string): Promise<{ cancelled: boolean }> {
@@ -146,6 +298,8 @@ export class HostedRuntimeHost implements InteractiveRuntimeHost {
 
 	async dispose(): Promise<void> {
 		this.beforeSessionInvalidate?.();
+		this.stopIdentityListener?.();
+		this.stopIdentityListener = undefined;
 		this.client.detach();
 		this.client.close();
 	}
@@ -195,9 +349,34 @@ export async function createHostedRuntime(options: CreateHostedRuntimeOptions): 
 			mirror.sessionFile = attached.sessionFile ?? undefined;
 			const session = new HostedAgentSession({ client, services: options.services, mirror });
 			await session.seed();
-			return new HostedRuntimeHost(client, options.services, session);
+			return new HostedRuntimeHost(client, options.services, session, env);
 		} catch (error) {
 			client.close();
+			if (error instanceof HostedOwnershipConflictError) {
+				error.bindHandoffRequester(async (force, hard, confirmationToken) => {
+					const negotiationClient = new HostedDaemonClient(env);
+					try {
+						await negotiationClient.connect("mypi-startup");
+						const response = await negotiationClient.request<{ data: HostedHandoffResult }>(
+							{
+								type: "request_handoff",
+								targetSessionId: error.conflict.sessionId,
+								expectedOwnerId: error.conflict.owner.ownerId,
+								force,
+								hard,
+								...(confirmationToken ? { confirmationToken } : {}),
+							},
+							{ timeoutMs: 90_000 },
+						);
+						return response.data;
+					} finally {
+						negotiationClient.close();
+					}
+				});
+				// Ownership is stable enough to require user action; retrying engine
+				// startup would only reproduce the same refused writer lock.
+				throw error;
+			}
 			lastError = error;
 		}
 	}

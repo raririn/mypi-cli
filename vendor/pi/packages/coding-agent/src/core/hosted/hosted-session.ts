@@ -592,7 +592,8 @@ export class HostedAgentSession implements InteractiveSessionSurface {
 			return;
 		}
 		if (type === "attached") {
-			// The daemon re-broadcasts identity after new_session/fork/resume.
+			// A daemon may re-broadcast identity for a legacy sole-client
+			// replacement. Modern navigation/create/derive adopts another child.
 			const newId = String(frame.sessionId ?? "");
 			if (newId) this.client.sessionId = newId;
 			const waiters = this.attachedWaiters;

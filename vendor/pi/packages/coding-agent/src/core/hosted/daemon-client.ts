@@ -39,6 +39,74 @@ export interface AttachedInfo {
 	clients: number;
 }
 
+export interface HostedOwnershipConflictInfo {
+	sessionId: string;
+	sessionFile: string;
+	owner: {
+		pid: number;
+		hostname: string;
+		startedAt: string;
+		surface: string;
+		ownerId: string | null;
+		processStartTime: number | null;
+		cooperativeHandoffAvailable: boolean;
+	};
+}
+
+export type HostedHandoffResult = {
+	status:
+		| "released"
+		| "busy"
+		| "declined"
+		| "unavailable"
+		| "owner-changed"
+		| "unverifiable"
+		| "needs-sigkill"
+		| "confirmation-required"
+		| "timeout"
+		| "error";
+	message?: string;
+	/** Private one-shot daemon capability retained by this error object. */
+	confirmationToken?: string;
+};
+
+export class HostedOwnershipConflictError extends Error {
+	readonly conflict: HostedOwnershipConflictInfo;
+	private handoffRequester?: (
+		force: boolean,
+		hard: boolean,
+		confirmationToken?: string,
+	) => Promise<HostedHandoffResult>;
+	private sigkillConfirmationToken?: string;
+
+	constructor(conflict: HostedOwnershipConflictInfo) {
+		super(`Session ${conflict.sessionId} is owned by ${conflict.owner.surface} (pid ${conflict.owner.pid}).`);
+		this.name = "HostedOwnershipConflictError";
+		this.conflict = conflict;
+	}
+
+	bindHandoffRequester(requester: (
+		force: boolean,
+		hard: boolean,
+		confirmationToken?: string,
+	) => Promise<HostedHandoffResult>): void {
+		this.handoffRequester = requester;
+	}
+
+	async requestHandoff(force = false, hard = false): Promise<HostedHandoffResult> {
+		if (!this.handoffRequester) {
+			return { status: "error", message: "The daemon handoff requester is unavailable." };
+		}
+		const result = await this.handoffRequester(force, hard, hard ? this.sigkillConfirmationToken : undefined);
+		if (result.status === "needs-sigkill" && result.confirmationToken) {
+			this.sigkillConfirmationToken = result.confirmationToken;
+		} else if (hard) {
+			this.sigkillConfirmationToken = undefined;
+		}
+		return result;
+	}
+}
+
 type Frame = Record<string, unknown> & { type?: string };
 
 interface PendingRequest {
@@ -56,6 +124,7 @@ const LONG_RUNNING_COMMANDS = new Set([
 	"bash",
 	"fork",
 	"clone",
+	"prepare_surface_session",
 	"new_session",
 	"switch_session",
 	"reload",
@@ -118,7 +187,13 @@ export class HostedDaemonClient {
 				}
 			};
 			this.frameListeners.add(listener);
-			this.send({ type: "hello", protocol: this.env.protocol, client: clientName });
+			this.send({
+				type: "hello",
+				protocol: this.env.protocol,
+				client: clientName,
+				pid: process.pid,
+				processStartTime: Math.round(performance.timeOrigin),
+			});
 		});
 	}
 
@@ -126,33 +201,52 @@ export class HostedDaemonClient {
 	 * Attach to a session (or create a fresh one when sessionId is omitted)
 	 * and adopt the id the daemon reports back.
 	 */
-	attach(options: { sessionId?: string; cwd: string; model?: string }): Promise<AttachedInfo> {
+	attach(options: {
+		sessionId?: string;
+		cwd: string;
+		model?: string;
+		sessionStart?: { reason: "new" | "fork"; previousSessionFile?: string };
+	}): Promise<AttachedInfo> {
 		return new Promise<AttachedInfo>((resolve, reject) => {
+			const finish = (run: () => void) => {
+				clearTimeout(timer);
+				this.frameListeners.delete(listener);
+				run();
+			};
 			const timer = setTimeout(
-				() => reject(new Error("Timed out waiting for the session daemon to attach the session.")),
+				() => finish(() => reject(new Error("Timed out waiting for the session daemon to attach the session."))),
 				30_000,
 			);
 			const listener = (frame: Frame) => {
 				if (frame.type === "attached") {
-					clearTimeout(timer);
-					this.frameListeners.delete(listener);
 					this.sessionId = String(frame.sessionId);
-					resolve({
+					finish(() => resolve({
 						sessionId: String(frame.sessionId),
 						nativeSessionId: (frame.nativeSessionId as string | null) ?? null,
 						sessionFile: (frame.sessionFile as string | null) ?? null,
 						cwd: String(frame.cwd ?? options.cwd),
 						clients: Number(frame.clients ?? 1),
-					});
+					}));
+				} else if (frame.type === "ownership_conflict") {
+					const owner = (frame.owner ?? {}) as Record<string, unknown>;
+					finish(() => reject(new HostedOwnershipConflictError({
+						sessionId: String(frame.sessionId ?? options.sessionId ?? "unknown"),
+						sessionFile: String(frame.sessionFile ?? ""),
+						owner: {
+							pid: Number(owner.pid ?? 0),
+							hostname: String(owner.hostname ?? "unknown"),
+							startedAt: String(owner.startedAt ?? "unknown"),
+							surface: String(owner.surface ?? "unknown"),
+							ownerId: typeof owner.ownerId === "string" ? owner.ownerId : null,
+							processStartTime: typeof owner.processStartTime === "number" ? owner.processStartTime : null,
+							cooperativeHandoffAvailable: owner.cooperativeHandoffAvailable === true,
+						},
+					})));
 				} else if (frame.type === "session_exit") {
-					clearTimeout(timer);
-					this.frameListeners.delete(listener);
 					const notify = frame.lastErrorNotify ? `: ${frame.lastErrorNotify}` : "";
-					reject(new Error(`The session engine exited before it became ready${notify}`));
+					finish(() => reject(new Error(`The session engine exited before it became ready${notify}`)));
 				} else if (frame.type === "error") {
-					clearTimeout(timer);
-					this.frameListeners.delete(listener);
-					reject(new Error(String(frame.error ?? "attach failed")));
+					finish(() => reject(new Error(String(frame.error ?? "attach failed"))));
 				}
 			};
 			this.frameListeners.add(listener);
@@ -161,6 +255,7 @@ export class HostedDaemonClient {
 				...(options.sessionId ? { sessionId: options.sessionId } : {}),
 				cwd: options.cwd,
 				...(options.model ? { model: options.model } : {}),
+				...(options.sessionStart ? { sessionStart: options.sessionStart } : {}),
 			});
 		});
 	}

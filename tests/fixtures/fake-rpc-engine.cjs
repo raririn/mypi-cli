@@ -13,6 +13,9 @@
 
 const args = process.argv.slice(2);
 const mode = process.env.FAKE_ENGINE_MODE || 'happy';
+const { randomUUID } = require('node:crypto');
+const { join } = require('node:path');
+const { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } = require('node:fs');
 
 const readFlag = (name) => {
   const index = args.indexOf(name);
@@ -26,7 +29,24 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let turnActive = false;
 let aborted = false;
+let sessionStartAnnounced = false;
 
+const sessionDir = join(process.cwd(), 'persisted-sessions');
+const sessionPath = () => {
+  if (existsSync(sessionDir)) {
+    for (const name of readdirSync(sessionDir)) {
+      if (!name.endsWith('.jsonl')) continue;
+      const candidate = join(sessionDir, name);
+      try {
+        const firstLine = readFileSync(candidate, 'utf8').split('\n', 1)[0];
+        if (JSON.parse(firstLine).id === sessionId) return candidate;
+      } catch {
+        // Ignore unrelated or mid-write fixtures.
+      }
+    }
+  }
+  return join(sessionDir, `${sessionId}.jsonl`);
+};
 const state = () => ({
   model: { provider: 'mock', id: 'fake-model' },
   thinkingLevel: 'medium',
@@ -34,12 +54,67 @@ const state = () => ({
   isCompacting: false,
   steeringMode: 'all',
   followUpMode: 'all',
-  sessionFile: `/tmp/fake-engine/${sessionId}.jsonl`,
+  sessionFile: sessionPath(),
   sessionId,
   autoCompactionEnabled: true,
   messageCount: 0,
   pendingMessageCount: 0,
+  cwd: process.cwd(),
+  sessionDir,
+  usesDefaultSessionDir: false,
+  isPersisted: true,
 });
+
+const readEntries = () => {
+  if (!existsSync(sessionPath())) return [];
+  return readFileSync(sessionPath(), 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+};
+
+const messageText = (content) => {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  return content.filter((part) => part?.type === 'text').map((part) => part.text || '').join('');
+};
+
+const materializeTarget = (entries, parentSession) => {
+  mkdirSync(sessionDir, { recursive: true });
+  const targetId = randomUUID();
+  const timestamp = new Date().toISOString();
+  const targetPath = join(sessionDir, `${timestamp.replace(/[:.]/g, '-')}_${targetId}.jsonl`);
+  const header = {
+    type: 'session',
+    version: 3,
+    id: targetId,
+    timestamp,
+    cwd: process.cwd(),
+    ...(parentSession ? { parentSession } : {}),
+  };
+  writeFileSync(targetPath, `${[header, ...entries].map((entry) => JSON.stringify(entry)).join('\n')}\n`);
+  return { sessionId: targetId, sessionFile: targetPath, cwd: process.cwd() };
+};
+
+const branchTo = (entries, leafId) => {
+  if (!leafId) return [];
+  const byId = new Map(entries.filter((entry) => entry.id).map((entry) => [entry.id, entry]));
+  const branch = [];
+  let current = byId.get(leafId);
+  while (current) {
+    branch.push(current);
+    current = current.parentId ? byId.get(current.parentId) : undefined;
+  }
+  branch.reverse();
+  let parentId = null;
+  return branch
+    .filter((entry) => entry.type !== 'label')
+    .map((entry) => {
+      const copy = { ...entry, parentId };
+      parentId = entry.id;
+      return copy;
+    });
+};
 
 async function runTurn(promptText) {
   turnActive = true;
@@ -93,7 +168,27 @@ async function handleCommand(command) {
   const { id, type } = command;
   switch (type) {
     case 'get_state':
+      if (process.env.FAKE_ENGINE_FAIL_SESSION === sessionId) {
+        if (process.env.FAKE_ENGINE_OWNERSHIP_CONFLICT) {
+          const conflict = JSON.parse(process.env.FAKE_ENGINE_OWNERSHIP_CONFLICT);
+          await new Promise((resolve) => process.stderr.write(
+            `@@MYPI_OWNERSHIP_CONFLICT@@${JSON.stringify({ protocol: 1, ...conflict })}\n`,
+            resolve,
+          ));
+        }
+        out({
+          type: 'extension_ui_request',
+          method: 'notify',
+          notifyType: 'error',
+          message: `fake ownership conflict for ${sessionId}`,
+        });
+        process.exit(1);
+      }
       if (mode === 'slow') return;
+      if (!sessionStartAnnounced && process.env.MYPI_DAEMON_SESSION_START) {
+        sessionStartAnnounced = true;
+        out({ type: '__fake_session_start', value: JSON.parse(process.env.MYPI_DAEMON_SESSION_START) });
+      }
       out({ id, type: 'response', command: 'get_state', success: true, data: state() });
       return;
     case 'prompt':
@@ -111,6 +206,56 @@ async function handleCommand(command) {
       sessionId = `fake-new-${(newSessionCounter += 1)}`;
       out({ id, type: 'response', command: 'new_session', success: true, data: { cancelled: false } });
       return;
+    case 'prepare_new_session': {
+      const data = { cancelled: false };
+      if (command.materialize === true) {
+        data.target = materializeTarget([], command.parentSession);
+      }
+      out({ id, type: 'response', command: 'prepare_new_session', success: true, data });
+      return;
+    }
+    case 'prepare_fork': {
+      const sourceEntries = readEntries();
+      const selected = sourceEntries.find((entry) => entry.id === command.entryId);
+      if (!selected) {
+        out({ id, type: 'response', command: 'prepare_fork', success: false, error: 'Invalid entry ID for forking' });
+        return;
+      }
+      if ((command.position || 'before') === 'at') {
+        const data = { cancelled: false, targetLeafId: selected.id };
+        if (command.materialize === true) {
+          data.target = materializeTarget(branchTo(sourceEntries, selected.id), sessionPath());
+        }
+        out({
+          id,
+          type: 'response',
+          command: 'prepare_fork',
+          success: true,
+          data,
+        });
+        return;
+      }
+      if (selected.type !== 'message' || selected.message?.role !== 'user') {
+        out({ id, type: 'response', command: 'prepare_fork', success: false, error: 'Invalid entry ID for forking' });
+        return;
+      }
+      const data = {
+        cancelled: false,
+        targetLeafId: selected.parentId,
+        text: messageText(selected.message.content),
+      };
+      if (command.materialize === true) {
+        data.target = materializeTarget(branchTo(sourceEntries, selected.parentId), sessionPath());
+      }
+      out({
+        id,
+        type: 'response',
+        command: 'prepare_fork',
+        success: true,
+        data,
+      });
+      return;
+    }
     case 'get_messages':
       out({ id, type: 'response', command: 'get_messages', success: true, data: { messages: [] } });
       return;

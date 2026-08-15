@@ -229,6 +229,12 @@ export class RpcClient {
 		return this.getData(response);
 	}
 
+	/** Run new-session extension preflight without replacing the RPC engine. */
+	async prepareNewSession(): Promise<{ cancelled: boolean }> {
+		const response = await this.send({ type: "prepare_new_session" });
+		return this.getData(response);
+	}
+
 	/**
 	 * Get current session state.
 	 */
@@ -377,6 +383,15 @@ export class RpcClient {
 	 */
 	async fork(entryId: string): Promise<{ text: string; cancelled: boolean }> {
 		const response = await this.send({ type: "fork", entryId });
+		return this.getData(response);
+	}
+
+	/** Run fork extension preflight and resolve its source leaf without replacing the engine. */
+	async prepareFork(
+		entryId: string,
+		position?: "before" | "at",
+	): Promise<{ cancelled: boolean; targetLeafId?: string | null; text?: string }> {
+		const response = await this.send({ type: "prepare_fork", entryId, position });
 		return this.getData(response);
 	}
 

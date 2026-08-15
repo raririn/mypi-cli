@@ -6,7 +6,7 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -32,7 +32,7 @@ function waitFor(predicate, timeoutMs = 5_000, label = "condition") {
   });
 }
 
-async function startDaemon({ mode } = {}) {
+async function startDaemon({ mode, failSession, ownershipConflict } = {}) {
   const daemonDir = await mkdtemp(join(tmpdir(), "mypi-hosted-test-"));
   const child = spawn(process.execPath, [DAEMON_SCRIPT, "__daemon", "--idle-grace-ms", "300"], {
     env: {
@@ -40,6 +40,10 @@ async function startDaemon({ mode } = {}) {
       MYPI_DAEMON_DIR: daemonDir,
       MYPI_DAEMON_ENGINE_CMD: JSON.stringify([process.execPath, FAKE_ENGINE]),
       FAKE_ENGINE_MODE: mode ?? "",
+      FAKE_ENGINE_FAIL_SESSION: failSession ?? "",
+      ...(ownershipConflict !== undefined
+        ? { FAKE_ENGINE_OWNERSHIP_CONFLICT: JSON.stringify(ownershipConflict) }
+        : {}),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -68,6 +72,32 @@ async function startDaemon({ mode } = {}) {
       await rm(daemonDir, { recursive: true, force: true });
     },
   };
+}
+
+async function writeSessionFile(root, sessionId, entries = []) {
+  const sessionDir = join(root, "persisted-sessions");
+  await mkdir(sessionDir, { recursive: true });
+  const sessionPath = join(sessionDir, `${sessionId}.jsonl`);
+  const header = {
+    type: "session",
+    version: 3,
+    id: sessionId,
+    timestamp: new Date().toISOString(),
+    cwd: root,
+  };
+  await writeFile(sessionPath, `${[header, ...entries].map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+  return sessionPath;
+}
+
+async function readSessionEntries(root, sessionId) {
+  const sessionDir = join(root, "persisted-sessions");
+  for (const name of await readdir(sessionDir)) {
+    if (!name.endsWith(".jsonl")) continue;
+    const value = await readFile(join(sessionDir, name), "utf8");
+    const entries = value.split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    if (entries[0]?.id === sessionId) return entries;
+  }
+  throw new Error(`Session ${sessionId} was not materialized in ${sessionDir}`);
 }
 
 /** Minimal stand-ins for the local services the hosted session hands out. */
@@ -110,7 +140,7 @@ test("a hosted runtime attaches, mirrors state, and drives a turn through the da
     assert.equal(session.model.id, "fake-model");
     assert.equal(session.thinkingLevel, "medium");
     assert.equal(session.state.messages.length, 0);
-    assert.equal(session.sessionManager.getCwd(), daemon.daemonDir);
+    assert.equal(await realpath(session.sessionManager.getCwd()), await realpath(daemon.daemonDir));
 
     // Commands arrive from the engine for autocomplete.
     await session.bindExtensions({ uiContext: undefined });
@@ -199,25 +229,187 @@ test("engine ask-user prompts render through the TUI dialog context and answer b
   }
 });
 
-test("new_session through the hosted runtime re-keys the mirror and rebinds", async () => {
+test("hosted /new moves only the requester to a distinct daemon child", async () => {
   const daemon = await startDaemon();
   try {
     const host = await createHosted(daemon, { sessionId: "s1" });
+    const sourceWatcher = await createHosted(daemon, { sessionId: "s1" });
     let rebinds = 0;
     host.setRebindSession(async () => {
       rebinds += 1;
     });
 
-    const result = await host.newSession();
+    const result = await host.newSession({ parentSession: "/tmp/daemon-parent.jsonl" });
     assert.equal(result.cancelled, false);
-    await waitFor(() => host.session.sessionId === "fake-new-1", 5_000, "identity adopted");
-    assert.ok(rebinds >= 1, "the TUI was asked to rebind");
+    assert.notEqual(host.session.sessionId, "s1", "the requester adopted a newly prepared target");
+    assert.equal(sourceWatcher.session.sessionId, "s1", "the co-attached source client did not move");
+    assert.equal(rebinds, 1, "the requesting TUI rebound once");
+    const targetEntries = await readSessionEntries(daemon.daemonDir, host.session.sessionId);
+    assert.equal(targetEntries[0].id, host.session.sessionId, "the target was materialized before attach");
+    assert.equal(targetEntries[0].parentSession, "/tmp/daemon-parent.jsonl");
 
-    // Commands still route after the re-key.
+    // Commands route through the new child while the old child remains live.
     await host.session.prompt("after");
     await host.session.waitForIdle();
+    await sourceWatcher.session.prompt("still source");
+    await sourceWatcher.session.waitForIdle();
 
-    await host.dispose();
+    await Promise.all([host.dispose(), sourceWatcher.dispose()]);
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("hosted new-session preparation preserves parent and setup callback semantics", async () => {
+  const daemon = await startDaemon();
+  try {
+    const moving = await createHosted(daemon, { sessionId: "setup-source" });
+    const sourceWatcher = await createHosted(daemon, { sessionId: "setup-source" });
+    const result = await moving.newSession({
+      parentSession: "/tmp/explicit-parent.jsonl",
+      setup: async (manager) => {
+        manager.appendSessionInfo("prepared target");
+      },
+    });
+
+    assert.equal(result.cancelled, false);
+    assert.equal(sourceWatcher.session.sessionId, "setup-source");
+    const entries = await readSessionEntries(daemon.daemonDir, moving.session.sessionId);
+    assert.equal(entries[0].parentSession, "/tmp/explicit-parent.jsonl");
+    assert.equal(entries.find((entry) => entry.type === "session_info")?.name, "prepared target");
+
+    await Promise.all([moving.dispose(), sourceWatcher.dispose()]);
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("hosted /fork and /clone derive separate targets without moving source clients", async () => {
+  const daemon = await startDaemon();
+  try {
+    const timestamp = new Date().toISOString();
+    const sourcePath = await writeSessionFile(daemon.daemonDir, "source", [
+      { type: "message", id: "u1", parentId: null, timestamp, message: { role: "user", content: "first" } },
+      {
+        type: "message",
+        id: "a1",
+        parentId: "u1",
+        timestamp,
+        message: { role: "assistant", content: [{ type: "text", text: "reply" }] },
+      },
+      { type: "message", id: "u2", parentId: "a1", timestamp, message: { role: "user", content: "retry me" } },
+    ]);
+    const forking = await createHosted(daemon, { sessionId: "source" });
+    const cloning = await createHosted(daemon, { sessionId: "source" });
+    const sourceWatcher = await createHosted(daemon, { sessionId: "source" });
+
+    const forkResult = await forking.fork("u2");
+    assert.equal(forkResult.cancelled, false);
+    assert.equal(forkResult.selectedText, "retry me");
+    assert.notEqual(forking.session.sessionId, "source");
+    assert.equal(sourceWatcher.session.sessionId, "source");
+    const forkEntries = await readSessionEntries(daemon.daemonDir, forking.session.sessionId);
+    assert.deepEqual(
+      forkEntries.filter((entry) => entry.type === "message").map((entry) => entry.id),
+      ["u1", "a1"],
+      "fork-before excludes the selected user message",
+    );
+    assert.equal(await realpath(forkEntries[0].parentSession), await realpath(sourcePath));
+
+    const cloneResult = await cloning.fork("u2", { position: "at" });
+    assert.equal(cloneResult.cancelled, false);
+    assert.notEqual(cloning.session.sessionId, "source");
+    assert.notEqual(cloning.session.sessionId, forking.session.sessionId);
+    assert.equal(sourceWatcher.session.sessionId, "source");
+    const cloneEntries = await readSessionEntries(daemon.daemonDir, cloning.session.sessionId);
+    assert.deepEqual(
+      cloneEntries.filter((entry) => entry.type === "message").map((entry) => entry.id),
+      ["u1", "a1", "u2"],
+      "clone-at includes the active leaf",
+    );
+
+    await Promise.all([forking.dispose(), cloning.dispose(), sourceWatcher.dispose()]);
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("hosted resume moves only the requesting surface to an existing daemon child", async () => {
+  const daemon = await startDaemon();
+  try {
+    const targetPath = await writeSessionFile(daemon.daemonDir, "target");
+    const moving = await createHosted(daemon, { sessionId: "source" });
+    const sourceWatcher = await createHosted(daemon, { sessionId: "source" });
+    const targetWatcher = await createHosted(daemon, { sessionId: "target" });
+
+    let rebinds = 0;
+    moving.setRebindSession(async () => {
+      rebinds += 1;
+    });
+    const result = await moving.switchSession(targetPath);
+
+    assert.equal(result.cancelled, false);
+    assert.equal(moving.session.sessionId, "target", "the requester adopted the target child");
+    assert.equal(sourceWatcher.session.sessionId, "source", "another source client did not move");
+    assert.equal(targetWatcher.session.sessionId, "target", "the existing target client stayed attached");
+    assert.equal(rebinds, 1, "the requesting TUI rebound once");
+
+    await Promise.all([moving.dispose(), sourceWatcher.dispose(), targetWatcher.dispose()]);
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("hosted resume keeps the source attached when the target engine refuses startup", async () => {
+  const daemon = await startDaemon({ failSession: "blocked" });
+  try {
+    const targetPath = await writeSessionFile(daemon.daemonDir, "blocked");
+    const moving = await createHosted(daemon, { sessionId: "source" });
+    await assert.rejects(moving.switchSession(targetPath), /fake ownership conflict for blocked/);
+    assert.equal(moving.session.sessionId, "source", "failed target attach preserved the source");
+
+    await moving.session.prompt("still here");
+    await moving.session.waitForIdle();
+    assert.equal(moving.session.sessionId, "source");
+    await moving.dispose();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("hosted resume exposes a typed external-owner conflict without leaving the source", async () => {
+  const owner = {
+    version: 2,
+    pid: 43210,
+    processStartTime: 1_700_000_000_000,
+    hostname: "test-host",
+    startedAt: "2026-08-15T00:00:00.000Z",
+    surface: "pi-cli",
+    ownerId: "external-owner-id",
+  };
+  const daemon = await startDaemon({
+    failSession: "blocked",
+    ownershipConflict: { sessionFile: "/tmp/external-blocked.jsonl", owner },
+  });
+  try {
+    const targetPath = await writeSessionFile(daemon.daemonDir, "blocked");
+    const moving = await createHosted(daemon, { sessionId: "source" });
+    let conflict;
+    try {
+      await moving.switchSession(targetPath);
+      assert.fail("external ownership should refuse target attach");
+    } catch (error) {
+      conflict = error;
+    }
+    assert.equal(conflict?.name, "HostedOwnershipConflictError");
+    assert.equal(conflict?.conflict.owner.pid, 43210);
+    assert.equal(conflict?.conflict.owner.surface, "pi-cli");
+    assert.equal(conflict?.conflict.owner.cooperativeHandoffAvailable, false);
+    assert.equal(moving.session.sessionId, "source", "the requester stayed on its source session");
+
+    const result = await conflict.requestHandoff(false);
+    assert.equal(result.status, "owner-changed", "a vanished/unmatched lease is never negotiated from stale evidence");
+    await moving.dispose();
   } finally {
     await daemon.cleanup();
   }

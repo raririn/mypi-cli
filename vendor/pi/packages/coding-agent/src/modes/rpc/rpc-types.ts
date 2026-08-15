@@ -25,6 +25,7 @@ export type RpcCommand =
 	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "abort" }
 	| { id?: string; type: "new_session"; parentSession?: string }
+	| { id?: string; type: "prepare_new_session"; parentSession?: string; materialize?: boolean }
 
 	// State
 	| { id?: string; type: "get_state" }
@@ -69,6 +70,7 @@ export type RpcCommand =
 			label?: string;
 	  }
 	| { id?: string; type: "fork"; entryId: string; position?: "before" | "at" }
+	| { id?: string; type: "prepare_fork"; entryId: string; position?: "before" | "at"; materialize?: boolean }
 	| { id?: string; type: "clone" }
 	| { id?: string; type: "get_fork_messages" }
 	| { id?: string; type: "get_entries"; since?: string }
@@ -156,6 +158,13 @@ export interface RpcSessionState {
 	supportsThinking?: boolean;
 }
 
+/** A separately materialized session that another daemon child can open. */
+export interface PreparedSessionTarget {
+	sessionId: string;
+	sessionFile: string;
+	cwd: string;
+}
+
 // ============================================================================
 // RPC Responses (stdout)
 // ============================================================================
@@ -168,6 +177,13 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "follow_up"; success: true }
 	| { id?: string; type: "response"; command: "abort"; success: true }
 	| { id?: string; type: "response"; command: "new_session"; success: true; data: { cancelled: boolean } }
+	| {
+			id?: string;
+			type: "response";
+			command: "prepare_new_session";
+			success: true;
+			data: { cancelled: boolean; target?: PreparedSessionTarget };
+	  }
 
 	// State
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }
@@ -245,6 +261,13 @@ export type RpcResponse =
 			};
 	  }
 	| { id?: string; type: "response"; command: "fork"; success: true; data: { text: string; cancelled: boolean } }
+	| {
+			id?: string;
+			type: "response";
+			command: "prepare_fork";
+			success: true;
+			data: { cancelled: boolean; targetLeafId?: string | null; text?: string; target?: PreparedSessionTarget };
+	  }
 	| { id?: string; type: "response"; command: "clone"; success: true; data: { cancelled: boolean } }
 	| {
 			id?: string;

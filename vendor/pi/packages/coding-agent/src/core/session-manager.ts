@@ -991,6 +991,22 @@ export class SessionManager {
 		}
 	}
 
+	/**
+	 * Ensure the complete current session tree exists on disk immediately.
+	 *
+	 * Normal sessions intentionally defer their first write until an assistant
+	 * message exists. A daemon-backed surface replacement is different: a new
+	 * engine process must be able to open the prepared target before the
+	 * requesting surface leaves its source child. Materializing establishes that
+	 * handoff point without changing the session id, tree, or leaf.
+	 */
+	materialize(): string | undefined {
+		if (!this.persist || !this.sessionFile) return undefined;
+		this._rewriteFile();
+		this.flushed = true;
+		return this.sessionFile;
+	}
+
 	isPersisted(): boolean {
 		return this.persist;
 	}

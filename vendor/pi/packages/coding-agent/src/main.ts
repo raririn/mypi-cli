@@ -13,6 +13,7 @@ import { type Args, type Mode, parseArgs, printHelp } from "./cli/args.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
+import { promptForStartupOwnershipConflict } from "./cli/ownership-conflict-prompt.ts";
 import { createProjectTrustContext } from "./cli/project-trust.ts";
 import { selectSession } from "./cli/session-picker.ts";
 import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.ts";
@@ -25,8 +26,8 @@ import {
 } from "./core/agent-session-services.ts";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { exportFromFile } from "./core/export-html/index.ts";
-import type { InlineExtension } from "./core/extensions/types.ts";
-import { readHostedDaemonEnv } from "./core/hosted/daemon-client.ts";
+import type { InlineExtension, SessionStartEvent } from "./core/extensions/types.ts";
+import { HostedOwnershipConflictError, readHostedDaemonEnv } from "./core/hosted/daemon-client.ts";
 import { createHostedRuntime } from "./core/hosted/hosted-runtime-host.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
@@ -98,6 +99,30 @@ function reportDiagnostics(diagnostics: readonly AgentSessionRuntimeDiagnostic[]
 function isTruthyEnvFlag(value: string | undefined): boolean {
 	if (!value) return false;
 	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
+}
+
+/**
+ * A daemon can start a newly prepared child as the target of a surface-local
+ * new/fork operation. Preserve the extension lifecycle reason in that child
+ * while keeping the metadata private from loaded extensions.
+ */
+function readDaemonSessionStartEvent(env: NodeJS.ProcessEnv = process.env): SessionStartEvent | undefined {
+	const serialized = env.MYPI_DAEMON_SESSION_START;
+	delete env.MYPI_DAEMON_SESSION_START;
+	if (env.MYPI_DAEMON_ENGINE !== "1" || !serialized) return undefined;
+	try {
+		const value = JSON.parse(serialized) as Record<string, unknown>;
+		if (value.reason !== "new" && value.reason !== "fork") return undefined;
+		return {
+			type: "session_start",
+			reason: value.reason,
+			...(typeof value.previousSessionFile === "string"
+				? { previousSessionFile: value.previousSessionFile }
+				: {}),
+		};
+	} catch {
+		return undefined;
+	}
 }
 
 /** How long to wait for the launcher's pre-attach handoff before creating a
@@ -860,18 +885,29 @@ export async function main(args: string[], options?: MainOptions) {
 				if (!hostedSessionId) {
 					hostedSessionId = await readPreattachedSessionId();
 				}
-				let hostedRuntime: Awaited<ReturnType<typeof createHostedRuntime>> | undefined;
-				try {
-					hostedRuntime = await createHostedRuntime({
-						services: hostedServices,
-						sessionId: hostedSessionId,
-						cwd: hostedCwd,
-						model: parsed.model,
-					});
-				} catch (error: unknown) {
-					const message = error instanceof Error ? error.message : String(error);
-					console.error(chalk.yellow(`Hosted session unavailable (${message}); running embedded.`));
-				}
+					let hostedRuntime: Awaited<ReturnType<typeof createHostedRuntime>> | undefined;
+					let hostedOwnershipCancelled = false;
+					while (!hostedRuntime) {
+						try {
+							hostedRuntime = await createHostedRuntime({
+								services: hostedServices,
+								sessionId: hostedSessionId,
+								cwd: hostedCwd,
+								model: parsed.model,
+							});
+						} catch (error: unknown) {
+							if (error instanceof HostedOwnershipConflictError) {
+								const retry = await promptForStartupOwnershipConflict(error, hostedSettingsManager);
+								if (retry) continue;
+								hostedOwnershipCancelled = true;
+								break;
+							}
+							const message = error instanceof Error ? error.message : String(error);
+							console.error(chalk.yellow(`Hosted session unavailable (${message}); running embedded.`));
+							break;
+						}
+					}
+					if (hostedOwnershipCancelled) return;
 				if (hostedRuntime) {
 					time("createHostedRuntime");
 					if (parsed.thinking !== undefined) {
@@ -922,10 +958,12 @@ export async function main(args: string[], options?: MainOptions) {
 		}
 	}
 
+	const daemonSessionStartEvent = readDaemonSessionStartEvent();
 	const runtime = await createAgentSessionRuntime(createRuntime, {
 		cwd: sessionManager.getCwd(),
 		agentDir,
 		sessionManager,
+		...(daemonSessionStartEvent ? { sessionStartEvent: daemonSessionStartEvent } : {}),
 	});
 	time("createAgentSessionRuntime");
 	const { services, session, modelFallbackMessage } = runtime;

@@ -10,7 +10,14 @@ import { BoundedEventQueue } from './transport.js'
 import { loadGuiControlConfig, saveGuiControlConfig } from './config.js'
 import { GUI_CONTROL_MAX_ATTACHMENT_BYTES, GUI_CONTROL_MAX_FRAME_BYTES, GUI_CONTROL_MAX_MESSAGE_BYTES, GUI_CONTROL_MAX_SNAPSHOT_BATCH, GUI_CONTROL_MAX_SNAPSHOT_MESSAGES, type ClientFrame, type ManagedAttachment, type ServerFrame, type TuiSnapshotMetadata, type TuiSnapshotUsage } from './protocol.js'
 import { startTuiPresence, type TuiPresenceHandle } from './presence.js'
-import { readLiveForeignLease, startSessionOwnership, type SessionOwnershipHandle } from './ownership.js'
+import {
+  readLiveForeignLease,
+  startSessionOwnership,
+  type LeaseInfo,
+  type SessionHandoffDecision,
+  type SessionHandoffRequest,
+  type SessionOwnershipHandle,
+} from './ownership.js'
 import { createKeywordSkillRouter } from './keyword-skill-routing.js'
 
 const HELP = `# /gui-control — TUI-to-GUI bridge
@@ -568,8 +575,23 @@ export default function guiControlExtension(pi: ExtensionAPI): void {
   // `mypi --session <id> || mypi` in a terminal) can only offer its fallback
   // when the refused process exits nonzero, and the reason is invisible
   // unless it also lands on stderr.
-  function refuseAndShutdown(ctx: ExtensionContext, message: string): void {
+  function refuseAndShutdown(
+    ctx: ExtensionContext,
+    message: string,
+    conflict?: { sessionFile: string; holder: LeaseInfo },
+  ): void {
     ctx.ui.notify(message, 'error')
+    // This private engine-to-daemon frame is deliberately prefixed so normal
+    // stderr (including arbitrary JSON from extensions) can never be mistaken
+    // for an ownership conflict. The daemon keeps the control capability
+    // private and exposes only sanitized owner diagnostics to clients.
+    if (conflict && process.env.MYPI_DAEMON_ENGINE === '1') {
+      process.stderr.write(`@@MYPI_OWNERSHIP_CONFLICT@@${JSON.stringify({
+        protocol: 1,
+        sessionFile: conflict.sessionFile,
+        owner: conflict.holder,
+      })}\n`)
+    }
     process.stderr.write(`${message}\n`)
     process.exitCode = 1
     setTimeout(() => ctx.shutdown(), 0)
@@ -584,6 +606,39 @@ export default function guiControlExtension(pi: ExtensionAPI): void {
       process.exit(1)
     }, 1500)
     enforce.unref?.()
+  }
+
+  async function handleHandoffRequest(
+    ctx: ExtensionContext,
+    request: SessionHandoffRequest,
+  ): Promise<SessionHandoffDecision> {
+    if (!request.force) {
+      if (!ctx.isIdle() || ctx.hasPendingMessages()) {
+        return {
+          status: 'busy',
+          message: 'The owner has an active turn or queued input. Manage it in the owning process before retrying.',
+        }
+      }
+      const accepted = await ctx.ui.confirm(
+        'Session handoff requested',
+        `Another MyPi process (pid ${request.requesterPid}) wants to resume this session. Release it and close this session process?`,
+      )
+      if (!accepted) return { status: 'declined', message: 'The owner declined the handoff request.' }
+    } else if (!ctx.isIdle()) {
+      ctx.abort()
+    }
+
+    ctx.ui.notify(
+      request.force
+        ? `Rob requested by MyPi pid ${request.requesterPid}; aborting active work and releasing the session.`
+        : `Handoff accepted for MyPi pid ${request.requesterPid}; releasing the session.`,
+      request.force ? 'warning' : 'info',
+    )
+    // Let the authenticated control response flush before graceful shutdown
+    // emits session_shutdown and releases the writer lease.
+    const shutdownTimer = setTimeout(() => ctx.shutdown(), 50)
+    shutdownTimer.unref?.()
+    return { status: 'accepted' }
   }
 
   pi.on('session_before_switch', (event, ctx) => {
@@ -615,19 +670,26 @@ export default function guiControlExtension(pi: ExtensionAPI): void {
         const message = liveHost
           ? `This session is live in a session host (${owner}). Take it over with \`mypi attach --take ${liveHost.sessionId}\` or mirror it with \`mypi attach ${liveHost.sessionId}\`.`
           : `This session is owned by ${owner} and cannot be continued in TUI. Continue it in MyPi GUI, or close/release the other session first.`
-        refuseAndShutdown(ctx, message)
+        refuseAndShutdown(ctx, message, { sessionFile, holder })
         return
       }
       try {
         ownership = startSessionOwnership(sessionFile, {
           reuseExisting: event.reason === 'reload',
           surface: ctx.mode === 'rpc' ? 'mypi-gui-rpc' : 'pi-cli',
+          agentDir,
+          onHandoffRequest: (request) => handleHandoffRequest(ctx, request),
           onCompromised: (error) => {
             refuseAndShutdown(ctx, `Session writer lock was compromised: ${error.message}. Shutting down to prevent concurrent writes.`)
           },
         })
       } catch (error) {
-        refuseAndShutdown(ctx, `Could not acquire the session writer lock: ${error instanceof Error ? error.message : String(error)}`)
+        const holder = readLiveForeignLease(sessionFile)
+        refuseAndShutdown(
+          ctx,
+          `Could not acquire the session writer lock: ${error instanceof Error ? error.message : String(error)}`,
+          holder ? { sessionFile, holder } : undefined,
+        )
         return
       }
     }

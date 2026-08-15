@@ -180,6 +180,39 @@ describe("AgentSessionRuntime session lifecycle events", () => {
 		expect(events).toEqual([{ type: "session_before_switch", reason: "new", targetSessionFile: undefined }]);
 	});
 
+	it("preflights hosted new and fork operations without replacing the source runtime", async () => {
+		const events: RecordedSessionEvent[] = [];
+		const { runtimeHost } = await createRuntimeHost((pi) => {
+			pi.on("session_before_switch", (event) => events.push(event));
+			pi.on("session_before_fork", (event) => events.push(event));
+			pi.on("session_shutdown", (event) => events.push(event));
+		});
+		events.length = 0;
+
+		await runtimeHost.session.prompt("hello");
+		const sourceSession = runtimeHost.session;
+		const sourceId = sourceSession.sessionId;
+		const sourceFile = sourceSession.sessionFile;
+		const userMessage = sourceSession.getUserMessagesForForking()[0];
+		const userEntry = sourceSession.sessionManager.getEntry(userMessage.entryId);
+
+		expect(await runtimeHost.prepareNewSession()).toEqual({ cancelled: false });
+		expect(runtimeHost.session).toBe(sourceSession);
+		expect(runtimeHost.session.sessionId).toBe(sourceId);
+		expect(runtimeHost.session.sessionFile).toBe(sourceFile);
+
+		expect(await runtimeHost.prepareFork(userMessage.entryId)).toEqual({
+			cancelled: false,
+			targetLeafId: userEntry?.parentId,
+			selectedText: "hello",
+		});
+		expect(runtimeHost.session).toBe(sourceSession);
+		expect(events).toEqual([
+			{ type: "session_before_switch", reason: "new", targetSessionFile: undefined },
+			{ type: "session_before_fork", entryId: userMessage.entryId, position: "before" },
+		]);
+	});
+
 	it("runs beforeSessionInvalidate after session_shutdown and before rebindSession", async () => {
 		const phases: string[] = [];
 		const { runtimeHost } = await createRuntimeHost((pi) => {

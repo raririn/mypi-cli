@@ -18,7 +18,7 @@
     "test:preattach": "node --test tests/preattach.test.mjs",
     "test:host": "node --test tests/host.test.mjs",
     "test:daemon": "node --test tests/daemon.test.mjs",
-    "test:hosted": "node --test tests/hosted.test.mjs",
+    "test:hosted": "node --test tests/hosted.test.mjs tests/ownership-conflict-ui.test.mjs",
     "test:rpc-dialogs": "node --test tests/rpc-dialogs.test.mjs",
     "test:extensions": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --import ./tests/isolate-agent-dir.mjs --test extensions/gui-control/*.test.mts extensions/mypi/*.test.mts extensions/mypi/*/*.test.mts",
     "typecheck": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --types node --skipLibCheck --allowImportingTsExtensions extensions/gui-control/*.ts extensions/mypi/*.ts",

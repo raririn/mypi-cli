@@ -1,20 +1,42 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import net from 'node:net'
 import { hostname } from 'node:os'
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import lockfile from '@bybrave/proper-lockfile2'
 
 export const TUI_LEASE_SURFACE = 'pi-cli'
 export const SESSION_LOCK_STALE_MS = 30_000
 export const SESSION_LOCK_UPDATE_MS = 10_000
 
-interface LeaseInfo {
+export interface SessionOwnershipControlInfo {
+  protocol: 1
+  socketPath: string
+  token: string
+}
+
+export interface LeaseInfo {
+  version?: 2
   pid: number
+  processStartTime?: number
   hostname: string
   startedAt: string
   surface: string
   ownerId?: string
+  control?: SessionOwnershipControlInfo
 }
+
+export interface SessionHandoffRequest {
+  requesterPid: number
+  requesterProcessStartTime?: number
+  force: boolean
+}
+
+export type SessionHandoffDecision =
+  | { status: 'accepted' }
+  | { status: 'busy'; message?: string }
+  | { status: 'declined'; message?: string }
+  | { status: 'error'; message: string }
 
 export interface SessionOwnershipHandle {
   readonly sessionFile: string
@@ -28,6 +50,10 @@ export interface SessionOwnershipOptions {
   reuseExisting?: boolean
   /** Human-readable writer surface persisted for cross-process diagnostics. */
   surface?: 'pi-cli' | 'mypi-gui-rpc'
+  /** MyPi profile root used for the authenticated local handoff endpoint. */
+  agentDir?: string
+  /** Optional cooperative handoff handler. Absence leaves force/manual recovery only. */
+  onHandoffRequest?: (request: SessionHandoffRequest) => Promise<SessionHandoffDecision>
 }
 
 interface InternalOwnershipHandle extends SessionOwnershipHandle {
@@ -56,10 +82,19 @@ function parseLease(leasePath: string): { state: 'missing' } | { state: 'invalid
     const value = JSON.parse(readFileSync(leasePath, 'utf8')) as Partial<LeaseInfo>
     if (
       typeof value.pid !== 'number' ||
+      (value.version !== undefined && value.version !== 2) ||
+      (value.processStartTime !== undefined && (typeof value.processStartTime !== 'number' || !Number.isFinite(value.processStartTime))) ||
       typeof value.hostname !== 'string' ||
       typeof value.startedAt !== 'string' ||
       typeof value.surface !== 'string' ||
-      (value.ownerId !== undefined && typeof value.ownerId !== 'string')
+      (value.ownerId !== undefined && typeof value.ownerId !== 'string') ||
+      (value.control !== undefined && (
+        typeof value.control !== 'object' ||
+        value.control === null ||
+        value.control.protocol !== 1 ||
+        typeof value.control.socketPath !== 'string' ||
+        typeof value.control.token !== 'string'
+      ))
     ) return { state: 'invalid' }
     return { state: 'valid', info: value as LeaseInfo }
   } catch {
@@ -116,26 +151,40 @@ export function startSessionOwnership(
   }
 
   const leasePath = `${sessionFile}.lease`
+  const ownerId = randomUUID()
+  const processStartTime = Math.round(performance.timeOrigin)
+  const control = options.agentDir && options.onHandoffRequest
+    ? createOwnershipControl(options.agentDir, sessionFile, ownerId, options.onHandoffRequest)
+    : undefined
   const info: LeaseInfo = {
+    version: 2,
     pid: process.pid,
+    processStartTime,
     hostname: hostname(),
     startedAt: new Date().toISOString(),
     surface: options.surface ?? TUI_LEASE_SURFACE,
-    ownerId: randomUUID(),
+    ownerId,
+    ...(control ? { control: control.info } : {}),
   }
   let compromised = false
   const compromiseListeners = new Set<(error: Error) => void>()
   if (options.onCompromised) compromiseListeners.add(options.onCompromised)
-  const releaseLock = lockfile.lockSync(sessionFile, {
-    realpath: false,
-    lockfilePath: sessionWriterLockPath(sessionFile),
-    stale: SESSION_LOCK_STALE_MS,
-    update: SESSION_LOCK_UPDATE_MS,
-    onCompromised: (error) => {
-      compromised = true
-      for (const listener of compromiseListeners) listener(error)
-    },
-  })
+  let releaseLock: (() => void) | undefined
+  try {
+    releaseLock = lockfile.lockSync(sessionFile, {
+      realpath: false,
+      lockfilePath: sessionWriterLockPath(sessionFile),
+      stale: SESSION_LOCK_STALE_MS,
+      update: SESSION_LOCK_UPDATE_MS,
+      onCompromised: (error) => {
+        compromised = true
+        for (const listener of compromiseListeners) listener(error)
+      },
+    })
+  } catch (error) {
+    control?.stop()
+    throw error
+  }
 
   try {
     const legacy = parseLease(leasePath)
@@ -159,6 +208,7 @@ export function startSessionOwnership(
     }
     writeLeaseAtomic(leasePath, info)
   } catch (error) {
+    control?.stop()
     releaseLock()
     throw error
   }
@@ -182,12 +232,110 @@ export function startSessionOwnership(
       } catch (error) {
         if (!compromised && (error as NodeJS.ErrnoException).code !== 'ERELEASED') throw error
       } finally {
+        control?.stop()
         removeLeaseIfOwned(leasePath, info)
       }
     },
   }
   ownershipRegistry.set(registryKey, handle)
   return handle
+}
+
+function createOwnershipControl(
+  agentDir: string,
+  sessionFile: string,
+  ownerId: string,
+  onHandoffRequest: (request: SessionHandoffRequest) => Promise<SessionHandoffDecision>,
+): { info: SessionOwnershipControlInfo; stop(): void } {
+  const preferredDirectory = join(resolve(agentDir), 'ownership-control')
+  const preferredSocketPath = join(preferredDirectory, `${ownerId.slice(0, 16)}.sock`)
+  // Darwin caps AF_UNIX paths at roughly 104 bytes (Linux at 108). A custom
+  // or test profile can exceed that even though the endpoint itself is local.
+  // Keep the fallback private to this uid and retain the random owner token.
+  const directory = Buffer.byteLength(preferredSocketPath) <= 96
+    ? preferredDirectory
+    : join('/tmp', `mypi-${typeof process.getuid === 'function' ? process.getuid() : process.pid}`, 'ownership-control')
+  mkdirSync(directory, { recursive: true, mode: 0o700 })
+  chmodSync(directory, 0o700)
+  const socketPath = join(directory, `${ownerId.slice(0, 16)}.sock`)
+  const token = randomUUID()
+  rmSync(socketPath, { force: true })
+
+  const server = net.createServer((socket) => {
+    socket.setEncoding('utf8')
+    let buffer = ''
+    let handled = false
+    socket.on('data', (chunk) => {
+      if (handled) return
+      buffer += chunk
+      if (buffer.length > 16_384) {
+        handled = true
+        socket.end(`${JSON.stringify({ type: 'handoff_result', status: 'error', message: 'Request exceeded the handoff protocol limit.' })}\n`)
+        return
+      }
+      const newline = buffer.indexOf('\n')
+      if (newline < 0) return
+      handled = true
+      let frame: {
+        type?: string
+        protocol?: number
+        token?: string
+        ownerId?: string
+        sessionFile?: string
+        requesterPid?: number
+        requesterProcessStartTime?: number
+        force?: boolean
+      }
+      try {
+        frame = JSON.parse(buffer.slice(0, newline)) as typeof frame
+      } catch {
+        socket.end(`${JSON.stringify({ type: 'handoff_result', status: 'error', message: 'Malformed handoff request.' })}\n`)
+        return
+      }
+      if (
+        frame.type !== 'handoff_request' ||
+        frame.protocol !== 1 ||
+        frame.token !== token ||
+        frame.ownerId !== ownerId ||
+        resolve(String(frame.sessionFile ?? '')) !== resolve(sessionFile) ||
+        !Number.isInteger(frame.requesterPid) ||
+        Number(frame.requesterPid) <= 0
+      ) {
+        socket.end(`${JSON.stringify({ type: 'handoff_result', status: 'error', message: 'Handoff request identity did not match the current owner.' })}\n`)
+        return
+      }
+      void onHandoffRequest({
+        requesterPid: Number(frame.requesterPid),
+        ...(typeof frame.requesterProcessStartTime === 'number'
+          ? { requesterProcessStartTime: frame.requesterProcessStartTime }
+          : {}),
+        force: frame.force === true,
+      }).then(
+        (result) => socket.end(`${JSON.stringify({ type: 'handoff_result', ...result })}\n`),
+        (error: unknown) => socket.end(`${JSON.stringify({
+          type: 'handoff_result',
+          status: 'error',
+          message: error instanceof Error ? error.message : String(error),
+        })}\n`),
+      )
+    })
+  })
+  server.on('error', () => {})
+  server.listen(socketPath, () => {
+    try { chmodSync(socketPath, 0o600) } catch {}
+  })
+  server.unref()
+
+  let stopped = false
+  return {
+    info: { protocol: 1, socketPath, token },
+    stop() {
+      if (stopped) return
+      stopped = true
+      try { server.close() } catch {}
+      rmSync(socketPath, { force: true })
+    },
+  }
 }
 
 function writeLeaseAtomic(leasePath: string, info: LeaseInfo): void {

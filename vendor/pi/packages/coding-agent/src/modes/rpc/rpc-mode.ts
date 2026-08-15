@@ -27,6 +27,7 @@ import {
 	waitForRawStdoutBackpressure,
 	writeRawStdout,
 } from "../../core/output-guard.ts";
+import { SessionManager } from "../../core/session-manager.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
@@ -445,6 +446,14 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 		await rebindSession();
 	});
 
+	const assertExtensionReplacementIsLocal = (operation: string): void => {
+		if (process.env.MYPI_DAEMON_ENGINE !== "1") return;
+		throw new Error(
+			`An engine-side extension cannot run ${operation} inside a daemon-hosted session because that would move every client sharing the child. ` +
+				"Use the surface's requester-local session command instead.",
+		);
+	};
+
 	const rebindSession = async (): Promise<void> => {
 		session = runtimeHost.session;
 		await session.bindExtensions({
@@ -452,8 +461,12 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			mode: "rpc",
 			commandContextActions: {
 				waitForIdle: () => session.waitForIdle(),
-				newSession: async (options) => runtimeHost.newSession(options),
+				newSession: async (options) => {
+					assertExtensionReplacementIsLocal("newSession");
+					return runtimeHost.newSession(options);
+				},
 				fork: async (entryId, forkOptions) => {
+					assertExtensionReplacementIsLocal("fork");
 					const result = await runtimeHost.fork(entryId, forkOptions);
 					return { cancelled: result.cancelled };
 				},
@@ -467,6 +480,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					return { cancelled: result.cancelled, text: result.editorText };
 				},
 				switchSession: async (sessionPath, options) => {
+					assertExtensionReplacementIsLocal("switchSession");
 					return runtimeHost.switchSession(sessionPath, options);
 				},
 				reload: async () => {
@@ -588,6 +602,32 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					await rebindSession();
 				}
 				return success(id, "new_session", result);
+			}
+
+			case "prepare_new_session": {
+				const result = await runtimeHost.prepareNewSession();
+				if (result.cancelled || command.materialize !== true) {
+					return success(id, "prepare_new_session", result);
+				}
+				const sourceManager = session.sessionManager;
+				if (!sourceManager.isPersisted()) {
+					throw new Error("Daemon-backed /new requires a persisted source session.");
+				}
+				const targetManager = SessionManager.create(
+					sourceManager.getCwd(),
+					sourceManager.getSessionDir(),
+					command.parentSession ? { parentSession: command.parentSession } : undefined,
+				);
+				const sessionFile = targetManager.materialize();
+				if (!sessionFile) throw new Error("Failed to materialize the new session target.");
+				return success(id, "prepare_new_session", {
+					cancelled: false,
+					target: {
+						sessionId: targetManager.getSessionId(),
+						sessionFile,
+						cwd: targetManager.getCwd(),
+					},
+				});
 			}
 
 			// =================================================================
@@ -788,6 +828,53 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					await rebindSession();
 				}
 				return success(id, "fork", { text: result.selectedText, cancelled: result.cancelled });
+			}
+
+			case "prepare_fork": {
+				const result = await runtimeHost.prepareFork(
+					command.entryId,
+					command.position ? { position: command.position } : undefined,
+				);
+				if (result.cancelled || command.materialize !== true) {
+					return success(id, "prepare_fork", {
+						cancelled: result.cancelled,
+						targetLeafId: result.targetLeafId,
+						text: result.selectedText,
+					});
+				}
+				const sourceManager = session.sessionManager;
+				const sourceFile = sourceManager.getSessionFile();
+				if (!sourceManager.isPersisted() || !sourceFile) {
+					throw new Error("Daemon-backed /fork requires a persisted source session.");
+				}
+				if (!existsSync(sourceFile)) {
+					throw new Error(
+						"This session has not been saved yet. Wait for the first assistant response before cloning or forking it.",
+					);
+				}
+				let targetManager: SessionManager;
+				if (result.targetLeafId) {
+					targetManager = SessionManager.open(sourceFile, sourceManager.getSessionDir());
+					if (!targetManager.createBranchedSession(result.targetLeafId)) {
+						throw new Error("Failed to create forked session");
+					}
+				} else {
+					targetManager = SessionManager.create(sourceManager.getCwd(), sourceManager.getSessionDir(), {
+						parentSession: sourceFile,
+					});
+				}
+				const sessionFile = targetManager.materialize();
+				if (!sessionFile) throw new Error("Failed to materialize the fork target.");
+				return success(id, "prepare_fork", {
+					cancelled: result.cancelled,
+					targetLeafId: result.targetLeafId,
+					text: result.selectedText,
+					target: {
+						sessionId: targetManager.getSessionId(),
+						sessionFile,
+						cwd: targetManager.getCwd(),
+					},
+				});
 			}
 
 			case "clone": {

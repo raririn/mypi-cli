@@ -16,16 +16,24 @@
 // Wire protocol (JSONL, one JSON object per line):
 //
 //   client -> daemon
-//     {type:"hello", protocol:N, client:"name"}       required first frame
+//     {type:"hello", protocol:N, client:"name", pid?, processStartTime?}
+//                                                        required first frame
 //     {type:"list_sessions"}
 //     {type:"daemon_status"}                           version/pid/turn counts
 //     {type:"restart", force?}                         graceful drain + exit
-//     {type:"attach", sessionId?, cwd?, model?}       subscribe (spawns child)
+//     {type:"attach", sessionId?, cwd?, model?, sessionStart?}
+//                                                       subscribe (spawns child)
 //       Omitting sessionId creates a fresh engine session; the daemon keys
 //       it under the native session id once the child reports it, and the
 //       `attached` frame carries that id for the client to adopt.
 //     {type:"detach", sessionId}
 //     {type:"release", sessionId, force?}             native takeover support
+//     {type:"request_handoff", targetSessionId,
+//       expectedOwnerId, force?, hard?, confirmationToken?}
+//                                                       exceptional external owner
+//     {type:"prepare_surface_session", sourceSessionId,
+//       operation:"new"|"fork", parentSession?, entryId?, position?, id?}
+//                                                       requester-local target
 //     {..any RPC command.., sessionId, id?}           routed to the child
 //     {type:"extension_ui_response", sessionId, id, ...}
 //
@@ -38,9 +46,10 @@
 //     {type:"daemon_draining", reason}                new attach refused mid-drain
 //     {type:"sessions", sessions:[{sessionId, cwd, sessionFile, clients, busy}]}
 //     {type:"attached", sessionId, sessionFile, cwd, clients}
-//       Re-broadcast whenever the child's identity changes (new_session,
-//       switch_session, fork, clone) so every surface tracks the live target.
+//       Re-broadcast if a legacy sole-client command changes child identity.
+//       Modern navigation/create/derive attaches the requester to another child.
 //     {type:"released"|"release_denied", sessionId, ...}
+//     {type:"ownership_conflict", sessionId, sessionFile, owner}
 //     {type:"session_exit", sessionId, code, signal, lastErrorNotify}
 //     {type:"extension_ui_resolved", sessionId, id}   another client answered
 //     {..engine event/response.., sessionId}          fan-out / routed reply
@@ -52,9 +61,10 @@
 // beats silently degrading.
 
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFile, spawn } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import net from "node:net";
+import { hostname } from "node:os";
 import {
   MYPI_DAEMON_PROTOCOL,
   acquireStartupLock,
@@ -67,10 +77,23 @@ import {
 const DEFAULT_IDLE_GRACE_MS = 5 * 60_000;
 const ENGINE_CLOSE_GRACE_MS = 2_000;
 const STATE_TIMEOUT_MS = 15_000;
+const EXTERNAL_OWNER_TTL_MS = 60_000;
+const SESSION_LOCK_STALE_MS = 30_000;
+const configuredOwnerControlTimeoutMs = Number(process.env.MYPI_DAEMON_OWNER_CONTROL_TIMEOUT_MS || 30_000);
+const OWNER_CONTROL_TIMEOUT_MS = Number.isFinite(configuredOwnerControlTimeoutMs) && configuredOwnerControlTimeoutMs >= 0
+  ? configuredOwnerControlTimeoutMs
+  : 30_000;
+const OWNER_RELEASE_TIMEOUT_MS = 35_000;
+const configuredSignalGraceMs = Number(process.env.MYPI_DAEMON_SIGNAL_GRACE_MS || 10_000);
+const SIGNAL_EXIT_GRACE_MS = Number.isFinite(configuredSignalGraceMs) && configuredSignalGraceMs >= 0
+  ? configuredSignalGraceMs
+  : 10_000;
+const OWNERSHIP_CONFLICT_PREFIX = "@@MYPI_OWNERSHIP_CONFLICT@@";
 
 const RESPONDABLE_UI_METHODS = new Set(["mypiAskUser", "select", "confirm", "input", "editor"]);
-// Engine commands that replace the child's session in place. A successful
-// response triggers a state re-query so the daemon's identity stays truthful.
+// Legacy engine commands that replace a child in place. They remain safe for
+// a sole attached surface, but are refused when a child is shared: modern
+// clients prepare and attach a distinct target child instead.
 const IDENTITY_CHANGING_COMMANDS = new Set(["new_session", "switch_session", "fork", "clone"]);
 
 /* ------------------------------------------------------------------ */
@@ -106,6 +129,8 @@ const { idleGraceMs } = parseArgs(process.argv.slice(3));
 
 /** @type {Map<string, {child: import('node:child_process').ChildProcess, sessionId: string, sessionFile: string|null, cwd: string, clients: Set<object>, pending: Map<string, {client: object, originalId: string|undefined}>, outstandingUi: Set<string>, turnActive: boolean, exited: boolean, graceTimer: NodeJS.Timeout|null, counter: number, lastErrorNotify: string|null, pendingRelease: object|null}>} */
 const sessions = new Map();
+/** @type {Map<string, {sessionId: string, sessionFile: string, owner: object, observedAt: number}>} */
+const externalOwners = new Map();
 /** @type {Set<object>} connections that completed the handshake */
 const clients = new Set();
 
@@ -124,6 +149,67 @@ function sendToClient(client, frame) {
 
 function broadcast(session, frame) {
   for (const client of session.clients) sendToClient(client, frame);
+}
+
+function publicOwnershipConflict(record) {
+  const owner = record.owner;
+  return {
+    type: "ownership_conflict",
+    protocol: 1,
+    sessionId: record.sessionId,
+    sessionFile: record.sessionFile,
+    owner: {
+      pid: Number.isInteger(owner.pid) ? owner.pid : 0,
+      hostname: typeof owner.hostname === "string" ? owner.hostname : "unknown",
+      startedAt: typeof owner.startedAt === "string" ? owner.startedAt : "unknown",
+      surface: typeof owner.surface === "string" ? owner.surface : "unknown",
+      ownerId: typeof owner.ownerId === "string" ? owner.ownerId : null,
+      processStartTime: typeof owner.processStartTime === "number" ? owner.processStartTime : null,
+      cooperativeHandoffAvailable: owner.control?.protocol === 1,
+    },
+  };
+}
+
+function handleOwnershipConflictLine(session, text) {
+  if (!text.startsWith(OWNERSHIP_CONFLICT_PREFIX)) return false;
+  let value;
+  try {
+    value = JSON.parse(text.slice(OWNERSHIP_CONFLICT_PREFIX.length));
+  } catch {
+    return true;
+  }
+  if (
+    value?.protocol !== 1 ||
+    typeof value.sessionFile !== "string" ||
+    !value.owner ||
+    typeof value.owner !== "object" ||
+    !Number.isInteger(value.owner.pid) ||
+    typeof value.owner.hostname !== "string" ||
+    typeof value.owner.startedAt !== "string" ||
+    typeof value.owner.surface !== "string"
+  ) return true;
+
+  const sessionId = session.sessionId ?? session.key;
+  const record = {
+    sessionId,
+    sessionFile: value.sessionFile,
+    owner: value.owner,
+    observedAt: Date.now(),
+  };
+  session.ownershipConflict = record;
+  externalOwners.set(sessionId, record);
+  broadcast(session, publicOwnershipConflict(record));
+  return true;
+}
+
+function currentExternalOwner(sessionId) {
+  const record = externalOwners.get(sessionId);
+  if (!record) return undefined;
+  if (Date.now() - record.observedAt > EXTERNAL_OWNER_TTL_MS) {
+    externalOwners.delete(sessionId);
+    return undefined;
+  }
+  return record;
 }
 
 function writeSidecar(socketPath) {
@@ -166,7 +252,16 @@ function engineCommand(session) {
 
 let newSessionCounter = 0;
 
-function startSession({ sessionId, cwd, model }) {
+function normalizeSessionStart(value) {
+  if (!value || typeof value !== "object") return null;
+  if (value.reason !== "new" && value.reason !== "fork") return null;
+  return {
+    reason: value.reason,
+    ...(typeof value.previousSessionFile === "string" ? { previousSessionFile: value.previousSessionFile } : {}),
+  };
+}
+
+function startSession({ sessionId, cwd, model, sessionStart }) {
   const session = {
     sessionId: sessionId || null,
     // Fresh sessions have no id until the engine reports one; they are keyed
@@ -178,6 +273,7 @@ function startSession({ sessionId, cwd, model }) {
     child: null,
     clients: new Set(),
     pending: new Map(),
+    abandonedEngineRequestIds: new Set(),
     outstandingUi: new Map(),
     turnActive: false,
     exited: false,
@@ -185,17 +281,25 @@ function startSession({ sessionId, cwd, model }) {
     counter: 0,
     lastErrorNotify: null,
     pendingRelease: null,
+    preparingSurfaceTarget: false,
     ready: false,
   };
   const [executable, ...args] = engineCommand(session);
   session.child = spawn(executable, args, {
     cwd: session.cwd,
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env },
+    env: {
+      ...process.env,
+      MYPI_DAEMON_ENGINE: "1",
+      ...(sessionStart ? { MYPI_DAEMON_SESSION_START: JSON.stringify(sessionStart) } : {}),
+    },
   });
 
   attachLineReader(session.child.stdout, (line) => handleEngineFrame(session, line));
-  attachLineReader(session.child.stderr, (text) => broadcast(session, { type: "session_stderr", sessionId: session.sessionId ?? session.key, text }));
+  attachLineReader(session.child.stderr, (text) => {
+    if (handleOwnershipConflictLine(session, text)) return;
+    broadcast(session, { type: "session_stderr", sessionId: session.sessionId ?? session.key, text });
+  });
 
   session.child.on("exit", (code, signal) => {
     session.exited = true;
@@ -262,15 +366,23 @@ function handleEngineFrame(session, line) {
       return;
     }
     if (frame.id === "__daemon_release_abort") return;
+    if (session.abandonedEngineRequestIds.delete(frame.id)) return;
     const pending = session.pending.get(frame.id);
     if (pending) {
       session.pending.delete(frame.id);
-      const restored = { ...frame, sessionId: session.sessionId ?? session.key };
+      const finishedSurfacePreparation = pending.surfacePreparation === true;
+      if (finishedSurfacePreparation) session.preparingSurfaceTarget = false;
+      const restored = {
+        ...frame,
+        ...(pending.responseCommand ? { command: pending.responseCommand } : {}),
+        sessionId: session.sessionId ?? session.key,
+      };
       if (pending.originalId === undefined) delete restored.id;
       else restored.id = pending.originalId;
       sendToClient(pending.client, restored);
-      // These commands replace the child's session in place; re-learn the
-      // identity and tell every surface where the child now points.
+      if (finishedSurfacePreparation && draining) maybeFinishDrain();
+      // A legacy sole-client command may still replace the child in place;
+      // re-learn its identity so that one client retains a truthful address.
       if (frame.success && IDENTITY_CHANGING_COMMANDS.has(pending.commandType)) {
         sendToEngine(session, { id: "__daemon_state", type: "get_state" });
       }
@@ -329,9 +441,9 @@ function handleEngineFrame(session, line) {
 }
 
 /**
- * Move a session to a new key when the child's native identity is learned or
- * changes (fresh attach, new_session, switch_session, fork, clone). Attached
- * clients keep following the same child; only the address changes.
+ * Move a session to a new key when a fresh child's native identity is learned
+ * or a permitted legacy sole-client command changes it. Attached clients keep
+ * following that child; shared children never enter the latter path.
  */
 function rekeySession(session, nativeSessionId) {
   const previousKey = session.key;
@@ -348,7 +460,9 @@ function rekeySession(session, nativeSessionId) {
 
 function activeTurnCount() {
   let count = 0;
-  for (const session of sessions.values()) if (session.turnActive) count += 1;
+  for (const session of sessions.values()) {
+    if (session.turnActive || session.preparingSurfaceTarget) count += 1;
+  }
   return count;
 }
 
@@ -456,10 +570,312 @@ function handleRelease(client, session, frame) {
 function detachClientFromSession(client, session) {
   if (!session.clients.delete(client)) return;
   client.sessions.delete(session.key);
+  let cancelledSurfacePreparation = false;
   for (const [id, pending] of session.pending) {
-    if (pending.client === client) session.pending.delete(id);
+    if (pending.client === client) {
+      if (pending.surfacePreparation) {
+        session.preparingSurfaceTarget = false;
+        cancelledSurfacePreparation = true;
+        session.abandonedEngineRequestIds.add(id);
+      }
+      session.pending.delete(id);
+    }
   }
+  if (cancelledSurfacePreparation && draining) maybeFinishDrain();
   if (session.clients.size === 0) scheduleSessionGrace(session);
+}
+
+function readLease(sessionFile) {
+  try {
+    const value = JSON.parse(readFileSync(`${sessionFile}.lease`, "utf8"));
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function leaseMatches(record, lease = readLease(record.sessionFile)) {
+  const owner = record.owner;
+  return Boolean(
+    lease &&
+    typeof owner.ownerId === "string" &&
+    owner.ownerId &&
+    lease.ownerId === owner.ownerId &&
+    lease.pid === owner.pid &&
+    lease.hostname === owner.hostname &&
+    lease.processStartTime === owner.processStartTime,
+  );
+}
+
+function observedLeaseMatches(record, lease = readLease(record.sessionFile)) {
+  const owner = record.owner;
+  if (!lease) return false;
+  if (lease.pid !== owner.pid || lease.hostname !== owner.hostname || lease.startedAt !== owner.startedAt) return false;
+  if (typeof owner.ownerId === "string" && owner.ownerId && lease.ownerId !== owner.ownerId) return false;
+  if (typeof owner.processStartTime === "number" && lease.processStartTime !== owner.processStartTime) return false;
+  return true;
+}
+
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code !== "ESRCH";
+  }
+}
+
+function processStartTime(pid) {
+  return new Promise((resolve) => {
+    execFile("ps", ["-o", "lstart=", "-p", String(pid)], { timeout: 3_000 }, (error, stdout) => {
+      if (error) {
+        resolve(undefined);
+        return;
+      }
+      const parsed = Date.parse(stdout.trim());
+      resolve(Number.isFinite(parsed) ? parsed : undefined);
+    });
+  });
+}
+
+async function verifySignalTarget(record) {
+  const owner = record.owner;
+  const current = readLease(record.sessionFile);
+  if (!leaseMatches(record, current)) {
+    return { ok: false, status: "owner-changed", message: "The session owner changed; no process was signaled." };
+  }
+  if (
+    owner.hostname !== hostname() ||
+    !Number.isInteger(owner.pid) ||
+    owner.pid <= 0 ||
+    typeof owner.ownerId !== "string" ||
+    !owner.ownerId ||
+    typeof owner.processStartTime !== "number" ||
+    !Number.isFinite(owner.processStartTime)
+  ) {
+    return {
+      ok: false,
+      status: "unverifiable",
+      message: "MyPi cannot prove the external owner's same-host process identity. Manage the reported PID manually.",
+    };
+  }
+  const actualStart = await processStartTime(owner.pid);
+  if (actualStart === undefined || Math.abs(actualStart - owner.processStartTime) > 2_500) {
+    return {
+      ok: false,
+      status: "unverifiable",
+      message: "The reported PID no longer matches the recorded process start time. No process was signaled.",
+    };
+  }
+  return { ok: true };
+}
+
+function requestOwnerControl(record, client, force) {
+  const control = record.owner.control;
+  if (
+    control?.protocol !== 1 ||
+    typeof control.socketPath !== "string" ||
+    typeof control.token !== "string" ||
+    typeof record.owner.ownerId !== "string"
+  ) {
+    return Promise.resolve({
+      status: "unavailable",
+      message: "The owner does not expose cooperative handoff control.",
+    });
+  }
+
+  return new Promise((resolve) => {
+    const socket = net.connect(control.socketPath);
+    let buffer = "";
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish({
+      status: "unavailable",
+      message: "The owner did not answer the handoff request in time.",
+    }), OWNER_CONTROL_TIMEOUT_MS);
+    timer.unref?.();
+    socket.setEncoding("utf8");
+    socket.on("connect", () => {
+      socket.write(`${JSON.stringify({
+        type: "handoff_request",
+        protocol: 1,
+        token: control.token,
+        ownerId: record.owner.ownerId,
+        sessionFile: record.sessionFile,
+        requesterPid: client.pid ?? process.pid,
+        ...(typeof client.processStartTime === "number"
+          ? { requesterProcessStartTime: client.processStartTime }
+          : {}),
+        force,
+      })}\n`);
+    });
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      if (buffer.length > 16_384) {
+        finish({ status: "error", message: "The owner returned an oversized handoff response." });
+        return;
+      }
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) return;
+      try {
+        const response = JSON.parse(buffer.slice(0, newline));
+        const statuses = new Set(["accepted", "busy", "declined", "error"]);
+        if (response?.type !== "handoff_result" || !statuses.has(response.status)) {
+          finish({ status: "error", message: "The owner returned an invalid handoff response." });
+          return;
+        }
+        finish({
+          status: response.status,
+          ...(typeof response.message === "string" ? { message: response.message } : {}),
+        });
+      } catch {
+        finish({ status: "error", message: "The owner returned a malformed handoff response." });
+      }
+    });
+    socket.on("error", (error) => finish({
+      status: "unavailable",
+      message: `The owner control endpoint could not be reached (${error.message}).`,
+    }));
+    socket.on("close", () => finish({
+      status: "unavailable",
+      message: "The owner closed its control endpoint without answering.",
+    }));
+  });
+}
+
+async function waitForOwnershipRelease(record, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const lease = readLease(record.sessionFile);
+    if (!lease) return { status: "released" };
+    if (!leaseMatches(record, lease)) {
+      return { status: "owner-changed", message: "The session owner changed while handoff was in progress." };
+    }
+    if (!pidAlive(record.owner.pid)) {
+      const lockPath = `${record.sessionFile}.lock`;
+      if (!existsSync(lockPath)) return { status: "released" };
+      try {
+        if (Date.now() - statSync(lockPath).mtimeMs > SESSION_LOCK_STALE_MS) return { status: "released" };
+      } catch {
+        return { status: "released" };
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return { status: "timeout", message: "The owner did not release the writer lock in time." };
+}
+
+async function negotiateExternalOwnership(client, frame) {
+  const sessionId = String(frame.targetSessionId ?? "");
+  const record = currentExternalOwner(sessionId);
+  if (!record) {
+    return { status: "owner-changed", message: "The recorded external owner is no longer current. Resume again to refresh it." };
+  }
+  const expectedOwnerId = typeof frame.expectedOwnerId === "string" ? frame.expectedOwnerId : null;
+  const currentOwnerId = typeof record.owner.ownerId === "string" ? record.owner.ownerId : null;
+  if (expectedOwnerId !== currentOwnerId || !observedLeaseMatches(record)) {
+    return { status: "owner-changed", message: "The session owner changed; no handoff or signal was attempted." };
+  }
+
+  const force = frame.force === true;
+  const hard = frame.hard === true;
+  if (!currentOwnerId) {
+    return force
+      ? {
+          status: "unverifiable",
+          message: "This legacy owner has no owner token. MyPi will not signal it; manage the reported PID manually.",
+        }
+      : {
+          status: "unavailable",
+          message: "This legacy owner does not support authenticated handoff. Manage the reported PID manually.",
+        };
+  }
+  if (hard) {
+    const authorization = record.sigkillAuthorizations?.get(frame.confirmationToken);
+    const requesterMatches = authorization
+      && authorization.expiresAt > Date.now()
+      && authorization.requesterPid === (client.pid ?? process.pid)
+      && authorization.requesterProcessStartTime === client.processStartTime;
+    if (!requesterMatches) {
+      return {
+        status: "confirmation-required",
+        message: "SIGKILL was not authorized by a prior SIGTERM result and separate confirmation.",
+      };
+    }
+    record.sigkillAuthorizations.delete(frame.confirmationToken);
+  }
+  const cooperative = await requestOwnerControl(record, client, force);
+  if (!force) {
+    if (cooperative.status !== "accepted") return cooperative;
+    const released = await waitForOwnershipRelease(record, 15_000);
+    if (released.status === "released") externalOwners.delete(sessionId);
+    return released;
+  }
+
+  // Rob first asks the exact owner to abort and shut down. Signals are only a
+  // fallback after that authenticated request fails or its lock stays live.
+  if (cooperative.status === "accepted") {
+    const released = await waitForOwnershipRelease(record, 15_000);
+    if (released.status !== "timeout") {
+      if (released.status === "released") externalOwners.delete(sessionId);
+      return released;
+    }
+  }
+
+  const verified = await verifySignalTarget(record);
+  if (!verified.ok) return verified;
+  const signal = hard ? "SIGKILL" : "SIGTERM";
+  try {
+    process.kill(record.owner.pid, signal);
+  } catch (error) {
+    if (error?.code !== "ESRCH") {
+      return { status: "error", message: `Could not send ${signal} to pid ${record.owner.pid}: ${error.message}` };
+    }
+  }
+
+  let released = await waitForOwnershipRelease(record, SIGNAL_EXIT_GRACE_MS);
+  if (released.status === "timeout" && !pidAlive(record.owner.pid)) {
+    // SIGKILL cannot run session_shutdown. Wait until the abandoned atomic
+    // lock reaches its normal stale boundary; the next attach still has to
+    // win acquisition rather than deleting or transferring a live lock.
+    released = await waitForOwnershipRelease(record, Math.max(0, OWNER_RELEASE_TIMEOUT_MS - SIGNAL_EXIT_GRACE_MS));
+  }
+  if (released.status === "released") {
+    externalOwners.delete(sessionId);
+    return released;
+  }
+  if (!hard && released.status === "timeout" && pidAlive(record.owner.pid)) {
+    const confirmationToken = randomUUID();
+    record.sigkillAuthorizations ??= new Map();
+    record.sigkillAuthorizations.set(confirmationToken, {
+      requesterPid: client.pid ?? process.pid,
+      requesterProcessStartTime: client.processStartTime,
+      expiresAt: Date.now() + 60_000,
+    });
+    return {
+      status: "needs-sigkill",
+      message: `Pid ${record.owner.pid} remained alive after SIGTERM. SIGKILL requires a separate confirmation.`,
+      confirmationToken,
+    };
+  }
+  return released;
+}
+
+function sendHandoffResponse(client, frame, data) {
+  sendToClient(client, {
+    type: "response",
+    command: "request_handoff",
+    success: true,
+    ...(typeof frame.id === "string" ? { id: frame.id } : {}),
+    data,
+  });
 }
 
 function handleClientFrame(client, frame) {
@@ -481,6 +897,10 @@ function handleClientFrame(client, frame) {
     }
     client.helloDone = true;
     client.name = typeof frame.client === "string" ? frame.client.slice(0, 64) : "unknown";
+    client.pid = Number.isInteger(frame.pid) && frame.pid > 0 ? frame.pid : undefined;
+    client.processStartTime = typeof frame.processStartTime === "number" && Number.isFinite(frame.processStartTime)
+      ? frame.processStartTime
+      : undefined;
     clients.add(client);
     sendToClient(client, {
       type: "hello_ack",
@@ -525,6 +945,80 @@ function handleClientFrame(client, frame) {
     return;
   }
 
+  if (frame?.type === "request_handoff") {
+    void negotiateExternalOwnership(client, frame).then(
+      (result) => sendHandoffResponse(client, frame, result),
+      (error) => sendHandoffResponse(client, frame, {
+        status: "error",
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return;
+  }
+
+  if (frame?.type === "prepare_surface_session") {
+    const sourceSessionId = String(frame.sourceSessionId ?? "");
+    const source = sessions.get(sourceSessionId);
+    const refuse = (message) => sendToClient(client, {
+      type: "error",
+      sessionId: sourceSessionId,
+      ...(typeof frame.id === "string" ? { id: frame.id } : {}),
+      error: message,
+    });
+    if (draining) {
+      refuse("The MyPi session daemon is restarting; retry target preparation in a moment.");
+      return;
+    }
+    if (!source || !source.clients.has(client)) {
+      refuse(`No attached source session "${sourceSessionId}" is available for target preparation.`);
+      return;
+    }
+    if (source.turnActive) {
+      refuse("Wait for the source session's active turn to settle before creating or deriving another session.");
+      return;
+    }
+    if (source.preparingSurfaceTarget) {
+      refuse("Another surface target is already being prepared from this session; retry when it finishes.");
+      return;
+    }
+
+    let engineFrame;
+    if (frame.operation === "new") {
+      engineFrame = {
+        type: "prepare_new_session",
+        materialize: true,
+        ...(typeof frame.parentSession === "string" ? { parentSession: frame.parentSession } : {}),
+      };
+    } else if (
+      frame.operation === "fork" &&
+      typeof frame.entryId === "string" &&
+      (frame.position === undefined || frame.position === "before" || frame.position === "at")
+    ) {
+      engineFrame = {
+        type: "prepare_fork",
+        materialize: true,
+        entryId: frame.entryId,
+        ...(frame.position ? { position: frame.position } : {}),
+      };
+    } else {
+      refuse("Invalid surface-session preparation request.");
+      return;
+    }
+
+    source.preparingSurfaceTarget = true;
+    source.counter += 1;
+    const routedId = `__dc_${source.counter}`;
+    source.pending.set(routedId, {
+      client,
+      originalId: typeof frame.id === "string" ? frame.id : undefined,
+      commandType: engineFrame.type,
+      responseCommand: "prepare_surface_session",
+      surfacePreparation: true,
+    });
+    sendToEngine(source, { ...engineFrame, id: routedId });
+    return;
+  }
+
   if (frame?.type === "attach") {
     if (draining) {
       // Refuse new work so the drain can complete; the caller retries once a
@@ -539,7 +1033,14 @@ function handleClientFrame(client, frame) {
     // No sessionId creates a fresh engine session; the daemon re-keys it and
     // broadcasts `attached` once the child reports its native id.
     let session = sessionId ? sessions.get(sessionId) : undefined;
-    if (!session) session = startSession({ sessionId, cwd: frame.cwd, model: frame.model });
+    if (!session) {
+      session = startSession({
+        sessionId,
+        cwd: frame.cwd,
+        model: frame.model,
+        sessionStart: normalizeSessionStart(frame.sessionStart),
+      });
+    }
     if (session.graceTimer) {
       clearTimeout(session.graceTimer);
       session.graceTimer = null;
@@ -602,6 +1103,18 @@ function handleClientFrame(client, frame) {
   }
 
   if (typeof frame.type === "string") {
+    if (IDENTITY_CHANGING_COMMANDS.has(frame.type) && session.clients.size > 1) {
+      sendToClient(client, {
+        type: "error",
+        code: "shared_session_identity_change_refused",
+        sessionId,
+        ...(typeof frame.id === "string" ? { id: frame.id } : {}),
+        error:
+          `Cannot run ${frame.type} by replacing a child shared by ${session.clients.size} clients. ` +
+          "Use a surface-local new, fork, clone, or resume operation so only the requester moves.",
+      });
+      return;
+    }
     if (frame.type === "prompt" || frame.type === "steer" || frame.type === "follow_up") session.turnActive = true;
     session.counter += 1;
     const routedId = `__dc_${session.counter}`;
@@ -616,7 +1129,14 @@ function handleClientFrame(client, frame) {
 }
 
 function acceptConnection(socket) {
-  const client = { socket, helloDone: false, sessions: new Set(), name: "unknown" };
+  const client = {
+    socket,
+    helloDone: false,
+    sessions: new Set(),
+    name: "unknown",
+    pid: undefined,
+    processStartTime: undefined,
+  };
   socket.setNoDelay(true);
   attachLineReader(socket, (line) => {
     let frame;
