@@ -90,6 +90,7 @@ const ThemeJsonSchema = Type.Object({
 		thinkingHigh: ColorValueSchema,
 		thinkingXhigh: ColorValueSchema,
 		thinkingMax: Type.Optional(ColorValueSchema),
+		execOff: Type.Optional(ColorValueSchema),
 		// Bash Mode (1 color)
 		bashMode: ColorValueSchema,
 	}),
@@ -152,6 +153,7 @@ export type ThemeColor =
 	| "thinkingHigh"
 	| "thinkingXhigh"
 	| "thinkingMax"
+	| "execOff"
 	| "bashMode";
 
 export type ThemeBg =
@@ -319,8 +321,14 @@ function resolveThemeColors<T extends Record<string, ColorValue>>(
 	return resolved as Record<keyof T, string | number>;
 }
 
-function withThemeColorFallbacks(colors: ThemeJson["colors"]): ThemeJson["colors"] & { thinkingMax: ColorValue } {
-	return { ...colors, thinkingMax: colors.thinkingMax ?? colors.thinkingXhigh };
+function withThemeColorFallbacks(
+	colors: ThemeJson["colors"],
+): ThemeJson["colors"] & { thinkingMax: ColorValue; execOff: ColorValue } {
+	return {
+		...colors,
+		thinkingMax: colors.thinkingMax ?? colors.thinkingXhigh,
+		execOff: colors.execOff ?? colors.warning,
+	};
 }
 
 // ============================================================================
@@ -346,7 +354,11 @@ export class Theme {
 		this.sourceInfo = options.sourceInfo;
 		this.mode = mode;
 		this.fgColors = new Map();
-		const colors = { ...fgColors, thinkingMax: fgColors.thinkingMax ?? fgColors.thinkingXhigh };
+		const colors = {
+			...fgColors,
+			thinkingMax: fgColors.thinkingMax ?? fgColors.thinkingXhigh,
+			execOff: fgColors.execOff ?? fgColors.warning,
+		};
 		for (const [key, value] of Object.entries(colors) as [ThemeColor, string | number][]) {
 			this.fgColors.set(key, fgAnsi(value, mode));
 		}

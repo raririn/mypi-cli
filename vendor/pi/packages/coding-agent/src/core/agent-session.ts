@@ -1220,6 +1220,14 @@ export class AgentSession {
 					? { kind: "error", ...(msg.errorMessage ? { errorMessage: msg.errorMessage } : {}) }
 					: { kind: "success" };
 
+		// A user abort must settle the run. Without this guard, messages still in the
+		// agent queues at settle time (a steer racing the UI's clearQueue, or one
+		// queued by an agent_end extension handler) would resurrect the turn via
+		// agent.continue() right after the user interrupted it.
+		if (msg.stopReason === "aborted") {
+			return false;
+		}
+
 		if (this._isRetryableError(msg) && (await this._prepareRetry(msg))) {
 			return true;
 		}
@@ -1721,6 +1729,19 @@ export class AgentSession {
 		this.agent.clearAllQueues();
 		this._emitQueueUpdate();
 		return { steering, followUp };
+	}
+
+	/**
+	 * Clear only queued steering messages and return them, leaving follow-ups
+	 * queued. Used by esc-to-steer-now: interrupt the turn and deliver the queued
+	 * steer immediately.
+	 */
+	clearSteeringMessages(): string[] {
+		const steering = [...this._steeringMessages];
+		this._steeringMessages = [];
+		this.agent.clearSteeringQueue();
+		this._emitQueueUpdate();
+		return steering;
 	}
 
 	/** Number of pending messages (includes both steering and follow-up) */

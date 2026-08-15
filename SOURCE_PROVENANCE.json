@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "product": "MyPi CLI",
-  "version": "5.4.2-beta.1",
+  "version": "5.4.2-beta.2",
   "sourceRepository": "https://github.com/raririn/mypi-cli",
   "includedUpstreams": [
     {

@@ -2,6 +2,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { InteractiveSessionSurface } from "../../../core/agent-session-runtime.ts";
 import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
+import { getExecutionMode } from "../../../core/mypi-exec-mode.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
 import { addUsageToTotals, createUsageTotals } from "../../../core/usage-totals.ts";
 import { theme } from "../theme/theme.ts";
@@ -254,7 +255,13 @@ export class FooterComponent implements Component {
 		return lines;
 	}
 
-	/** One footer line combining the thinking and safety cycles; the active shift+tab target is bright. */
+	/**
+	 * One footer line combining the safety and thinking cycles, Claude Code style:
+	 * `⛊ Sandbox on (shift+tab to cycle)  ·  thinking high  ·  esc to interrupt`.
+	 * The safety label is colored by execution mode (sandbox=warning, safe=text,
+	 * off=execOff); the active shift+tab target carries the cycle hint; while a
+	 * turn is streaming an esc hint is appended (steer-now when a steer is queued).
+	 */
 	private renderCycleLine(thinkingText: string | undefined, safetyText: string | undefined, width: number): string | undefined {
 		const hint = " (shift+tab to cycle)";
 		// When the configured target isn't cyclable here (e.g. thinking on a model
@@ -265,15 +272,24 @@ export class FooterComponent implements Component {
 				: this.shiftTabTarget === "safety" && safetyText === undefined
 					? "thinking"
 					: this.shiftTabTarget;
+		const mode = getExecutionMode();
+		const safetyColor: "warning" | "text" | "execOff" = mode === "sandbox" ? "warning" : mode === "safe" ? "text" : "execOff";
 		const part = (text: string | undefined, target: "thinking" | "safety"): string | undefined => {
 			if (!text) return undefined;
 			const active = effective === target;
-			const label = active ? theme.fg("text", text) : theme.fg("dim", text);
+			// The safety label always keeps its mode color — the color is the state
+			// signal; only thinking dims when inactive.
+			const label =
+				target === "safety" ? theme.fg(safetyColor, text) : active ? theme.fg("text", text) : theme.fg("dim", text);
 			return active ? label + theme.fg("dim", hint) : label;
 		};
-		const parts = [part(thinkingText, "thinking"), part(safetyText, "safety")].filter(
+		const parts = [part(safetyText, "safety"), part(thinkingText, "thinking")].filter(
 			(value): value is string => value !== undefined,
 		);
+		if (this.session.isStreaming) {
+			const steerQueued = this.session.getSteeringMessages().length > 0;
+			parts.push(theme.fg("dim", steerQueued ? "esc to steer now" : "esc to interrupt"));
+		}
 		if (parts.length === 0) return undefined;
 		return truncateToWidth(parts.join(theme.fg("dim", "  ·  ")), width, theme.fg("dim", "..."));
 	}

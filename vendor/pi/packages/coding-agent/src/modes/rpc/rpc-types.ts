@@ -91,6 +91,7 @@ export type RpcCommand =
 			models: Array<{ provider: string; modelId: string; thinkingLevel?: ThinkingLevel }>;
 	  }
 	| { id?: string; type: "clear_queue" }
+	| { id?: string; type: "clear_steering_queue" }
 	| { id?: string; type: "abort_compaction" }
 	| { id?: string; type: "abort_branch_summary" }
 	| { id?: string; type: "reload" }
@@ -295,6 +296,13 @@ export type RpcResponse =
 			command: "clear_queue";
 			success: true;
 			data: { steering: string[]; followUp: string[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "clear_steering_queue";
+			success: true;
+			data: { steering: string[] };
 	  }
 	| { id?: string; type: "response"; command: "abort_compaction"; success: true }
 	| { id?: string; type: "response"; command: "abort_branch_summary"; success: true }

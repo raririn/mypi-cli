@@ -64,7 +64,7 @@ declare module "@earendil-works/pi-tui" {
 
 export const KEYBINDINGS = {
 	...TUI_KEYBINDINGS,
-	"app.interrupt": { defaultKeys: "escape", description: "Cancel or abort" },
+	"app.interrupt": { defaultKeys: "escape", description: "Cancel or abort (with a queued steer message: interrupt and steer now)" },
 	"app.clear": { defaultKeys: "ctrl+c", description: "Clear editor" },
 	"app.exit": { defaultKeys: "ctrl+d", description: "Exit when editor is empty" },
 	"app.suspend": {

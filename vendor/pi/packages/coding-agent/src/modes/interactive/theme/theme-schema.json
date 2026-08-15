@@ -293,6 +293,10 @@
 					"$ref": "#/$defs/colorValue",
 					"description": "Thinking level border: max (falls back to thinkingXhigh when omitted)"
 				},
+				"execOff": {
+					"$ref": "#/$defs/colorValue",
+					"description": "Footer color for execution mode 'Sandbox off' (falls back to warning when omitted)"
+				},
 				"bashMode": {
 					"$ref": "#/$defs/colorValue",
 					"description": "Editor border color in bash mode"

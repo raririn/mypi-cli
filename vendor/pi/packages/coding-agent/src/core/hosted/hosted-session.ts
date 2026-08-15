@@ -926,6 +926,13 @@ export class HostedAgentSession implements InteractiveSessionSurface {
 		return cleared;
 	}
 
+	clearSteeringMessages(): string[] {
+		const steering = [...this.mirror.steeringQueue];
+		this.mirror.steeringQueue = [];
+		this.client.sendCommand({ type: "clear_steering_queue" });
+		return steering;
+	}
+
 	getSteeringMessages(): readonly string[] {
 		return this.mirror.steeringQueue;
 	}

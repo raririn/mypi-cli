@@ -162,6 +162,7 @@ export type InteractiveSessionSurface = Pick<
 	| "autoCompactionEnabled"
 	| "bindExtensions"
 	| "clearQueue"
+	| "clearSteeringMessages"
 	| "compact"
 	| "cycleModel"
 	| "cycleThinkingLevel"

@@ -909,6 +909,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "clear_queue", { steering: cleared.steering, followUp: cleared.followUp });
 			}
 
+			case "clear_steering_queue": {
+				const steering = session.clearSteeringMessages();
+				return success(id, "clear_steering_queue", { steering });
+			}
+
 			case "abort_compaction": {
 				session.abortCompaction();
 				return success(id, "abort_compaction");

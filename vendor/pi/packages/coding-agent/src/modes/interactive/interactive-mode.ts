@@ -369,6 +369,8 @@ export class InteractiveMode {
 
 	private lastSigintTime = 0;
 	private lastEscapeTime = 0;
+	// Steer text captured by esc-to-steer-now; delivered when the aborted run settles.
+	private pendingSteerNowText?: string;
 	private changelogMarkdown: string | undefined = undefined;
 	private startupNoticesShown = false;
 	private anthropicSubscriptionWarningShown = false;
@@ -2663,7 +2665,7 @@ export class InteractiveMode {
 		// so they work correctly regardless of which editor is active
 		this.defaultEditor.onEscape = () => {
 			if (this.session.isStreaming) {
-				this.restoreQueuedMessagesToEditor({ abort: true });
+				this.handleStreamingEscape();
 			} else if (this.session.isBashRunning) {
 				this.session.abortBash();
 			} else if (this.isBashMode) {
@@ -3204,6 +3206,7 @@ export class InteractiveMode {
 				break;
 
 			case "agent_settled":
+				await this.deliverPendingSteerNow();
 				await this.checkShutdownRequested();
 				break;
 
@@ -4146,6 +4149,42 @@ export class InteractiveMode {
 			const dequeueHint = this.getAppKeyDisplay("app.message.dequeue");
 			const hintText = theme.fg("dim", `↳ ${dequeueHint} to edit all queued messages`);
 			this.pendingMessagesContainer.addChild(new TruncatedText(hintText, 1, 0));
+		}
+	}
+
+	/**
+	 * Escape during a streaming turn. With a steer message queued, esc means
+	 * "steer now": interrupt the turn and deliver the queued steer immediately
+	 * once the run settles. Without one it is a plain interrupt that restores any
+	 * queued follow-ups to the editor.
+	 */
+	private handleStreamingEscape(): void {
+		const compactionSteer = this.compactionQueuedMessages.filter((msg) => msg.mode === "steer");
+		const steering = [...this.session.getSteeringMessages(), ...compactionSteer.map((msg) => msg.text)];
+		if (steering.length === 0) {
+			this.restoreQueuedMessagesToEditor({ abort: true });
+			return;
+		}
+		this.session.clearSteeringMessages();
+		this.compactionQueuedMessages = this.compactionQueuedMessages.filter((msg) => msg.mode !== "steer");
+		this.updatePendingMessagesDisplay();
+		this.pendingSteerNowText = steering.join("\n\n");
+		this.showStatus("Interrupting to steer now…");
+		this.agent.abort();
+	}
+
+	/** Deliver the esc-to-steer-now message after the aborted run has settled. */
+	private async deliverPendingSteerNow(): Promise<void> {
+		const text = this.pendingSteerNowText;
+		this.pendingSteerNowText = undefined;
+		if (!text) return;
+		try {
+			await this.session.prompt(text);
+		} catch (error) {
+			// Restore the steer text so nothing is lost if the prompt fails.
+			const currentText = this.editor.getText();
+			this.editor.setText([text, currentText].filter((t) => t.trim()).join("\n\n"));
+			this.showError(`Failed to send steer message: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 
