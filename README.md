@@ -14,7 +14,9 @@ source-built [Pi](https://github.com/earendil-works/pi) runtime.
   context, notify on settle) plus agent-registered timer and file-watch hooks
   (`schedule_prompt`, `watch_files`); see `/hooks --help`
 - Plan and goal workflows
-- Sandboxed execution via `@anthropic-ai/sandbox-runtime`
+- Turn-scoped Safe, Sandboxed, approval, and Full Access modes via `/safety`
+- Workspace trust preflight plus workspace-confined read/write tools in bounded modes
+- Model-aware `/reasoning` control with the existing thinking-level colors
 - Web search/fetch with Brave search API or curl
 - Atomic lifecycle and session lease (required by MyPi GUI)
 - Read-only mode and deprecated safe-mode compatibility
