@@ -10,6 +10,9 @@ source-built [Pi](https://github.com/earendil-works/pi) runtime.
   `systemPromptPreset` setting or overridable with a `SYSTEM.md` file
 - `deep_thinking` tool: makes model reasoning and progress visible, and gives
   chain-of-thought to models whose native reasoning is absent or hidden
+- Hooks: user policy hooks via `hooks.json` (block/observe tool calls, inject
+  context, notify on settle) plus agent-registered timer and file-watch hooks
+  (`schedule_prompt`, `watch_files`); see `/hooks --help`
 - Plan and goal workflows
 - Sandboxed execution via `@anthropic-ai/sandbox-runtime`
 - Web search/fetch with Brave search API or curl

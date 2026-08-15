@@ -159,7 +159,7 @@ Lead with the outcome, then the supporting detail. Use plain language, calibrate
 
 	const deepThinkingSection = `# Deep thinking
 
-Use the \`deep_thinking\` tool to make your reasoning and progress visible as you work: a brief note before a non-trivial step, a hypothesis you are testing, or what you are about to do and why. Think here before you act — this is your scratchpad as much as the user's window into your process. Keep entries short and scannable; they are never your final answer, and the user should never need them to understand your result. If the interface already streams your reasoning to the user, you can lean on that and keep these sparse.`;
+Use the \`deep_thinking\` tool to make your reasoning and progress visible as you work: a brief note before a non-trivial step, a hypothesis you are testing, or what you are about to do and why. Think here before you act. Keep entries short and scannable; they are never your final answer, and the user should never need them to understand your result.`;
 
 	const toolsSection = `Available tools:
 ${toolsList}
