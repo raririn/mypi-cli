@@ -16,8 +16,7 @@ import {
 	untrackDetachedChildPid,
 } from "../../utils/shell.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
-import { isSandboxActive } from "../mypi-exec-mode.ts";
-import { createMyPiSandboxProcessLaunch } from "../mypi-sandbox.ts";
+import { createMyPiSandboxProcessLaunch, MYPI_SANDBOX_DENIAL_CONTROL } from "../mypi-sandbox.ts";
 import { OutputAccumulator } from "./output-accumulator.ts";
 import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -72,7 +71,7 @@ export interface BashOperations {
 			timeout?: number;
 			env?: NodeJS.ProcessEnv;
 		},
-	) => Promise<{ exitCode: number | null }>;
+	) => Promise<{ exitCode: number | null; sandboxDenied?: boolean; escalated?: boolean }>;
 }
 
 /**
@@ -81,7 +80,15 @@ export interface BashOperations {
  * This is useful for extensions that intercept user_bash and still want pi's
  * standard local shell behavior while wrapping or rewriting commands.
  */
-export function createLocalBashOperations(options?: { shellPath?: string }): BashOperations {
+export interface LocalBashOperationsOptions {
+	shellPath?: string;
+	/** Explicit per-session sandbox policy. Omit only for legacy callers that still read sandbox-config.json. */
+	sandbox?: boolean | (() => boolean);
+	/** Called only after the sandbox helper emits its authenticated denial marker. */
+	onSandboxDenied?: (context: { command: string; cwd: string }) => Promise<boolean>;
+}
+
+export function createLocalBashOperations(options?: LocalBashOperationsOptions): BashOperations {
 	return {
 		exec: async (command, cwd, { onData, signal, timeout, env }) => {
 			const timeoutMs = resolveTimeoutMs(timeout);
@@ -95,67 +102,100 @@ export function createLocalBashOperations(options?: { shellPath?: string }): Bas
 				throw new Error(`Working directory does not exist: ${cwd}\nCannot execute bash commands.`);
 			}
 
-			const commandFromStdin = shellConfig.commandTransport === "stdin";
-			// Sandboxing is a per-session mode; only wrap when this session enabled it.
-			const sandboxLaunch = isSandboxActive()
-				? createMyPiSandboxProcessLaunch(command, cwd, shellConfig.shell, env ?? getShellEnv())
-				: undefined;
-			const child = spawn(
-				sandboxLaunch?.command ?? shellConfig.shell,
-				sandboxLaunch?.args ?? (commandFromStdin ? shellConfig.args : [...shellConfig.args, command]),
-				{
+			const execOnce = async (sandboxEnabled: boolean | undefined) => {
+				const commandFromStdin = shellConfig.commandTransport === "stdin";
+				const sandboxLaunch = createMyPiSandboxProcessLaunch(
+					command,
 					cwd,
-					detached: process.platform !== "win32",
-					env: sandboxLaunch?.env ?? env ?? getShellEnv(),
-					stdio: [sandboxLaunch || commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
-					windowsHide: true,
-				},
-			);
-			if (sandboxLaunch) {
-				child.stdin?.on("error", () => {});
-				child.stdin?.end(sandboxLaunch.input);
-			} else if (commandFromStdin) {
-				child.stdin?.on("error", () => {});
-				child.stdin?.end(command);
-			}
-			if (child.pid) trackDetachedChildPid(child.pid);
-			let timedOut = false;
-			let timeoutHandle: NodeJS.Timeout | undefined;
-			const onAbort = () => {
-				if (child.pid) killProcessTree(child.pid);
+					shellConfig.shell,
+					env ?? getShellEnv(),
+					sandboxEnabled === undefined ? {} : { enabled: sandboxEnabled },
+				);
+				const child = spawn(
+					sandboxLaunch?.command ?? shellConfig.shell,
+					sandboxLaunch?.args ?? (commandFromStdin ? shellConfig.args : [...shellConfig.args, command]),
+					{
+						cwd,
+						detached: process.platform !== "win32",
+						env: sandboxLaunch?.env ?? env ?? getShellEnv(),
+						stdio: sandboxLaunch
+							? ["pipe", "pipe", "pipe", "pipe"]
+							: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
+						windowsHide: true,
+					},
+				);
+				if (sandboxLaunch) {
+					child.stdin?.on("error", () => {});
+					child.stdin?.end(sandboxLaunch.input);
+				} else if (commandFromStdin) {
+					child.stdin?.on("error", () => {});
+					child.stdin?.end(command);
+				}
+				if (child.pid) trackDetachedChildPid(child.pid);
+				let timedOut = false;
+				let timeoutHandle: NodeJS.Timeout | undefined;
+				let sandboxControl = "";
+				let sandboxControlClosed = Promise.resolve();
+				const handleData = (data: Buffer) => {
+					onData(data);
+				};
+				if (sandboxLaunch) {
+					const control = child.stdio[3];
+					sandboxControlClosed = new Promise<void>((resolve) => {
+						let closed = false;
+						const finish = () => {
+							if (closed) return;
+							closed = true;
+							resolve();
+						};
+						control?.on("data", (data: Buffer) => {
+							sandboxControl = `${sandboxControl}${data.toString("utf8")}`.slice(-1024);
+						});
+						control?.once("end", finish);
+						control?.once("close", finish);
+						control?.once("error", finish);
+						if (!control) finish();
+					});
+				}
+				const onAbort = () => {
+					if (child.pid) killProcessTree(child.pid);
+				};
+
+				try {
+					if (timeoutMs !== undefined) {
+						timeoutHandle = setTimeout(() => {
+							timedOut = true;
+							if (child.pid) killProcessTree(child.pid);
+						}, timeoutMs);
+					}
+					child.stdout?.on("data", handleData);
+					child.stderr?.on("data", handleData);
+					if (signal) {
+						if (signal.aborted) onAbort();
+						else signal.addEventListener("abort", onAbort, { once: true });
+					}
+					const exitCode = await waitForChildProcess(child);
+					await sandboxControlClosed;
+					if (signal?.aborted) throw new Error("aborted");
+					if (timedOut) throw new Error(`timeout:${timeout}`);
+					return {
+						exitCode,
+						sandboxDenied: Boolean(sandboxLaunch && sandboxControl.includes(MYPI_SANDBOX_DENIAL_CONTROL)),
+					};
+				} finally {
+					if (child.pid) untrackDetachedChildPid(child.pid);
+					if (timeoutHandle) clearTimeout(timeoutHandle);
+					if (signal) signal.removeEventListener("abort", onAbort);
+				}
 			};
 
-			try {
-				// Set timeout if provided.
-				if (timeoutMs !== undefined) {
-					timeoutHandle = setTimeout(() => {
-						timedOut = true;
-						if (child.pid) killProcessTree(child.pid);
-					}, timeoutMs);
-				}
-				// Stream stdout and stderr.
-				child.stdout?.on("data", onData);
-				child.stderr?.on("data", onData);
-				// Handle abort signal by killing the entire process tree.
-				if (signal) {
-					if (signal.aborted) onAbort();
-					else signal.addEventListener("abort", onAbort, { once: true });
-				}
-				// Handle shell spawn errors and wait for the process to terminate without hanging
-				// on inherited stdio handles held by detached descendants.
-				const exitCode = await waitForChildProcess(child);
-				if (signal?.aborted) {
-					throw new Error("aborted");
-				}
-				if (timedOut) {
-					throw new Error(`timeout:${timeout}`);
-				}
-				return { exitCode };
-			} finally {
-				if (child.pid) untrackDetachedChildPid(child.pid);
-				if (timeoutHandle) clearTimeout(timeoutHandle);
-				if (signal) signal.removeEventListener("abort", onAbort);
-			}
+			const sandboxEnabled = typeof options?.sandbox === "function" ? options.sandbox() : options?.sandbox;
+			const first = await execOnce(sandboxEnabled);
+			if (!first.sandboxDenied || !options?.onSandboxDenied) return first;
+			if (!(await options.onSandboxDenied({ command, cwd }))) return first;
+			onData(Buffer.from("\nMyPi: approved exact-command retry outside the sandbox.\n"));
+			const retried = await execOnce(false);
+			return { ...retried, escalated: true };
 		},
 	};
 }

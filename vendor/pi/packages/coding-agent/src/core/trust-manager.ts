@@ -62,6 +62,17 @@ export function getProjectTrustParentPath(cwd: string): string | undefined {
 	return parentDir === trustPath ? undefined : parentDir;
 }
 
+/** Resolve the nearest Git worktree root without executing project code or Git hooks. */
+export function resolveProjectTrustRoot(cwd: string): string {
+	let current = normalizeCwd(cwd);
+	while (true) {
+		if (existsSync(join(current, ".git"))) return current;
+		const parent = dirname(current);
+		if (parent === current) return normalizeCwd(cwd);
+		current = parent;
+	}
+}
+
 export function getProjectTrustOptions(cwd: string, options?: { includeSessionOnly?: boolean }): ProjectTrustOption[] {
 	const trustPath = normalizeCwd(cwd);
 	const trustOptions: ProjectTrustOption[] = [

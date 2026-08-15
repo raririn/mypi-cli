@@ -78,7 +78,7 @@ for (const fragment of [
   "myPiCoreExtension",
   "webSearchExtension",
   "planGoalExtension",
-  "sandboxExtension",
+  "safetyExtension",
 ]) {
   if (!builtInExtensions.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing a runtime-owned MyPi core feature (${fragment}).`);
@@ -120,29 +120,38 @@ for (const fragment of [
   }
 }
 
-const sandboxExtension = await readFile(
-  join(packageRoot, "dist", "extensions", "mypi", "sandbox.js"),
+const safetyExtension = await readFile(
+  join(packageRoot, "dist", "extensions", "mypi", "safety.js"),
   "utf8",
 );
 for (const fragment of [
-  'registerCommand("sandbox"',
-  "saveMyPiSandboxPreference",
-  "Sandbox remains unchanged.",
-  "MyPi enables the preference after verifying",
+  'registerCommand("safety"',
+  'registerCommand("reasoning"',
+  "getAvailableThinkingLevels",
+  "/sandbox was replaced by /safety",
 ]) {
-  if (!sandboxExtension.includes(fragment)) {
-    throw new Error(`Installed Pi ${expectedVersion} is missing built-in sandbox control (${fragment}).`);
+  if (!safetyExtension.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing built-in safety/reasoning control (${fragment}).`);
   }
 }
 const sandboxBash = await readFile(join(packageRoot, "dist", "core", "tools", "bash.js"), "utf8");
-if (!sandboxBash.includes("createMyPiSandboxProcessLaunch")) {
+if (
+  !sandboxBash.includes("createMyPiSandboxProcessLaunch") ||
+  !sandboxBash.includes("MYPI_SANDBOX_DENIAL_CONTROL")
+) {
   throw new Error(`Installed Pi ${expectedVersion} does not apply sandboxing at the local BashOperations boundary.`);
 }
 const sandboxHelper = await readFile(
   join(packageRoot, "dist", "core", "mypi-sandbox-helper.js"),
   "utf8",
 );
-for (const fragment of ["SandboxRuntimeConfigSchema", "wrapWithSandboxArgv", "MyPi sandbox failed closed"]) {
+for (const fragment of [
+  "SandboxRuntimeConfigSchema",
+  "wrapWithSandboxArgv",
+  "MYPI_SANDBOX_DENIAL_CONTROL",
+  "writeSync(3",
+  "MyPi sandbox failed closed",
+]) {
   if (!sandboxHelper.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing the isolated sandbox helper (${fragment}).`);
   }
@@ -156,6 +165,8 @@ for (const fragment of [
   "text?: string",
   "AgentSettledOutcome",
   "outcome: AgentSettledOutcome",
+  "getSafetyState()",
+  "requestSafetyMode(mode:",
 ]) {
   if (!extensionTypes.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing the tracked resource UI declaration (${fragment}).`);
@@ -314,4 +325,4 @@ for (const relativePath of ["models.js", "compat.js"]) {
   }
 }
 
-console.log(`Verified Pi ${expectedVersion}, bundled docs/examples without built-in skills, runtime-owned Plan/Goal/archive/web/TUI/sandbox core with safe web provider selection, isolated fail-closed Anthropic shell sandboxing, suppressed automatic version-update metadata, one-line MyPi identity, outbound credential redaction, /hotkeys, resource viewers, acknowledged tree navigation, skill labels, typed agent settlement including preflight dispatch rejection, and Goal-aware proactive compaction continuation.`);
+console.log(`Verified Pi ${expectedVersion}, bundled docs/examples without built-in skills, runtime-owned Plan/Goal/archive/web/TUI/safety core with model-aware /reasoning, workspace-confined tools, safe web provider selection, isolated fail-closed Anthropic shell sandboxing, suppressed automatic version-update metadata, one-line MyPi identity, outbound credential redaction, /hotkeys, resource viewers, acknowledged tree navigation, skill labels, typed agent settlement including preflight dispatch rejection, and Goal-aware proactive compaction continuation.`);

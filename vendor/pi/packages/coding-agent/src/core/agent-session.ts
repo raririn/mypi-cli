@@ -106,9 +106,27 @@ import { CURRENT_SESSION_VERSION, getLatestCompactionEntry, type SessionHeader }
 import type { SettingsManager } from "./settings-manager.ts";
 import type { SlashCommandInfo } from "./slash-commands.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "./source-info.ts";
+import {
+	cycleSafetyMode,
+	DEFAULT_SAFETY_MODE,
+	isBoundedSafetyMode,
+	isOrdinaryReadTool,
+	isSafetyMode,
+	isTrustedSafetyTool,
+	isWorkspaceTool,
+	latestSafetySessionState,
+	SAFETY_SESSION_ENTRY,
+	safetyUsesSandbox,
+	type SafetyMode,
+	type SafetySessionState,
+} from "./safety-mode.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
-import { createAllToolDefinitions } from "./tools/index.ts";
+import {
+	createAllToolDefinitions,
+	createWorkspaceReadToolDefinition,
+	createWorkspaceWriteToolDefinition,
+} from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
 
@@ -280,7 +298,8 @@ export type AgentSessionEvent =
 	  }
 	| { type: "summarization_retry_finished" }
 	| { type: "auto_retry_end"; success: boolean; attempt: number; finalError?: string }
-	| { type: "bash_execution_update"; id?: string; delta: string };
+	| { type: "bash_execution_update"; id?: string; delta: string }
+	| { type: "safety_mode_changed"; effective: SafetyMode; pending?: SafetyMode };
 
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -325,6 +344,8 @@ export interface AgentSessionConfig {
 	extensionRunnerRef?: { current?: ExtensionRunner };
 	/** Session start event metadata emitted when extensions bind to this runtime. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Disable the coding safety ladder for deliberately capability-bounded profiles such as Chat. */
+	safetyPolicyEnabled?: boolean;
 }
 
 export interface ExtensionBindings {
@@ -476,6 +497,12 @@ export class AgentSession {
 	private _toolDefinitions: Map<string, ToolDefinitionEntry> = new Map();
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
+	private _requestedActiveToolNames: string[] | undefined;
+	private _safetyPolicyEnabled: boolean;
+	private _effectiveSafetyMode: SafetyMode = DEFAULT_SAFETY_MODE;
+	private _pendingSafetyMode: SafetyMode | undefined;
+	private _safetyStatePersisted = false;
+	private _safetyApprovalTail: Promise<void> = Promise.resolve();
 
 	// Base system prompt (without extension appends) - used to apply fresh appends each turn
 	private _baseSystemPrompt = "";
@@ -497,6 +524,18 @@ export class AgentSession {
 		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
+		this._safetyPolicyEnabled = config.safetyPolicyEnabled ?? true;
+		const safetyEntryExists = this.sessionManager
+			.getBranch()
+			.some((entry) => entry.type === "custom" && entry.customType === SAFETY_SESSION_ENTRY);
+		const restoredSafety = latestSafetySessionState(
+			this.sessionManager.getBranch(),
+			this._safetyPolicyEnabled ? this.settingsManager.getDefaultSafetyMode() : "full",
+		);
+		this._effectiveSafetyMode = this._safetyPolicyEnabled ? restoredSafety.effective : "full";
+		this._pendingSafetyMode = this._safetyPolicyEnabled ? restoredSafety.pending : undefined;
+		this._safetyStatePersisted = safetyEntryExists;
+		if (this._safetyPolicyEnabled && !this._safetyStatePersisted) this._persistSafetyState();
 
 		// Always subscribe to agent events for internal handling
 		// (session persistence, extensions, auto-compaction, retry logic)
@@ -578,17 +617,17 @@ export class AgentSession {
 	private _installAgentToolHooks(): void {
 		this.agent.beforeToolCall = async ({ toolCall, args }) => {
 			const runner = this._extensionRunner;
-			if (!runner.hasHandlers("tool_call")) {
-				return undefined;
-			}
-
 			try {
-				return await runner.emitToolCall({
-					type: "tool_call",
-					toolName: toolCall.name,
-					toolCallId: toolCall.id,
-					input: args as Record<string, unknown>,
-				});
+				if (runner.hasHandlers("tool_call")) {
+					const extensionResult = await runner.emitToolCall({
+						type: "tool_call",
+						toolName: toolCall.name,
+						toolCallId: toolCall.id,
+						input: args as Record<string, unknown>,
+					});
+					if (extensionResult?.block) return extensionResult;
+				}
+				return await this._enforceSafetyToolCall(toolCall.name, args as Record<string, unknown>);
 			} catch (err) {
 				if (err instanceof Error) {
 					throw err;
@@ -1010,6 +1049,18 @@ export class AgentSession {
 		return this.agent.state.systemPrompt;
 	}
 
+	get safetyMode(): SafetyMode {
+		return this._effectiveSafetyMode;
+	}
+
+	get pendingSafetyMode(): SafetyMode | undefined {
+		return this._pendingSafetyMode;
+	}
+
+	get safetyPolicyEnabled(): boolean {
+		return this._safetyPolicyEnabled;
+	}
+
 	/** Current retry attempt (0 if not retrying) */
 	get retryAttempt(): number {
 		return this._retryAttempt;
@@ -1027,13 +1078,15 @@ export class AgentSession {
 	 * Get all configured tools with name, description, parameter schema, prompt guidelines, and source metadata.
 	 */
 	getAllTools(): ToolInfo[] {
-		return Array.from(this._toolDefinitions.values()).map(({ definition, sourceInfo }) => ({
-			name: definition.name,
-			description: definition.description,
-			parameters: definition.parameters,
-			promptGuidelines: definition.promptGuidelines,
-			sourceInfo,
-		}));
+		return Array.from(this._toolDefinitions.values())
+			.filter(({ definition, sourceInfo }) => !isWorkspaceTool(definition.name, sourceInfo))
+			.map(({ definition, sourceInfo }) => ({
+				name: definition.name,
+				description: definition.description,
+				parameters: definition.parameters,
+				promptGuidelines: definition.promptGuidelines,
+				sourceInfo,
+			}));
 	}
 
 	getToolDefinition(name: string): ToolDefinition | undefined {
@@ -1047,6 +1100,12 @@ export class AgentSession {
 	 * Changes take effect on the next agent turn.
 	 */
 	setActiveToolsByName(toolNames: string[]): void {
+		this._requestedActiveToolNames = [...new Set(toolNames)];
+		this._applyRequestedActiveTools();
+	}
+
+	private _applyRequestedActiveTools(): void {
+		const toolNames = this._resolveSafetyToolNames(this._requestedActiveToolNames ?? []);
 		const tools: AgentTool[] = [];
 		const validToolNames: string[] = [];
 		for (const name of toolNames) {
@@ -1061,6 +1120,143 @@ export class AgentSession {
 		// Rebuild base system prompt with new tool set
 		this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames);
 		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
+	}
+
+	private _resolveSafetyToolNames(requested: string[]): string[] {
+		if (!this._safetyPolicyEnabled || !isBoundedSafetyMode(this._effectiveSafetyMode)) return [...requested];
+		const resolved: string[] = [];
+		const add = (name: string) => {
+			if (this._toolRegistry.has(name) && !resolved.includes(name)) resolved.push(name);
+		};
+		for (const name of requested) {
+			const entry = this._toolDefinitions.get(name);
+			if (["read", "grep", "find", "ls"].includes(name)) {
+				add("read_workspace");
+				continue;
+			}
+			if (name === "write" || name === "edit") {
+				add("write_workspace");
+				continue;
+			}
+			if (name === "bash") {
+				if (this._effectiveSafetyMode !== "safe") add(name);
+				continue;
+			}
+			if (isWorkspaceTool(name, entry?.sourceInfo) || isTrustedSafetyTool(name, entry?.sourceInfo)) {
+				add(name);
+				continue;
+			}
+			if (this._effectiveSafetyMode === "sandbox-ask") add(name);
+		}
+		return resolved;
+	}
+
+	private _persistSafetyState(): void {
+		if (!this._safetyPolicyEnabled) return;
+		const state: SafetySessionState = {
+			version: 1,
+			effective: this._effectiveSafetyMode,
+			...(this._pendingSafetyMode && this._pendingSafetyMode !== this._effectiveSafetyMode
+				? { pending: this._pendingSafetyMode }
+				: {}),
+		};
+		this.sessionManager.appendCustomEntry(SAFETY_SESSION_ENTRY, state);
+		this._safetyStatePersisted = true;
+	}
+
+	private _emitSafetyModeChanged(): void {
+		this._emit({
+			type: "safety_mode_changed",
+			effective: this._effectiveSafetyMode,
+			...(this._pendingSafetyMode ? { pending: this._pendingSafetyMode } : {}),
+		});
+	}
+
+	requestSafetyMode(mode: SafetyMode): void {
+		if (!this._safetyPolicyEnabled) throw new Error("Safety modes are unavailable in this restricted profile.");
+		if (!isSafetyMode(mode)) throw new Error(`Invalid safety mode: ${String(mode)}`);
+		this._pendingSafetyMode = mode === this._effectiveSafetyMode ? undefined : mode;
+		this._persistSafetyState();
+		this._emitSafetyModeChanged();
+	}
+
+	cycleSafetyMode(): SafetyMode {
+		const mode = cycleSafetyMode(this._pendingSafetyMode ?? this._effectiveSafetyMode);
+		this.requestSafetyMode(mode);
+		return mode;
+	}
+
+	setGlobalSafetyMode(mode: SafetyMode): void {
+		this.settingsManager.setDefaultSafetyMode(mode);
+	}
+
+	private _commitSafetyAtRunBoundary(): void {
+		if (!this._safetyPolicyEnabled) return;
+		const changed = this._pendingSafetyMode !== undefined;
+		if (this._pendingSafetyMode) {
+			this._effectiveSafetyMode = this._pendingSafetyMode;
+			this._pendingSafetyMode = undefined;
+			this._applyRequestedActiveTools();
+		}
+		if (changed || !this._safetyStatePersisted) this._persistSafetyState();
+		if (changed) this._emitSafetyModeChanged();
+	}
+
+	private async _queueSafetyApproval(title: string, message: string): Promise<boolean> {
+		const previous = this._safetyApprovalTail;
+		let release!: () => void;
+		this._safetyApprovalTail = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		await previous;
+		try {
+			if (!this._extensionUIContext) return false;
+			return await this._extensionUIContext.confirm(title, message, { signal: this.agent.signal });
+		} finally {
+			release();
+		}
+	}
+
+	private _describeSafetyCall(toolName: string, input: Record<string, unknown>): string {
+		const important = toolName === "bash" ? input.command : (input.path ?? input);
+		try {
+			const serialized = typeof important === "string" ? important : JSON.stringify(important, null, 2);
+			return serialized.length > 2000 ? `${serialized.slice(0, 2000)}\n…` : serialized;
+		} catch {
+			return "(arguments unavailable)";
+		}
+	}
+
+	private async _enforceSafetyToolCall(
+		toolName: string,
+		input: Record<string, unknown>,
+	): Promise<{ block: true; reason: string } | undefined> {
+		if (!this._safetyPolicyEnabled || this._effectiveSafetyMode === "full") return undefined;
+		const sourceInfo = this._toolDefinitions.get(toolName)?.sourceInfo;
+		const trusted = isTrustedSafetyTool(toolName, sourceInfo);
+		const ordinaryRead = isOrdinaryReadTool(toolName, sourceInfo);
+		const workspaceTool = isWorkspaceTool(toolName, sourceInfo);
+
+		if (this._effectiveSafetyMode === "safe" || this._effectiveSafetyMode === "sandbox") {
+			const allowed =
+				trusted ||
+				workspaceTool ||
+				(this._effectiveSafetyMode === "sandbox" && toolName === "bash" && sourceInfo?.source === "builtin");
+			return allowed
+				? undefined
+				: { block: true, reason: `${this._effectiveSafetyMode === "safe" ? "Safe" : "Sandboxed"} mode blocked ${toolName}.` };
+		}
+
+		const needsApproval =
+			this._effectiveSafetyMode === "sandbox-ask"
+				? !(trusted || workspaceTool || (toolName === "bash" && sourceInfo?.source === "builtin"))
+				: !(trusted || ordinaryRead);
+		if (!needsApproval) return undefined;
+		const approved = await this._queueSafetyApproval(
+			`${this._effectiveSafetyMode === "ask" ? "Ask First" : "Sandbox + Approval"}: allow ${toolName}?`,
+			`This permits this exact tool call once.\n\n${this._describeSafetyCall(toolName, input)}`,
+		);
+		return approved ? undefined : { block: true, reason: `User declined ${toolName} under safety policy.` };
 	}
 
 	/** Whether compaction or branch summarization is currently running */
@@ -1370,6 +1566,10 @@ export class AgentSession {
 			if (lastAssistant) {
 				await this._checkCompaction(lastAssistant, false);
 			}
+
+			// Freeze a pending safety selection only after input/auth preflight has accepted
+			// this as a new user-submitted run. Provider/tool continuations retain the snapshot.
+			this._commitSafetyAtRunBoundary();
 
 			// Build messages array (custom message if any, then user message)
 			messages = [];
@@ -2671,7 +2871,12 @@ export class AgentSession {
 				setLabel: (entryId, label) => {
 					this.sessionManager.appendLabelChange(entryId, label);
 				},
-				getActiveTools: () => this.getActiveToolNames(),
+				// Extensions operate on the logical inventory. Bounded safety modes
+				// substitute internal workspace tools only at the model boundary.
+				getActiveTools: () =>
+					(this._requestedActiveToolNames ?? this.getActiveToolNames()).filter(
+						(name) => this._toolRegistry.has(name) && !isWorkspaceTool(name, this._toolDefinitions.get(name)?.sourceInfo),
+					),
 				getAllTools: () => this.getAllTools(),
 				setActiveTools: (toolNames) => this.setActiveToolsByName(toolNames),
 				refreshTools: () => this._refreshToolRegistry(),
@@ -2683,6 +2888,14 @@ export class AgentSession {
 				},
 				getThinkingLevel: () => this.thinkingLevel,
 				setThinkingLevel: (level) => this.setThinkingLevel(level),
+				getAvailableThinkingLevels: () => this.getAvailableThinkingLevels(),
+				getSafetyState: () => ({
+					effective: this.safetyMode,
+					...(this.pendingSafetyMode ? { pending: this.pendingSafetyMode } : {}),
+					enabled: this.safetyPolicyEnabled,
+				}),
+				requestSafetyMode: (mode) => this.requestSafetyMode(mode),
+				setGlobalSafetyMode: (mode) => this.setGlobalSafetyMode(mode),
 			},
 			{
 				getModel: () => this.model,
@@ -2734,7 +2947,7 @@ export class AgentSession {
 
 	private _refreshToolRegistry(options?: { activeToolNames?: string[]; includeAllExtensionTools?: boolean }): void {
 		const previousRegistryNames = new Set(this._toolRegistry.keys());
-		const previousActiveToolNames = this.getActiveToolNames();
+		const previousActiveToolNames = this._requestedActiveToolNames ?? this.getActiveToolNames();
 		const allowedToolNames = this._allowedToolNames;
 		const excludedToolNames = this._excludedToolNames;
 		const isAllowedTool = (name: string): boolean =>
@@ -2842,8 +3055,18 @@ export class AgentSession {
 				)
 			: createAllToolDefinitions(this._cwd, {
 					read: { autoResizeImages },
-					bash: { commandPrefix: shellCommandPrefix, shellPath },
+					bash: {
+						commandPrefix: shellCommandPrefix,
+						shellPath,
+						operations: this._createSafetyBashOperations(shellPath),
+					},
 				});
+		if (!this._baseToolsOverride) {
+			(baseToolDefinitions as Record<string, ToolDefinition>).read_workspace =
+				createWorkspaceReadToolDefinition(this._cwd, { autoResizeImages }) as unknown as ToolDefinition;
+			(baseToolDefinitions as Record<string, ToolDefinition>).write_workspace =
+				createWorkspaceWriteToolDefinition(this._cwd) as unknown as ToolDefinition;
+		}
 
 		this._baseToolDefinitions = new Map(
 			Object.entries(baseToolDefinitions).map(([name, tool]) => [name, tool as ToolDefinition]),
@@ -2887,7 +3110,7 @@ export class AgentSession {
 		resetApiProviders();
 		await this._resourceLoader.reload();
 		this._buildRuntime({
-			activeToolNames: this.getActiveToolNames(),
+			activeToolNames: this._requestedActiveToolNames ?? this.getActiveToolNames(),
 			flagValues: previousFlagValues,
 			includeAllExtensionTools: true,
 		});
@@ -3045,8 +3268,12 @@ export class AgentSession {
 	async executeBash(
 		command: string,
 		onChunk?: (chunk: string) => void,
-		options?: { excludeFromContext?: boolean; id?: string; operations?: BashOperations },
+		options?: { excludeFromContext?: boolean; id?: string; operations?: BashOperations; safetyAuthorized?: boolean },
 	): Promise<BashResult> {
+		if (!options?.safetyAuthorized) await this.authorizeBash(command);
+		if (options?.operations && this._safetyPolicyEnabled && isBoundedSafetyMode(this._effectiveSafetyMode)) {
+			throw new Error("Custom shell operations are unavailable while a bounded safety mode is effective.");
+		}
 		this._bashAbortController = new AbortController();
 
 		// Apply command prefix if configured (e.g., "shopt -s expand_aliases" for alias support)
@@ -3058,7 +3285,7 @@ export class AgentSession {
 			const result = await executeBashWithOperations(
 				resolvedCommand,
 				this.sessionManager.getCwd(),
-				options?.operations ?? createLocalBashOperations({ shellPath }),
+				options?.operations ?? this._createSafetyBashOperations(shellPath),
 				{
 					onChunk: (delta) => {
 						onChunk?.(delta);
@@ -3073,6 +3300,34 @@ export class AgentSession {
 		} finally {
 			this._bashAbortController = undefined;
 		}
+	}
+
+	/** Authorize an interactive/direct shell request before extension interception can execute it. */
+	async authorizeBash(command: string): Promise<void> {
+		if (this._safetyPolicyEnabled && this._effectiveSafetyMode === "safe") {
+			throw new Error("Safe mode hides shell execution. Select another safety mode for the next turn first.");
+		}
+		if (this._safetyPolicyEnabled && this._effectiveSafetyMode === "ask") {
+			const approved = await this._queueSafetyApproval(
+				"Ask First: run shell command?",
+				`This command will run once without an OS sandbox.\n\n${command}`,
+			);
+			if (!approved) throw new Error("Shell command declined under Ask First mode.");
+		}
+	}
+
+	private _createSafetyBashOperations(shellPath?: string): BashOperations {
+		return createLocalBashOperations({
+			shellPath,
+			sandbox: () => this._safetyPolicyEnabled && safetyUsesSandbox(this._effectiveSafetyMode),
+			onSandboxDenied: async ({ command }) => {
+				if (!this._safetyPolicyEnabled || this._effectiveSafetyMode !== "sandbox-ask") return false;
+				return this._queueSafetyApproval(
+					"Sandbox blocked this command. Retry outside sandbox?",
+					`The sandboxed attempt may already have changed workspace files. Retrying permits this exact command once with your normal user permissions.\n\n${command}`,
+				);
+			},
+		});
 	}
 
 	/**

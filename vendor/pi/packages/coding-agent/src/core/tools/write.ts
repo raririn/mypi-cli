@@ -37,6 +37,8 @@ const defaultWriteOperations: WriteOperations = {
 export interface WriteToolOptions {
 	/** Custom operations for file writing. Default: local filesystem */
 	operations?: WriteOperations;
+	/** Optional execution-host containment guard, invoked before directory creation and immediately before write. */
+	pathGuard?: (absolutePath: string) => void;
 }
 
 type WriteHighlightCache = {
@@ -183,6 +185,7 @@ export function createWriteToolDefinition(
 	options?: WriteToolOptions,
 ): ToolDefinition<typeof writeSchema, undefined> {
 	const ops = options?.operations ?? defaultWriteOperations;
+	const pathGuard = options?.pathGuard;
 	return {
 		name: "write",
 		label: "write",
@@ -210,11 +213,13 @@ export function createWriteToolDefinition(
 				};
 
 				throwIfAborted();
+				pathGuard?.(absolutePath);
 				// Create parent directories if needed.
 				await ops.mkdir(dir);
 				throwIfAborted();
 
 				// Write the file contents.
+				pathGuard?.(absolutePath);
 				await ops.writeFile(absolutePath, content);
 				throwIfAborted();
 

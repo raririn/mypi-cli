@@ -13,6 +13,7 @@ import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
+import type { SafetyMode } from "../../core/safety-mode.ts";
 
 // ============================================================================
 // Types
@@ -241,6 +242,14 @@ export class RpcClient {
 	async getState(): Promise<RpcSessionState> {
 		const response = await this.send({ type: "get_state" });
 		return this.getData(response);
+	}
+
+	async requestSafetyMode(mode: SafetyMode): Promise<void> {
+		await this.send({ type: "request_safety_mode", mode });
+	}
+
+	async setGlobalSafetyMode(mode: SafetyMode): Promise<void> {
+		await this.send({ type: "set_global_safety_mode", mode });
 	}
 
 	/**

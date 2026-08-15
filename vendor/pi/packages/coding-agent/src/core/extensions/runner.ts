@@ -72,6 +72,7 @@ const RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS = [
 	"app.exit",
 	"app.suspend",
 	"app.thinking.cycle",
+	"app.safety.cycle",
 	"app.model.cycleForward",
 	"app.model.cycleBackward",
 	"app.model.select",
@@ -332,6 +333,10 @@ export class ExtensionRunner {
 		this.runtime.setModel = actions.setModel;
 		this.runtime.getThinkingLevel = actions.getThinkingLevel;
 		this.runtime.setThinkingLevel = actions.setThinkingLevel;
+		this.runtime.getAvailableThinkingLevels = actions.getAvailableThinkingLevels;
+		this.runtime.getSafetyState = actions.getSafetyState;
+		this.runtime.requestSafetyMode = actions.requestSafetyMode;
+		this.runtime.setGlobalSafetyMode = actions.setGlobalSafetyMode;
 
 		// Context actions (required)
 		this.getModel = contextActions.getModel;

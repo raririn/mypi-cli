@@ -1,8 +1,12 @@
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../src/core/trust-manager.ts";
+import {
+	hasTrustRequiringProjectResources,
+	ProjectTrustStore,
+	resolveProjectTrustRoot,
+} from "../src/core/trust-manager.ts";
 
 describe("ProjectTrustStore", () => {
 	let tempDir: string;
@@ -63,5 +67,15 @@ describe("ProjectTrustStore", () => {
 				process.env.HOME = originalHome;
 			}
 		}
+	});
+
+	it("uses the nearest Git worktree root as the trust key", () => {
+		const repository = join(tempDir, "repo");
+		const nested = join(repository, "packages", "app");
+		mkdirSync(join(repository, ".git"), { recursive: true });
+		mkdirSync(nested, { recursive: true });
+
+		expect(resolveProjectTrustRoot(nested)).toBe(realpathSync(repository));
+		expect(resolveProjectTrustRoot(cwd)).toBe(realpathSync(cwd));
 	});
 });

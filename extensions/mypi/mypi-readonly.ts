@@ -85,7 +85,7 @@ Read-only mode limits agent tool calls to recognized built-in read operations. I
 
 ## Security boundaries and limitations
 
-- Read-only mode is an extension-level tool gate. Use /sandbox for an OS execution boundary.
+- Read-only mode is an extension-level tool gate. Use a sandboxed /safety mode for an OS execution boundary.
 - Operations completed before activation retain their effects.
 - Read tools can access files outside the project and can disclose sensitive content to the model.
 - MyPi continues to write normal session history and configuration state.

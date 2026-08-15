@@ -13,6 +13,7 @@ import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { ContextUsage } from "../../core/extensions/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
+import type { SafetyMode } from "../../core/safety-mode.ts";
 
 // ============================================================================
 // RPC Commands (stdin)
@@ -29,6 +30,8 @@ export type RpcCommand =
 
 	// State
 	| { id?: string; type: "get_state" }
+	| { id?: string; type: "request_safety_mode"; mode: SafetyMode }
+	| { id?: string; type: "set_global_safety_mode"; mode: SafetyMode }
 
 	// Model
 	| { id?: string; type: "set_model"; provider: string; modelId: string }
@@ -128,6 +131,9 @@ export interface RpcSlashCommand {
 export interface RpcSessionState {
 	model?: Model<any>;
 	thinkingLevel: ThinkingLevel;
+	safetyPolicyEnabled: boolean;
+	safetyMode: SafetyMode;
+	pendingSafetyMode?: SafetyMode;
 	isStreaming: boolean;
 	isCompacting: boolean;
 	steeringMode: "all" | "one-at-a-time";
@@ -187,6 +193,8 @@ export type RpcResponse =
 
 	// State
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }
+	| { id?: string; type: "response"; command: "request_safety_mode"; success: true }
+	| { id?: string; type: "response"; command: "set_global_safety_mode"; success: true }
 
 	// Model
 	| {

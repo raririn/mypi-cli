@@ -2,8 +2,8 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { InteractiveSessionSurface } from "../../../core/agent-session-runtime.ts";
 import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
-import { getExecutionMode } from "../../../core/mypi-exec-mode.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
+import { safetyModeFooterText } from "../../../core/safety-mode.ts";
 import { addUsageToTotals, createUsageTotals } from "../../../core/usage-totals.ts";
 import { theme } from "../theme/theme.ts";
 
@@ -52,9 +52,6 @@ export class FooterComponent implements Component {
 	private autoCompactEnabled = true;
 	private session: InteractiveSessionSurface;
 	private footerData: ReadonlyFooterDataProvider;
-	// Which cycle shift+tab currently drives; the other is de-emphasized. The
-	// safety indicator's value comes from the runtime via the "exec-mode" status.
-	private shiftTabTarget: "thinking" | "safety" = "thinking";
 
 	constructor(session: InteractiveSessionSurface, footerData: ReadonlyFooterDataProvider) {
 		this.session = session;
@@ -67,10 +64,6 @@ export class FooterComponent implements Component {
 
 	setAutoCompactEnabled(enabled: boolean): void {
 		this.autoCompactEnabled = enabled;
-	}
-
-	setShiftTabTarget(target: "thinking" | "safety"): void {
-		this.shiftTabTarget = target;
 	}
 
 	/**
@@ -135,6 +128,11 @@ export class FooterComponent implements Component {
 
 		// Build stats line
 		const statsParts = [];
+		if (this.session.safetyPolicyEnabled) {
+			statsParts.push(
+				theme.bold(theme.fg("warning", safetyModeFooterText(this.session.safetyMode, this.session.pendingSafetyMode))),
+			);
+		}
 		if (usageTotals.input) statsParts.push(`↑${formatTokens(usageTotals.input)}`);
 		if (usageTotals.output) statsParts.push(`↓${formatTokens(usageTotals.output)}`);
 		if (usageTotals.cacheRead) statsParts.push(`R${formatTokens(usageTotals.cacheRead)}`);
@@ -187,9 +185,12 @@ export class FooterComponent implements Component {
 		// Calculate available space for padding (minimum 2 spaces between stats and model)
 		const minPadding = 2;
 
-		// The thinking level moves to the shared thinking/safety line below, so the
-		// model line now shows only the model (and provider when ambiguous).
 		let rightSideWithoutProvider = modelName;
+		if (state.model?.reasoning) {
+			const thinkingLevel = state.thinkingLevel || "off";
+			rightSideWithoutProvider =
+				thinkingLevel === "off" ? `${modelName} • thinking off` : `${modelName} • ${thinkingLevel}`;
+		}
 
 		// Prepend the provider in parentheses if there are multiple providers and there's enough room
 		let rightSide = rightSideWithoutProvider;
@@ -234,63 +235,16 @@ export class FooterComponent implements Component {
 		const lines = [pwdLine, dimStatsLeft + dimRemainder];
 
 		const extensionStatuses = this.footerData.getExtensionStatuses();
-
-		// Shared thinking/safety line: shift+tab drives one of the two, that one is
-		// shown bright with a "(shift+tab to cycle)" hint; the other is dimmed.
-		const safetyText = extensionStatuses.get("exec-mode");
-		const thinkingLevel = state.thinkingLevel || "off";
-		const thinkingText = state.model?.reasoning ? `thinking ${thinkingLevel}` : undefined;
-		const cycleLine = this.renderCycleLine(thinkingText, safetyText ? sanitizeStatusText(safetyText) : undefined, width);
-		if (cycleLine) lines.push(cycleLine);
-
-		// Remaining extension statuses (exec-mode is shown on the cycle line above).
-		const otherStatuses = Array.from(extensionStatuses.entries())
-			.filter(([key]) => key !== "exec-mode")
-			.sort(([a], [b]) => a.localeCompare(b))
-			.map(([, text]) => sanitizeStatusText(text));
-		if (otherStatuses.length > 0) {
-			lines.push(truncateToWidth(otherStatuses.join(" "), width, theme.fg("dim", "...")));
+		if (extensionStatuses.size > 0) {
+			const sortedStatuses = Array.from(extensionStatuses.entries())
+				.filter(([key]) => key !== "safety" && key !== "exec-mode")
+				.sort(([a], [b]) => a.localeCompare(b))
+				.map(([, text]) => sanitizeStatusText(text));
+			if (sortedStatuses.length > 0) {
+				lines.push(truncateToWidth(sortedStatuses.join(" "), width, theme.fg("dim", "...")));
+			}
 		}
 
 		return lines;
-	}
-
-	/**
-	 * One footer line combining the safety and thinking cycles, Claude Code style:
-	 * `⛊ Sandbox on (shift+tab to cycle)  ·  thinking high  ·  esc to interrupt`.
-	 * The safety label is colored by execution mode (sandbox=warning, safe=text,
-	 * off=execOff); the active shift+tab target carries the cycle hint; while a
-	 * turn is streaming an esc hint is appended (steer-now when a steer is queued).
-	 */
-	private renderCycleLine(thinkingText: string | undefined, safetyText: string | undefined, width: number): string | undefined {
-		const hint = " (shift+tab to cycle)";
-		// When the configured target isn't cyclable here (e.g. thinking on a model
-		// without reasoning), show the hint on the one that is.
-		const effective =
-			this.shiftTabTarget === "thinking" && thinkingText === undefined
-				? "safety"
-				: this.shiftTabTarget === "safety" && safetyText === undefined
-					? "thinking"
-					: this.shiftTabTarget;
-		const mode = getExecutionMode();
-		const safetyColor: "warning" | "text" | "execOff" = mode === "sandbox" ? "warning" : mode === "safe" ? "text" : "execOff";
-		const part = (text: string | undefined, target: "thinking" | "safety"): string | undefined => {
-			if (!text) return undefined;
-			const active = effective === target;
-			// The safety label always keeps its mode color — the color is the state
-			// signal; only thinking dims when inactive.
-			const label =
-				target === "safety" ? theme.fg(safetyColor, text) : active ? theme.fg("text", text) : theme.fg("dim", text);
-			return active ? label + theme.fg("dim", hint) : label;
-		};
-		const parts = [part(safetyText, "safety"), part(thinkingText, "thinking")].filter(
-			(value): value is string => value !== undefined,
-		);
-		if (this.session.isStreaming) {
-			const steerQueued = this.session.getSteeringMessages().length > 0;
-			parts.push(theme.fg("dim", steerQueued ? "esc to steer now" : "esc to interrupt"));
-		}
-		if (parts.length === 0) return undefined;
-		return truncateToWidth(parts.join(theme.fg("dim", "  ·  ")), width, theme.fg("dim", "..."));
 	}
 }

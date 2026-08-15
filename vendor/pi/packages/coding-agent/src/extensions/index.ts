@@ -4,7 +4,7 @@ import archiveManageExtension from "./mypi/archive-manage.ts";
 import compactionRecallExtension from "./mypi/compaction-recall.ts";
 import hooksExtension from "./mypi/hooks.ts";
 import planGoalExtension from "./mypi/plan-goal.ts";
-import sandboxExtension from "./mypi/sandbox.ts";
+import safetyExtension from "./mypi/safety.ts";
 import pizzaHeroExtension from "./mypi/tui-hero/index.ts";
 import webSearchExtension from "./mypi/web/index.ts";
 
@@ -14,7 +14,7 @@ async function myPiCoreExtension(pi: ExtensionAPI): Promise<void> {
 	archiveManageExtension(pi);
 	compactionRecallExtension(pi);
 	pizzaHeroExtension(pi);
-	sandboxExtension(pi);
+	safetyExtension(pi);
 	await webSearchExtension(pi);
 }
 

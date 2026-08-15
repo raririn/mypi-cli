@@ -30,6 +30,8 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let turnActive = false;
 let aborted = false;
 let sessionStartAnnounced = false;
+let safetyMode = 'full';
+let pendingSafetyMode;
 
 const sessionDir = join(process.cwd(), 'persisted-sessions');
 const sessionPath = () => {
@@ -50,6 +52,9 @@ const sessionPath = () => {
 const state = () => ({
   model: { provider: 'mock', id: 'fake-model' },
   thinkingLevel: 'medium',
+  safetyPolicyEnabled: true,
+  safetyMode,
+  ...(pendingSafetyMode ? { pendingSafetyMode } : {}),
   isStreaming: turnActive,
   isCompacting: false,
   steeringMode: 'all',
@@ -193,6 +198,12 @@ async function handleCommand(command) {
       return;
     case 'prompt':
       out({ id, type: 'response', command: 'prompt', success: true });
+	  if (typeof command.message === 'string' && command.message.startsWith('/safety ')) {
+		pendingSafetyMode = command.message.slice('/safety '.length).trim();
+		if (pendingSafetyMode === safetyMode) pendingSafetyMode = undefined;
+		out({ type: 'safety_mode_changed', effective: safetyMode, ...(pendingSafetyMode ? { pending: pendingSafetyMode } : {}) });
+		return;
+	  }
       void runTurn(command.message);
       return;
     case 'abort':

@@ -54,6 +54,7 @@ import type {
 	ToolDefinition,
 } from "../extensions/index.ts";
 import { ModelRegistry } from "../model-registry.ts";
+import { cycleSafetyMode as nextSafetyMode, type SafetyMode } from "../safety-mode.ts";
 import type { RpcSessionState, RpcSlashCommand } from "../../modes/rpc/rpc-types.ts";
 import {
 	CURRENT_SESSION_VERSION,
@@ -100,6 +101,9 @@ const NON_EVENT_FRAMES = new Set([
 export class HostedStateMirror {
 	model: Model<any> | undefined;
 	thinkingLevel: ThinkingLevel = "off";
+	safetyPolicyEnabled = true;
+	safetyMode: SafetyMode = "full";
+	pendingSafetyMode: SafetyMode | undefined;
 	isStreaming = false;
 	isCompacting = false;
 	isBashRunning = false;
@@ -136,6 +140,9 @@ export class HostedStateMirror {
 	applyState(state: RpcSessionState): void {
 		this.model = state.model;
 		this.thinkingLevel = state.thinkingLevel;
+		this.safetyPolicyEnabled = state.safetyPolicyEnabled;
+		this.safetyMode = state.safetyMode;
+		this.pendingSafetyMode = state.pendingSafetyMode;
 		this.isStreaming = state.isStreaming;
 		this.isCompacting = state.isCompacting;
 		this.steeringMode = state.steeringMode;
@@ -189,6 +196,10 @@ export class HostedStateMirror {
 				break;
 			case "thinking_level_changed":
 				this.thinkingLevel = event.level;
+				break;
+			case "safety_mode_changed":
+				this.safetyMode = event.effective;
+				this.pendingSafetyMode = event.pending;
 				break;
 			case "model_changed":
 				this.model = event.model;
@@ -811,6 +822,15 @@ export class HostedAgentSession implements InteractiveSessionSurface {
 	get thinkingLevel(): ThinkingLevel {
 		return this.mirror.thinkingLevel;
 	}
+	get safetyPolicyEnabled(): boolean {
+		return this.mirror.safetyPolicyEnabled;
+	}
+	get safetyMode(): SafetyMode {
+		return this.mirror.safetyMode;
+	}
+	get pendingSafetyMode(): SafetyMode | undefined {
+		return this.mirror.pendingSafetyMode;
+	}
 	get isStreaming(): boolean {
 		return this.mirror.isStreaming;
 	}
@@ -977,6 +997,16 @@ export class HostedAgentSession implements InteractiveSessionSurface {
 		return getSupportedThinkingLevels(this.mirror.model) as ThinkingLevel[];
 	}
 
+	cycleSafetyMode(): SafetyMode {
+		if (!this.mirror.safetyPolicyEnabled) {
+			throw new Error("Safety modes are unavailable in this restricted profile.");
+		}
+		const next = nextSafetyMode(this.mirror.pendingSafetyMode ?? this.mirror.safetyMode);
+		this.mirror.pendingSafetyMode = next === this.mirror.safetyMode ? undefined : next;
+		this.client.sendCommand({ type: "prompt", message: `/safety ${next}` });
+		return next;
+	}
+
 	setScopedModels(scopedModels: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>): void {
 		this.mirror.scopedModels = scopedModels;
 		this.client.sendCommand({
@@ -1031,6 +1061,11 @@ export class HostedAgentSession implements InteractiveSessionSurface {
 	}
 
 	/* ------- bash ------- */
+
+	async authorizeBash(_command: string): Promise<void> {
+		// The engine-side executeBash call below owns the authoritative safety
+		// check and renders any approval through the hosted extension-UI bridge.
+	}
 
 	async executeBash(
 		command: string,

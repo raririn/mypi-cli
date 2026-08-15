@@ -6,7 +6,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import type { AssistantMessage, ImageContent, Message, Model } from "@earendil-works/pi-ai/compat";
 import type {
@@ -102,7 +102,11 @@ import {
 } from "../../core/hosted/ownership-conflict-ui.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
-import { hasTrustRequiringProjectResources, ProjectTrustStore } from "../../core/trust-manager.ts";
+import {
+	hasTrustRequiringProjectResources,
+	ProjectTrustStore,
+	resolveProjectTrustRoot,
+} from "../../core/trust-manager.ts";
 import { getUsageCostBreakdown } from "../../core/usage-totals.ts";
 import { getChangelogPath, getNewEntries, normalizeChangelogLinks, parseChangelog } from "../../utils/changelog.ts";
 import { copyToClipboard, readClipboardText } from "../../utils/clipboard.ts";
@@ -151,6 +155,7 @@ import {
 import { ToolExecutionComponent } from "./components/tool-execution.ts";
 import { TreeSelectorComponent } from "./components/tree-selector.ts";
 import { TrustSelectorComponent } from "./components/trust-selector.ts";
+import { ThinkingSelectorComponent } from "./components/thinking-selector.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
 import { editInExternalEditor } from "./external-editor.ts";
@@ -325,8 +330,6 @@ export interface InteractiveModeOptions {
 	migratedProviders?: string[];
 	/** Warning message if session model couldn't be restored */
 	modelFallbackMessage?: string;
-	/** Cwd to trust after reload if it gained a .pi directory during this implicitly trusted session. */
-	autoTrustOnReloadCwd?: string;
 	/** Initial message to send on startup (can include @file content) */
 	initialMessage?: string;
 	/** Images to attach to the initial message */
@@ -364,8 +367,6 @@ export class InteractiveMode {
 	private pendingClipboardImages: Array<{ marker: string; image: ImageContent }> = [];
 	private clipboardImageSequence = 0;
 	private activeStatusIndicator: StatusIndicator | undefined = undefined;
-	/** Which cycle shift+tab drives; toggled by shift+ctrl+s or `/shift-tab`. */
-	private shiftTabTarget: "thinking" | "safety" = "thinking";
 	private readonly idleStatus = new IdleStatus();
 	private workingMessage: string | undefined = undefined;
 	private workingVisible = true;
@@ -456,7 +457,6 @@ export class InteractiveMode {
 	private startupResourceSections: StartupResourceSection[] | undefined;
 
 	private options: InteractiveModeOptions;
-	private autoTrustOnReloadCwd: string | undefined;
 	private themeController: InteractiveThemeController;
 
 	// Convenience accessors
@@ -476,7 +476,6 @@ export class InteractiveMode {
 	constructor(runtimeHost: InteractiveRuntimeHost, options: InteractiveModeOptions = {}) {
 		this.runtimeHost = runtimeHost;
 		this.options = options;
-		this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;
 		this.runtimeHost.setBeforeSessionInvalidate(() => {
 			this.resetExtensionUI();
 		});
@@ -507,7 +506,6 @@ export class InteractiveMode {
 		this.footerDataProvider = new FooterDataProvider(this.sessionManager.getCwd());
 		this.footer = new FooterComponent(this.session, this.footerDataProvider);
 		this.footer.setAutoCompactEnabled(this.session.autoCompactionEnabled);
-		this.footer.setShiftTabTarget(this.shiftTabTarget);
 
 		// Load hide thinking block setting
 		this.hideThinkingBlock = this.settingsManager.getHideThinkingBlock();
@@ -771,8 +769,7 @@ export class InteractiveMode {
 				hint("app.exit", "to exit (empty)"),
 				hint("app.suspend", "to suspend"),
 				keyHint("tui.editor.deleteToLineEnd", "to delete to end"),
-				hint("app.thinking.cycle", "to cycle thinking/safety"),
-				hint("app.cycleTarget.toggle", "to switch what shift+tab cycles"),
+				hint("app.safety.cycle", "to cycle safety mode"),
 				rawKeyHint(`${keyText("app.model.cycleForward")}/${keyText("app.model.cycleBackward")}`, "to cycle models"),
 				hint("app.model.select", "to select model"),
 				hint("app.tools.expand", "to expand tools"),
@@ -2702,8 +2699,8 @@ export class InteractiveMode {
 		this.defaultEditor.onAction("app.clear", () => this.handleCtrlC());
 		this.defaultEditor.onCtrlD = () => this.handleCtrlD();
 		this.defaultEditor.onAction("app.suspend", () => this.handleCtrlZ());
-		this.defaultEditor.onAction("app.thinking.cycle", () => this.cycleShiftTabTarget());
-		this.defaultEditor.onAction("app.cycleTarget.toggle", () => this.toggleShiftTabTarget());
+		this.defaultEditor.onAction("app.thinking.cycle", () => this.cycleThinkingLevel());
+		this.defaultEditor.onAction("app.safety.cycle", () => this.cycleSafetyMode());
 		this.defaultEditor.onAction("app.model.cycleForward", () => this.cycleModel("forward"));
 		this.defaultEditor.onAction("app.model.cycleBackward", () => this.cycleModel("backward"));
 
@@ -2797,18 +2794,6 @@ export class InteractiveMode {
 				this.editor.setText("");
 				return;
 			}
-			if (text === "/shift-tab" || text.startsWith("/shift-tab ")) {
-				const arg = text.slice("/shift-tab".length).trim().toLowerCase();
-				this.editor.setText("");
-				if (arg === "thinking" || arg === "safety") {
-					this.setShiftTabTarget(arg);
-				} else if (!arg) {
-					this.toggleShiftTabTarget();
-				} else {
-					this.showWarning("Usage: /shift-tab [thinking|safety]");
-				}
-				return;
-			}
 			if (text === "/scoped-models") {
 				this.editor.setText("");
 				await this.showModelsSelector();
@@ -2818,6 +2803,12 @@ export class InteractiveMode {
 				const searchTerm = text.startsWith("/model ") ? text.slice(7).trim() : undefined;
 				this.editor.setText("");
 				await this.handleModelCommand(searchTerm);
+				return;
+			}
+			if (text === "/reasoning" || text.startsWith("/reasoning ")) {
+				const level = text.startsWith("/reasoning ") ? text.slice(11).trim() : undefined;
+				this.editor.setText("");
+				this.handleReasoningCommand(level);
 				return;
 			}
 			if (text === "/export" || text.startsWith("/export ")) {
@@ -3050,6 +3041,11 @@ export class InteractiveMode {
 			case "thinking_level_changed":
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
+				break;
+
+			case "safety_mode_changed":
+				this.footer.invalidate();
+				this.ui.requestRender();
 				break;
 
 			case "message_start":
@@ -3937,56 +3933,62 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private cycleExecutionMode(): void {
-		// Run the `/mode` command in the session so the per-session execution mode
-		// cycles and the footer indicator refreshes. Routing it as a command (not
-		// a direct call) keeps it working when the engine is a hosted daemon child.
-		// After it settles, show the new mode as a single transient status line
-		// (replaced on the next cycle), matching the thinking-level cycle.
-		void this.session
-			.prompt("/mode")
-			.then(() => {
-				const status = this.footerDataProvider.getExtensionStatuses().get("exec-mode");
-				if (status) this.showStatus(status);
-			})
-			.catch(() => {});
-	}
-
-	/** shift+tab: cycle whichever target is active (thinking level or safety mode). */
-	private cycleShiftTabTarget(): void {
-		// On a model without reasoning, thinking isn't cyclable; fall back to safety
-		// so shift+tab always does something useful.
-		const canThink = this.session.model?.reasoning ?? false;
-		if (this.shiftTabTarget === "safety" || !canThink) this.cycleExecutionMode();
-		else this.cycleThinkingLevel();
-	}
-
-	/** shift+ctrl+s / `/shift-tab`: switch what shift+tab cycles. */
-	private setShiftTabTarget(target: "thinking" | "safety"): void {
-		this.shiftTabTarget = target;
-		this.footer.setShiftTabTarget(target);
-		this.footer.invalidate();
-		this.ui.requestRender();
-		this.showStatus(
-			target === "safety"
-				? "shift+tab now cycles safety mode (Sandbox Off / On / Safe Mode)"
-				: "shift+tab now cycles thinking level",
-		);
-	}
-
-	private toggleShiftTabTarget(): void {
-		this.setShiftTabTarget(this.shiftTabTarget === "safety" ? "thinking" : "safety");
-	}
-
 	private cycleThinkingLevel(): void {
 		const newLevel = this.session.cycleThinkingLevel();
 		if (newLevel === undefined) {
 			this.showStatus("Current model does not support thinking");
 		} else {
-			this.footer.invalidate();
-			this.updateEditorBorderColor();
-			this.showStatus(`Thinking level: ${newLevel}`);
+			this.applyThinkingLevel(newLevel);
 		}
+	}
+
+	private cycleSafetyMode(): void {
+		try {
+			const mode = this.session.cycleSafetyMode();
+			this.footer.invalidate();
+			this.showStatus(`Safety mode pending for next turn: ${mode}`);
+			this.ui.requestRender();
+		} catch (error) {
+			this.showWarning(error instanceof Error ? error.message : String(error));
+		}
+	}
+
+	private applyThinkingLevel(level: ThinkingLevel): void {
+		this.session.setThinkingLevel(level);
+		this.footer.invalidate();
+		this.updateEditorBorderColor();
+		this.showStatus(`Thinking level: ${this.session.thinkingLevel}`);
+	}
+
+	private handleReasoningCommand(level?: string): void {
+		const available = this.session.getAvailableThinkingLevels();
+		if (available.length === 0) {
+			this.showWarning("Current model does not support reasoning.");
+			return;
+		}
+		if (level) {
+			if (!available.includes(level as ThinkingLevel)) {
+				this.showWarning(`Unsupported reasoning level. Available: ${available.join(", ")}.`);
+				return;
+			}
+			this.applyThinkingLevel(level as ThinkingLevel);
+			return;
+		}
+		this.showSelector((done) => {
+			const selector = new ThinkingSelectorComponent(
+				this.session.thinkingLevel,
+				available,
+				(selected) => {
+					done();
+					this.applyThinkingLevel(selected);
+				},
+				() => {
+					done();
+					this.ui.requestRender();
+				},
+			);
+			return { component: selector, focus: selector.getSelectList() };
+		});
 	}
 
 	private async cycleModel(direction: "forward" | "backward"): Promise<void> {
@@ -4617,34 +4619,8 @@ export class InteractiveMode {
 		}
 	}
 
-	private maybeSaveImplicitProjectTrustAfterReload(): boolean {
-		const cwd = this.sessionManager.getCwd();
-		if (this.autoTrustOnReloadCwd !== cwd) {
-			return false;
-		}
-		if (!this.settingsManager.isProjectTrusted() || !hasTrustRequiringProjectResources(cwd)) {
-			return false;
-		}
-
-		const trustStore = new ProjectTrustStore(this.runtimeHost.services.agentDir);
-		try {
-			if (trustStore.get(cwd) !== null) {
-				this.autoTrustOnReloadCwd = undefined;
-				return false;
-			}
-			trustStore.set(cwd, true);
-			this.autoTrustOnReloadCwd = undefined;
-			return true;
-		} catch (error) {
-			this.showWarning(
-				`Could not save project trust after reload: ${error instanceof Error ? error.message : String(error)}`,
-			);
-			return false;
-		}
-	}
-
 	private showTrustSelector(): void {
-		const cwd = this.sessionManager.getCwd();
+		const cwd = resolveProjectTrustRoot(this.sessionManager.getCwd());
 		const trustStore = new ProjectTrustStore(this.runtimeHost.services.agentDir);
 		const savedDecision = trustStore.getEntry(cwd);
 		this.showSelector((done) => {
@@ -5699,16 +5675,11 @@ export class InteractiveMode {
 				force: false,
 				showDiagnosticsWhenQuiet: true,
 			});
-			const savedImplicitProjectTrust = this.maybeSaveImplicitProjectTrustAfterReload();
 			const modelsJsonError = this.session.modelRuntime.getError();
 			if (modelsJsonError) {
 				this.showError(`models.json error: ${modelsJsonError}`);
 			}
-			this.showStatus(
-				savedImplicitProjectTrust
-					? "Reloaded keybindings, extensions, skills, prompts, themes, and context files; saved project trust"
-					: "Reloaded keybindings, extensions, skills, prompts, themes, and context files",
-			);
+			this.showStatus("Reloaded keybindings, extensions, skills, prompts, themes, and context files");
 			dismissReloadBox(this.editor as Component);
 			reloadBoxDismissed = true;
 		} catch (error) {
@@ -6059,7 +6030,7 @@ export class InteractiveMode {
 			if (id.startsWith("tui.select.")) return "TUI selection";
 			if (id.startsWith("app.session.")) return "Sessions";
 			if (id.startsWith("app.models.")) return "Scoped models selector";
-			if (id.startsWith("app.model.") || id.startsWith("app.thinking.") || id.startsWith("app.cycleTarget.")) {
+			if (id.startsWith("app.model.") || id.startsWith("app.thinking.") || id.startsWith("app.safety.")) {
 				return "Models and thinking";
 			}
 			if (id.startsWith("app.message.") || id.startsWith("app.tools.")) {
@@ -6255,14 +6226,22 @@ export class InteractiveMode {
 
 	private async handleBashCommand(command: string, excludeFromContext = false): Promise<void> {
 		const extensionRunner = this.session.extensionRunner;
+		await this.session.authorizeBash(command);
 
-		// Emit user_bash event to let extensions intercept
-		const eventResult = await extensionRunner.emitUserBash({
-			type: "user_bash",
-			command,
-			excludeFromContext,
-			cwd: this.sessionManager.getCwd(),
-		});
+		// Bounded modes must execute through MyPi's local sandbox implementation;
+		// extension-provided results/operations cannot prove that boundary.
+		const extensionBashAllowed =
+			!this.session.safetyPolicyEnabled ||
+			this.session.safetyMode === "ask" ||
+			this.session.safetyMode === "full";
+		const eventResult = extensionBashAllowed
+			? await extensionRunner.emitUserBash({
+					type: "user_bash",
+					command,
+					excludeFromContext,
+					cwd: this.sessionManager.getCwd(),
+				})
+			: undefined;
 
 		// If extension returned a full result, use it directly
 		if (eventResult?.result) {
@@ -6318,7 +6297,7 @@ export class InteractiveMode {
 						this.ui.requestRender();
 					}
 				},
-				{ excludeFromContext, operations: eventResult?.operations },
+				{ excludeFromContext, operations: eventResult?.operations, safetyAuthorized: true },
 			);
 
 			if (this.bashComponent) {

@@ -64,6 +64,7 @@ import type {
 } from "../session-manager.ts";
 import type { SlashCommandInfo } from "../slash-commands.ts";
 import type { SourceInfo } from "../source-info.ts";
+import type { SafetyMode } from "../safety-mode.ts";
 import type { BuildSystemPromptOptions } from "../system-prompt.ts";
 import type { BashOperations } from "../tools/bash.ts";
 import type { EditToolDetails } from "../tools/edit.ts";
@@ -1356,6 +1357,18 @@ export interface ExtensionAPI {
 	/** Set thinking level (clamped to model capabilities). */
 	setThinkingLevel(level: ThinkingLevel): void;
 
+	/** Get thinking levels supported by the active model. */
+	getAvailableThinkingLevels(): ThinkingLevel[];
+
+	/** Get the session-authoritative effective and pending safety state. */
+	getSafetyState(): { effective: SafetyMode; pending?: SafetyMode; enabled: boolean };
+
+	/** Request a safety mode change at the next user-run boundary. */
+	requestSafetyMode(mode: SafetyMode): void;
+
+	/** Set the host-global safety default for subsequently created sessions only. */
+	setGlobalSafetyMode(mode: SafetyMode): void;
+
 	// =========================================================================
 	// Provider Registration
 	// =========================================================================
@@ -1584,6 +1597,14 @@ export type GetThinkingLevelHandler = () => ThinkingLevel;
 
 export type SetThinkingLevelHandler = (level: ThinkingLevel) => void;
 
+export type GetAvailableThinkingLevelsHandler = () => ThinkingLevel[];
+
+export type GetSafetyStateHandler = () => { effective: SafetyMode; pending?: SafetyMode; enabled: boolean };
+
+export type RequestSafetyModeHandler = (mode: SafetyMode) => void;
+
+export type SetGlobalSafetyModeHandler = (mode: SafetyMode) => void;
+
 export type SetLabelHandler = (entryId: string, label: string | undefined) => void;
 
 /**
@@ -1630,6 +1651,10 @@ export interface ExtensionActions {
 	setModel: SetModelHandler;
 	getThinkingLevel: GetThinkingLevelHandler;
 	setThinkingLevel: SetThinkingLevelHandler;
+	getAvailableThinkingLevels: GetAvailableThinkingLevelsHandler;
+	getSafetyState: GetSafetyStateHandler;
+	requestSafetyMode: RequestSafetyModeHandler;
+	setGlobalSafetyMode: SetGlobalSafetyModeHandler;
 }
 
 /**

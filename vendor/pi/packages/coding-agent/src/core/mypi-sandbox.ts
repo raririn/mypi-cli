@@ -29,6 +29,9 @@ export interface MyPiSandboxHelperRequest {
 	config: SandboxRuntimeConfig;
 }
 
+/** Private helper-to-parent control message; the sandboxed command never inherits this descriptor. */
+export const MYPI_SANDBOX_DENIAL_CONTROL = "mypi:sandbox-denied:v1\n";
+
 export interface MyPiSandboxProcessLaunch {
 	command: string;
 	args: string[];
@@ -221,9 +224,13 @@ export function createMyPiSandboxProcessLaunch(
 	cwd: string,
 	shell: string,
 	env: NodeJS.ProcessEnv,
-	options: { agentDir?: string; helperPath?: string; executablePath?: string } = {},
+	options: { agentDir?: string; helperPath?: string; executablePath?: string; enabled?: boolean } = {},
 ): MyPiSandboxProcessLaunch | undefined {
 	const agentDir = options.agentDir ?? getAgentDir();
+	const enabled = options.enabled ?? resolveMyPiSandboxPreference(agentDir).enabled;
+	if (!enabled) {
+		return undefined;
+	}
 	const helperPath = options.helperPath ?? sandboxHelperPath();
 	const helperArgs = helperPath.endsWith(".ts") ? ["--experimental-strip-types", helperPath] : [helperPath];
 	const request: MyPiSandboxHelperRequest = {

@@ -639,6 +639,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				const state: RpcSessionState = {
 					model: session.model,
 					thinkingLevel: session.thinkingLevel,
+					safetyPolicyEnabled: session.safetyPolicyEnabled,
+					safetyMode: session.safetyMode,
+					...(session.pendingSafetyMode ? { pendingSafetyMode: session.pendingSafetyMode } : {}),
 					isStreaming: session.isStreaming,
 					isCompacting: session.isCompacting,
 					steeringMode: session.steeringMode,
@@ -665,6 +668,16 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					supportsThinking: session.supportsThinking(),
 				};
 				return success(id, "get_state", state);
+			}
+
+			case "request_safety_mode": {
+				session.requestSafetyMode(command.mode);
+				return success(id, "request_safety_mode");
+			}
+
+			case "set_global_safety_mode": {
+				session.setGlobalSafetyMode(command.mode);
+				return success(id, "set_global_safety_mode");
 			}
 
 			// =================================================================

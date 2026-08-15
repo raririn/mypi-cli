@@ -4,7 +4,7 @@ import type { LoadExtensionsResult, ProjectTrustContext } from "./extensions/typ
 import type { DefaultProjectTrust } from "./settings-manager.ts";
 import {
 	getProjectTrustOptions,
-	hasTrustRequiringProjectResources,
+	resolveProjectTrustRoot,
 	type ProjectTrustOption,
 	type ProjectTrustStore,
 } from "./trust-manager.ts";
@@ -21,18 +21,28 @@ export interface ResolveProjectTrustedOptions {
 	onExtensionError?: (message: string) => void;
 }
 
+export class ProjectTrustDeclinedError extends Error {
+	readonly trustRoot: string;
+
+	constructor(trustRoot: string) {
+		super(`Workspace trust was declined for ${trustRoot}`);
+		this.name = "ProjectTrustDeclinedError";
+		this.trustRoot = trustRoot;
+	}
+}
+
 function formatProjectTrustPrompt(cwd: string): string {
-	return `Trust project folder?\n${cwd}\n\nThis allows pi to load ${CONFIG_DIR_NAME} settings and resources, install missing project packages, and execute project extensions.`;
+	return `Do you trust this workspace?\n${cwd}\n\nThe agent can read and overwrite files inside this workspace in every safety mode. Safety modes govern shell, approvals, and access beyond the workspace; they do not make workspace edits harmless.\n\nTrusting also allows MyPi to load ${CONFIG_DIR_NAME} settings, instructions, extensions, skills, prompts, and themes, and to install missing project packages.`;
 }
 
 async function selectProjectTrustOption(
 	cwd: string,
 	ctx: ProjectTrustContext,
 ): Promise<ProjectTrustOption | undefined> {
-	const options = getProjectTrustOptions(cwd, { includeSessionOnly: true });
+	const options = getProjectTrustOptions(cwd, { includeSessionOnly: true }).filter((option) => option.trusted);
 	const selected = await ctx.ui.select(
 		formatProjectTrustPrompt(cwd),
-		options.map((option) => option.label),
+		[...options.map((option) => option.label), "Cancel"],
 	);
 	return options.find((option) => option.label === selected);
 }
@@ -47,14 +57,12 @@ export async function resolveProjectTrusted(options: ResolveProjectTrustedOption
 	if (options.trustOverride !== undefined) {
 		return options.trustOverride;
 	}
-	if (!hasTrustRequiringProjectResources(options.cwd)) {
-		return true;
-	}
+	const trustRoot = resolveProjectTrustRoot(options.cwd);
 
 	if (options.extensionsResult) {
 		const { result, errors } = await emitProjectTrustEvent(
 			options.extensionsResult,
-			{ type: "project_trust", cwd: options.cwd },
+			{ type: "project_trust", cwd: trustRoot },
 			options.projectTrustContext,
 		);
 		for (const error of errors) {
@@ -63,34 +71,28 @@ export async function resolveProjectTrusted(options: ResolveProjectTrustedOption
 		if (result) {
 			const trusted = result.trusted === "yes";
 			if (result.remember === true) {
-				options.trustStore.set(options.cwd, trusted);
+				options.trustStore.set(trustRoot, trusted);
 			}
+			if (!trusted && options.projectTrustContext.hasUI) throw new ProjectTrustDeclinedError(trustRoot);
 			return trusted;
 		}
 	}
 
-	const decision = options.trustStore.get(options.cwd);
-	if (decision !== null) {
-		return decision;
-	}
-
-	switch (options.defaultProjectTrust ?? "ask") {
-		case "always":
-			return true;
-		case "never":
-			return false;
-		case "ask":
-			break;
+	const decision = options.trustStore.get(trustRoot);
+	if (decision === true) return true;
+	if (decision === false) {
+		if (options.projectTrustContext.hasUI) throw new ProjectTrustDeclinedError(trustRoot);
+		return false;
 	}
 
 	if (!options.projectTrustContext.hasUI) {
 		return false;
 	}
 
-	const selected = await selectProjectTrustOption(options.cwd, options.projectTrustContext);
+	const selected = await selectProjectTrustOption(trustRoot, options.projectTrustContext);
 	if (selected !== undefined) {
 		saveProjectTrustPromptResult(options.trustStore, selected);
 		return selected.trusted;
 	}
-	return false;
+	throw new ProjectTrustDeclinedError(trustRoot);
 }

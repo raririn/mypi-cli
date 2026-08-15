@@ -82,6 +82,8 @@ export interface CreateAgentSessionOptions {
 	settingsManager?: SettingsManager;
 	/** Session start event metadata for extension runtime startup. */
 	sessionStartEvent?: SessionStartEvent;
+	/** Disable the coding safety ladder for an independently capability-bounded runtime profile. */
+	safetyPolicyEnabled?: boolean;
 }
 
 /** Result from createAgentSession */
@@ -387,6 +389,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		excludedToolNames,
 		extensionRunnerRef,
 		sessionStartEvent: options.sessionStartEvent,
+		safetyPolicyEnabled: options.safetyPolicyEnabled,
 	});
 	const extensionsResult = resourceLoader.getExtensions();
 

@@ -261,6 +261,7 @@ export {
 	type ImageSettings,
 	type PackageSource,
 	type RetrySettings,
+	type SafetySettings,
 	SettingsManager,
 	type SettingsManagerCreateOptions,
 } from "./core/settings-manager.ts";
@@ -291,6 +292,8 @@ export {
 	createLocalBashOperations,
 	createLsToolDefinition,
 	createReadToolDefinition,
+	createWorkspaceReadToolDefinition,
+	createWorkspaceWriteToolDefinition,
 	createWriteToolDefinition,
 	DEFAULT_MAX_BYTES,
 	DEFAULT_MAX_LINES,
@@ -311,10 +314,12 @@ export {
 	type LsToolDetails,
 	type LsToolInput,
 	type LsToolOptions,
+	type LocalBashOperationsOptions,
 	type ReadOperations,
 	type ReadToolDetails,
 	type ReadToolInput,
 	type ReadToolOptions,
+	resolveWorkspacePath,
 	type ToolsOptions,
 	type TruncationOptions,
 	type TruncationResult,
@@ -332,7 +337,17 @@ export {
 	ProjectTrustStore,
 	type ProjectTrustStoreEntry,
 	type ProjectTrustUpdate,
+	resolveProjectTrustRoot,
 } from "./core/trust-manager.ts";
+export {
+	DEFAULT_SAFETY_MODE,
+	isSafetyMode,
+	parseSafetyMode,
+	SAFETY_MODE_DESCRIPTIONS,
+	SAFETY_MODE_LABELS,
+	SAFETY_MODES,
+	type SafetyMode,
+} from "./core/safety-mode.ts";
 // Main entry point
 export { type MainOptions, main } from "./main.ts";
 // Run modes for programmatic SDK usage

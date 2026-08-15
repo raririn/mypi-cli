@@ -8,6 +8,7 @@ export {
 	createBashTool,
 	createBashToolDefinition,
 	createLocalBashOperations,
+	type LocalBashOperationsOptions,
 } from "./bash.ts";
 export {
 	createEditTool,
@@ -72,6 +73,11 @@ export {
 	type WriteToolInput,
 	type WriteToolOptions,
 } from "./write.ts";
+export {
+	createWorkspaceReadToolDefinition,
+	createWorkspaceWriteToolDefinition,
+	resolveWorkspacePath,
+} from "./workspace.ts";
 
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ToolDefinition } from "../extensions/types.ts";

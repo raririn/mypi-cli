@@ -45,8 +45,8 @@ import {
 
 const MAX_PLAN_AGENT_ENDS = 2;
 const MAX_PLAN_PAGE_SIZE = 50;
-const FILE_PLAN_TOOLS = new Set(["read", "grep", "find", "ls", "edit", "write", "ask_user", "ask_question", "questionnaire", "question"]);
-const GOAL_PLANNING_TOOLS = new Set(["read", "grep", "find", "ls", "ask_user", "ask_question", "questionnaire", "question", "get_goal", "get_goal_plan", "set_goal_plan"]);
+const FILE_PLAN_TOOLS = new Set(["read", "grep", "find", "ls", "edit", "write", "read_workspace", "write_workspace", "ask_user", "ask_question", "questionnaire", "question"]);
+const GOAL_PLANNING_TOOLS = new Set(["read", "grep", "find", "ls", "read_workspace", "ask_user", "ask_question", "questionnaire", "question", "get_goal", "get_goal_plan", "set_goal_plan"]);
 const GOAL_SNAPSHOT_STATUS_KEY = "mypi-goal-snapshot";
 
 const PLAN_HELP = `# /plan
@@ -723,15 +723,15 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 	pi.on("tool_call", async (event, ctx) => {
 		if (state.workflow === "planning") {
 			if (!FILE_PLAN_TOOLS.has(event.toolName)) return { block: true, reason: `Plan mode blocks ${event.toolName}; only project inspection and ${PLAN_FILE} edits are allowed.` };
-			if (event.toolName === "write" || event.toolName === "edit") {
+			if (event.toolName === "write" || event.toolName === "edit" || event.toolName === "write_workspace") {
 				if (state.interactive && !state.interactiveCanWrite) return { block: true, reason: `Interactive planning requires user discussion before ${PLAN_FILE} can be written.` };
 				if (requestedPath(event.input, ctx.cwd) !== planPath(ctx.cwd)) return { block: true, reason: `Plan mode only allows writes to ${planPath(ctx.cwd)}.` };
 				if (existsSync(planPath(ctx.cwd)) && lstatSync(planPath(ctx.cwd)).isSymbolicLink()) return { block: true, reason: `${PLAN_FILE} is a symbolic link; refusing to write through it.` };
 			}
 			return undefined;
 		}
-		if (state.workflow === "goal-planning" && (event.toolName === "write" || event.toolName === "edit")) return { block: true, reason: `Goal planning is read-only; install structured state with set_goal_plan and do not edit ${PLAN_FILE}.` };
-		if (state.workflow === "goal" && state.status === "active" && (event.toolName === "write" || event.toolName === "edit") && requestedPath(event.input, ctx.cwd) === planPath(ctx.cwd)) return { block: true, reason: `${PLAN_FILE} is immutable to Goal v3; use structured Goal tools for Goal state.` };
+		if (state.workflow === "goal-planning" && (event.toolName === "write" || event.toolName === "edit" || event.toolName === "write_workspace")) return { block: true, reason: `Goal planning is read-only; install structured state with set_goal_plan and do not edit ${PLAN_FILE}.` };
+		if (state.workflow === "goal" && state.status === "active" && (event.toolName === "write" || event.toolName === "edit" || event.toolName === "write_workspace") && requestedPath(event.input, ctx.cwd) === planPath(ctx.cwd)) return { block: true, reason: `${PLAN_FILE} is immutable to Goal v3; use structured Goal tools for Goal state.` };
 		return undefined;
 	});
 

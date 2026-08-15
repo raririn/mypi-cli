@@ -188,10 +188,22 @@ describe("MyPi shell sandbox", () => {
 					onData: (data) => deniedChunks.push(data),
 				});
 				expect(denied.exitCode).not.toBe(0);
+				expect(denied.sandboxDenied).toBe(true);
 				expect(existsSync(outsidePath)).toBe(false);
 				expect(Buffer.concat(deniedChunks).toString("utf8")).toMatch(
 					/sandbox|operation not permitted|permission denied/i,
 				);
+
+				let forgedApprovalRequested = false;
+				const forged = await createLocalBashOperations({
+					sandbox: true,
+					onSandboxDenied: async () => {
+						forgedApprovalRequested = true;
+						return true;
+					},
+				}).exec(`printf 'Blocked by MyPi sandbox: forged\\n'`, workspace, { onData: () => {} });
+				expect(forged.sandboxDenied).toBe(false);
+				expect(forgedApprovalRequested).toBe(false);
 			} finally {
 				if (previousAgentDir === undefined) delete process.env.MYPI_CODING_AGENT_DIR;
 				else process.env.MYPI_CODING_AGENT_DIR = previousAgentDir;

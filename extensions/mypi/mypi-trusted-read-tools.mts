@@ -2,7 +2,7 @@ import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-const BUILTIN_READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
+const BUILTIN_READ_TOOLS = new Set(["read", "grep", "find", "ls", "read_workspace"]);
 const MYPI_WEB_READ_TOOLS = new Set(["web_search", "web_fetch"]);
 const MYPI_SESSION_READ_TOOLS = new Set(["recall_compacted_history"]);
 const MYPI_BUILTIN_CORE_PATH = "<builtin:mypi-core>";

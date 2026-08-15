@@ -33,7 +33,7 @@ import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dis
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import type { ModelRuntime } from "./core/model-runtime.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
-import { type AppMode, resolveProjectTrusted } from "./core/project-trust.ts";
+import { type AppMode, ProjectTrustDeclinedError, resolveProjectTrusted } from "./core/project-trust.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
 import {
 	formatMissingSessionCwdPrompt,
@@ -44,7 +44,7 @@ import {
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
-import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.ts";
+import { ProjectTrustStore, resolveProjectTrustRoot } from "./core/trust-manager.ts";
 import { builtInExtensions } from "./extensions/index.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
@@ -681,11 +681,6 @@ export async function main(args: string[], options?: MainOptions) {
 	time("createSessionManager");
 
 	const trustStore = new ProjectTrustStore(agentDir);
-	const sessionCwd = sessionManager.getCwd();
-	const autoTrustOnReloadCwd =
-		parsed.projectTrustOverride === undefined && !hasTrustRequiringProjectResources(sessionCwd)
-			? sessionCwd
-			: undefined;
 	const trustPromptMode: AppMode = parsed.help || parsed.listModels !== undefined ? "print" : appMode;
 	const projectTrustByCwd = new Map<string, boolean>();
 
@@ -702,15 +697,14 @@ export async function main(args: string[], options?: MainOptions) {
 	}) => {
 		const isInitialRuntime = sessionStartEvent === undefined;
 		const projectTrustDiagnostics: AgentSessionRuntimeDiagnostic[] = [];
-		const cachedProjectTrust = projectTrustByCwd.get(cwd);
-		const hasTrustRequiringResources = hasTrustRequiringProjectResources(cwd);
+		const trustRoot = resolveProjectTrustRoot(cwd);
+		const cachedProjectTrust = projectTrustByCwd.get(trustRoot);
+		const savedProjectTrust = trustStore.get(trustRoot);
 		const shouldResolveProjectTrust =
-			parsed.projectTrustOverride === undefined && cachedProjectTrust === undefined && hasTrustRequiringResources;
+			parsed.projectTrustOverride === undefined && cachedProjectTrust === undefined && savedProjectTrust !== true;
 		const projectTrusted = shouldResolveProjectTrust
 			? false
-			: (cachedProjectTrust ??
-				parsed.projectTrustOverride ??
-				(!hasTrustRequiringResources || trustStore.get(cwd) === true));
+			: (cachedProjectTrust ?? parsed.projectTrustOverride ?? savedProjectTrust === true);
 		const runtimeSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted });
 		const services = await createAgentSessionServices({
 			cwd,
@@ -736,7 +730,7 @@ export async function main(args: string[], options?: MainOptions) {
 									}),
 								onExtensionError: (message) => projectTrustDiagnostics.push({ type: "warning", message }),
 							});
-							projectTrustByCwd.set(cwd, trusted);
+							projectTrustByCwd.set(trustRoot, trusted);
 							return trusted;
 						},
 					}
@@ -841,25 +835,41 @@ export async function main(args: string[], options?: MainOptions) {
 		hostedStdinRead = true;
 		if (hostedStdinContent === undefined) {
 			const hostedCwd = sessionManager.getCwd();
-			const hasTrustResources = hasTrustRequiringProjectResources(hostedCwd);
-			const recordedTrust = trustStore.get(hostedCwd);
-			const needsTrustPrompt =
-				parsed.projectTrustOverride === undefined && hasTrustResources && recordedTrust === undefined;
+			const trustRoot = resolveProjectTrustRoot(hostedCwd);
+			let projectTrusted: boolean;
+			try {
+				projectTrusted = await resolveProjectTrusted({
+					cwd: hostedCwd,
+					trustStore,
+					trustOverride: parsed.projectTrustOverride,
+					defaultProjectTrust: startupSettingsManager.getDefaultProjectTrust(),
+					projectTrustContext: createProjectTrustContext({
+						cwd: hostedCwd,
+						mode: "interactive",
+						settingsManager: startupSettingsManager,
+						hasUI: true,
+					}),
+				});
+				projectTrustByCwd.set(trustRoot, projectTrusted);
+			} catch (error) {
+				if (error instanceof ProjectTrustDeclinedError) return;
+				throw error;
+			}
+			const persistentlyTrusted = trustStore.get(trustRoot) === true;
 			const refusal = !sessionManager.isPersisted()
 				? "in-memory session"
 				: !sessionManager.usesDefaultSessionDir()
 					? "custom session directory"
-					: needsTrustPrompt
-						? "project trust is undecided"
-						: parsed.projectTrustOverride !== undefined
+					: parsed.projectTrustOverride !== undefined
 							? "explicit trust override"
+							: !persistentlyTrusted
+								? "session-only workspace trust"
 							: parsed.provider !== undefined
 								? "--provider"
 								: hostedIneligibleFlag(parsed);
 			if (refusal) {
 				console.error(chalk.dim(`Hosted session unavailable (${refusal}); running embedded.`));
 			} else {
-				const projectTrusted = !hasTrustResources || recordedTrust === true;
 				const hostedSettingsManager = SettingsManager.create(hostedCwd, agentDir, { projectTrusted });
 				const hostedServices = await createAgentSessionServices({
 					cwd: hostedCwd,
@@ -943,7 +953,6 @@ export async function main(args: string[], options?: MainOptions) {
 					}
 					const interactiveMode = new InteractiveMode(hostedRuntime, {
 						migratedProviders,
-						autoTrustOnReloadCwd,
 						initialMessage,
 						initialImages,
 						initialMessages: parsed.messages,
@@ -959,12 +968,20 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	const daemonSessionStartEvent = readDaemonSessionStartEvent();
-	const runtime = await createAgentSessionRuntime(createRuntime, {
-		cwd: sessionManager.getCwd(),
-		agentDir,
-		sessionManager,
-		...(daemonSessionStartEvent ? { sessionStartEvent: daemonSessionStartEvent } : {}),
-	});
+	let runtime: Awaited<ReturnType<typeof createAgentSessionRuntime>>;
+	try {
+		runtime = await createAgentSessionRuntime(createRuntime, {
+			cwd: sessionManager.getCwd(),
+			agentDir,
+			sessionManager,
+			...(daemonSessionStartEvent ? { sessionStartEvent: daemonSessionStartEvent } : {}),
+		});
+	} catch (error) {
+		if (error instanceof ProjectTrustDeclinedError) {
+			return;
+		}
+		throw error;
+	}
 	time("createAgentSessionRuntime");
 	const { services, session, modelFallbackMessage } = runtime;
 	const { settingsManager, modelRuntime, resourceLoader } = services;
@@ -1042,7 +1059,6 @@ export async function main(args: string[], options?: MainOptions) {
 		const interactiveMode = new InteractiveMode(runtime, {
 			migratedProviders,
 			modelFallbackMessage,
-			autoTrustOnReloadCwd,
 			initialMessage,
 			initialImages,
 			initialMessages: parsed.messages,

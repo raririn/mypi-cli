@@ -216,7 +216,7 @@ function startupHints(expanded: boolean, theme: Theme): string[] {
 			hint("app.exit", "to exit (empty)"),
 			hint("app.suspend", "to suspend"),
 			hint("tui.editor.deleteToLineEnd", "to delete to end"),
-			hint("app.thinking.cycle", "to cycle thinking level"),
+			hint("app.safety.cycle", "to cycle safety mode"),
 			rawHint(`${keyText("app.model.cycleForward")}/${keyText("app.model.cycleBackward")}`, "to cycle models"),
 			hint("app.model.select", "to select model"),
 			hint("app.tools.expand", "to expand tools"),

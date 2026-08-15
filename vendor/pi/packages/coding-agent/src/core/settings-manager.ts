@@ -1,12 +1,13 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Transport } from "@earendil-works/pi-ai";
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
+import { DEFAULT_SAFETY_MODE, isSafetyMode, type SafetyMode } from "./safety-mode.ts";
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
@@ -57,6 +58,10 @@ export interface MarkdownSettings {
 
 export interface WarningSettings {
 	anthropicExtraUsage?: boolean; // default: true
+}
+
+export interface SafetySettings {
+	defaultMode?: SafetyMode;
 }
 
 export type DefaultProjectTrust = "ask" | "always" | "never";
@@ -123,6 +128,7 @@ export interface Settings {
 	showHardwareCursor?: boolean; // Show terminal cursor while still positioning it for IME
 	markdown?: MarkdownSettings;
 	warnings?: WarningSettings;
+	safety?: SafetySettings; // host-global default captured only by newly created sessions
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
 	httpProxy?: string; // Proxy URL applied as HTTP_PROXY and HTTPS_PROXY for Pi-managed HTTP clients
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
@@ -313,7 +319,31 @@ export class SettingsManager {
 		options: SettingsManagerCreateOptions = {},
 	): SettingsManager {
 		const storage = new FileSettingsStorage(cwd, agentDir);
-		return SettingsManager.fromStorage(storage, options);
+		const manager = SettingsManager.fromStorage(storage, options);
+		manager.migrateLegacySandboxPreference(agentDir);
+		return manager;
+	}
+
+	private migrateLegacySandboxPreference(agentDir: string): void {
+		if (isSafetyMode(this.globalSettings.safety?.defaultMode)) return;
+		const legacyPath = join(resolvePath(agentDir), "sandbox-config.json");
+		if (!existsSync(legacyPath)) return;
+		try {
+			const stat = lstatSync(legacyPath);
+			if (!stat.isFile() || stat.isSymbolicLink()) {
+				throw new Error(`Refusing unsafe legacy sandbox preference at ${legacyPath}`);
+			}
+			const candidate = JSON.parse(readFileSync(legacyPath, "utf8")) as {
+				version?: unknown;
+				enabled?: unknown;
+			};
+			if (candidate.version !== 1 || typeof candidate.enabled !== "boolean") {
+				throw new Error(`Invalid legacy sandbox preference at ${legacyPath}`);
+			}
+			this.setDefaultSafetyMode(candidate.enabled ? "sandbox" : "full");
+		} catch (error) {
+			this.recordError("global", error);
+		}
 	}
 
 	/** Create a SettingsManager from an arbitrary storage backend */
@@ -750,6 +780,19 @@ export class SettingsManager {
 
 	getDefaultThinkingLevel(): ThinkingLevel | undefined {
 		return this.settings.defaultThinkingLevel;
+	}
+
+	getDefaultSafetyMode(): SafetyMode {
+		const mode = this.globalSettings.safety?.defaultMode;
+		return isSafetyMode(mode) ? mode : DEFAULT_SAFETY_MODE;
+	}
+
+	setDefaultSafetyMode(mode: SafetyMode): void {
+		if (!isSafetyMode(mode)) throw new Error(`Invalid safety mode: ${String(mode)}`);
+		this.globalSettings.safety ??= {};
+		this.globalSettings.safety.defaultMode = mode;
+		this.markModified("safety", "defaultMode");
+		this.save();
 	}
 
 	setDefaultThinkingLevel(level: ThinkingLevel): void {

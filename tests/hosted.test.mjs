@@ -139,6 +139,9 @@ test("a hosted runtime attaches, mirrors state, and drives a turn through the da
     assert.equal(session.isIdle, true);
     assert.equal(session.model.id, "fake-model");
     assert.equal(session.thinkingLevel, "medium");
+    assert.equal(session.safetyPolicyEnabled, true);
+    assert.equal(session.safetyMode, "full");
+    assert.equal(session.pendingSafetyMode, undefined);
     assert.equal(session.state.messages.length, 0);
     assert.equal(await realpath(session.sessionManager.getCwd()), await realpath(daemon.daemonDir));
 
@@ -168,6 +171,15 @@ test("a hosted runtime attaches, mirrors state, and drives a turn through the da
       () => events.some((e) => e.type === "thinking_level_changed" && e.level === "high"),
       5_000,
       "thinking level event",
+    );
+
+    assert.equal(session.cycleSafetyMode(), "safe");
+    assert.equal(session.safetyMode, "full", "effective mode remains frozen");
+    assert.equal(session.pendingSafetyMode, "safe", "pending mode updates optimistically");
+    await waitFor(
+      () => events.some((e) => e.type === "safety_mode_changed" && e.pending === "safe"),
+      5_000,
+      "safety mode event",
     );
 
     await host.dispose();

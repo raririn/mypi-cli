@@ -60,6 +60,8 @@ export interface ReadToolOptions {
 	autoResizeImages?: boolean;
 	/** Custom operations for file reading. Default: local filesystem */
 	operations?: ReadOperations;
+	/** Optional execution-host containment guard, invoked before access and immediately before each read. */
+	pathGuard?: (absolutePath: string) => void;
 }
 
 type ReadRenderArgs = { path?: string; file_path?: string; offset?: number; limit?: number };
@@ -206,6 +208,7 @@ export function createReadToolDefinition(
 ): ToolDefinition<typeof readSchema, ReadToolDetails | undefined> {
 	const autoResizeImages = options?.autoResizeImages ?? true;
 	const ops = options?.operations ?? defaultReadOperations;
+	const pathGuard = options?.pathGuard;
 	return {
 		name: "read",
 		label: "read",
@@ -236,6 +239,7 @@ export function createReadToolDefinition(
 					(async () => {
 						try {
 							const absolutePath = await resolveReadPathAsync(path, cwd);
+							pathGuard?.(absolutePath);
 							if (aborted) return;
 							// Check if file exists and is readable.
 							await ops.access(absolutePath);
@@ -246,6 +250,7 @@ export function createReadToolDefinition(
 							const nonVisionImageNote = getNonVisionImageNote(ctx?.model);
 							if (mimeType) {
 								// Read image as binary.
+								pathGuard?.(absolutePath);
 								const buffer = await ops.readFile(absolutePath);
 								const processed = await processImage(buffer, mimeType, { autoResizeImages });
 								if (!processed.ok) {
@@ -263,6 +268,7 @@ export function createReadToolDefinition(
 								}
 							} else {
 								// Read text content.
+								pathGuard?.(absolutePath);
 								const buffer = await ops.readFile(absolutePath);
 								const textContent = buffer.toString("utf-8");
 								const allLines = textContent.split("\n");

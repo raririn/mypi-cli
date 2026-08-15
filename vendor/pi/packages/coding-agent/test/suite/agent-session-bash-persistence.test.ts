@@ -160,6 +160,7 @@ describe("AgentSession bash and persistence characterization", () => {
 
 		const entries = harness.sessionManager.getEntries();
 		expect(entries.map((entry) => entry.type)).toEqual([
+			"custom",
 			"custom_message",
 			"message",
 			"message",

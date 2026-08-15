@@ -1,12 +1,10 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeSync } from "node:fs";
 import { SandboxManager, SandboxRuntimeConfigSchema } from "@anthropic-ai/sandbox-runtime";
-import type { MyPiSandboxHelperRequest } from "./mypi-sandbox.ts";
+import { MYPI_SANDBOX_DENIAL_CONTROL, type MyPiSandboxHelperRequest } from "./mypi-sandbox.ts";
 
 const MAX_PROTOCOL_BYTES = 4 * 1024 * 1024;
 const MAX_DIAGNOSTIC_BYTES = 64 * 1024;
-const SANDBOX_DENIAL_PATTERN =
-	/(?:operation not permitted|permission denied|read-only file system|connection blocked by network allowlist|sandbox(?:ed)?\s+(?:denial|violation|blocked))/i;
 
 function readRequest(): MyPiSandboxHelperRequest {
 	const input = readFileSync(0);
@@ -75,7 +73,11 @@ async function run(): Promise<number> {
 				if (annotated !== stderr) {
 					const annotation = annotated.startsWith(stderr) ? annotated.slice(stderr.length) : annotated;
 					if (annotation) process.stderr.write(annotation.startsWith("\n") ? annotation : `\n${annotation}`);
-				} else if (SANDBOX_DENIAL_PATTERN.test(stderr)) {
+				}
+				if (annotated !== stderr) {
+					// Descriptor 3 is a private control pipe opened by the MyPi parent. The
+					// sandboxed child receives only stdin/stdout/stderr and cannot forge it.
+					writeSync(3, MYPI_SANDBOX_DENIAL_CONTROL);
 					process.stderr.write(
 						"\nBlocked by MyPi sandbox: the command attempted an operation outside the workspace/network policy.\n",
 					);
