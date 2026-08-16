@@ -252,7 +252,7 @@ export class FooterComponent implements Component {
 		const extensionStatuses = this.footerData.getExtensionStatuses();
 		if (extensionStatuses.size > 0) {
 			const sortedStatuses = Array.from(extensionStatuses.entries())
-				.filter(([key]) => key !== "safety" && key !== "exec-mode")
+				.filter(([key]) => key !== "safety" && key !== "exec-mode" && key !== "mypi-goal-snapshot")
 				.sort(([a], [b]) => a.localeCompare(b))
 				.map(([, text]) => sanitizeStatusText(text));
 			if (sortedStatuses.length > 0) {

@@ -90,10 +90,13 @@ function createSession(options: {
 	return session as unknown as AgentSession;
 }
 
-function createFooterData(providerCount: number): ReadonlyFooterDataProvider {
+function createFooterData(
+	providerCount: number,
+	extensionStatuses: ReadonlyMap<string, string> = new Map(),
+): ReadonlyFooterDataProvider {
 	const provider = {
 		getGitBranch: () => "main",
-		getExtensionStatuses: () => new Map<string, string>(),
+		getExtensionStatuses: () => extensionStatuses,
 		getAvailableProviderCount: () => providerCount,
 		onBranchChange: (callback: () => void) => {
 			void callback;
@@ -168,6 +171,18 @@ describe("FooterComponent width handling", () => {
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(width);
 		}
+	});
+
+	it("shows compact Goal status without rendering the RPC snapshot payload", () => {
+		const session = createSession({ sessionName: "" });
+		const footer = new FooterComponent(session, createFooterData(1, new Map([
+			["mypi-goal-snapshot", '{"schemaVersion":3,"goalId":"goal-1","revision":489}'],
+			["plan-goal", "GOAL ACTIVE · 1/2 · 3 turns"],
+		])));
+
+		const statusLine = stripAnsi(footer.render(120)[2] ?? "");
+		expect(statusLine).toBe("GOAL ACTIVE · 1/2 · 3 turns");
+		expect(statusLine).not.toContain("schemaVersion");
 	});
 
 	it("includes summary and tool result usage in the total cost", () => {
