@@ -109,10 +109,11 @@ Use context files for project conventions, commands, safety rules, and preferenc
 
 Replace the default system prompt with:
 
-- `.pi/SYSTEM.md` for a project
-- `~/.pi/agent/SYSTEM.md` globally
+- `.mypi/SYSTEM.md` for a trusted project
+- `~/.mypi/agent/SYSTEM.md` globally
 
 Append to the default prompt without replacing it with `APPEND_SYSTEM.md` in either location.
+For a deliberately shorter replacement, copy `docs/system-prompts/minimal.md` to one of those `SYSTEM.md` locations. MyPi has no prompt-preset setting.
 
 ### Project Trust
 
@@ -211,7 +212,7 @@ cat README.md | pi -p "Summarize this text"
 | `--no-builtin-tools`, `-nbt` | Disable built-in tools but keep extension/custom tools enabled |
 | `--no-tools`, `-nt` | Disable all tools |
 
-Built-in tools: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`.
+Built-in tools: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`, `commentary`.
 
 ### Resource Options
 

@@ -126,6 +126,7 @@ import {
 	createAllToolDefinitions,
 	createWorkspaceReadToolDefinition,
 	createWorkspaceWriteToolDefinition,
+	normalizeLegacyToolNames,
 } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
 import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
@@ -327,7 +328,7 @@ export interface AgentSessionConfig {
 	customTools?: ToolDefinition[];
 	/** Canonical model/auth runtime used by coding-agent internals. */
 	modelRuntime: ModelRuntime;
-	/** Initial active built-in tool names. Default: [read, bash, edit, write] */
+	/** Initial active built-in tool names. Default: [read, bash, edit, write, commentary] */
 	initialActiveToolNames?: string[];
 	/** Optional allowlist of tool names. When provided, only these tool names are exposed. */
 	allowedToolNames?: string[];
@@ -519,9 +520,15 @@ export class AgentSession {
 		this._cwd = config.cwd;
 		this._modelRuntime = config.modelRuntime;
 		this._extensionRunnerRef = config.extensionRunnerRef;
-		this._initialActiveToolNames = config.initialActiveToolNames;
-		this._allowedToolNames = config.allowedToolNames ? new Set(config.allowedToolNames) : undefined;
-		this._excludedToolNames = config.excludedToolNames ? new Set(config.excludedToolNames) : undefined;
+		this._initialActiveToolNames = config.initialActiveToolNames
+			? normalizeLegacyToolNames(config.initialActiveToolNames)
+			: undefined;
+		this._allowedToolNames = config.allowedToolNames
+			? new Set(normalizeLegacyToolNames(config.allowedToolNames))
+			: undefined;
+		this._excludedToolNames = config.excludedToolNames
+			? new Set(normalizeLegacyToolNames(config.excludedToolNames))
+			: undefined;
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._safetyPolicyEnabled = config.safetyPolicyEnabled ?? true;
@@ -1100,7 +1107,7 @@ export class AgentSession {
 	 * Changes take effect on the next agent turn.
 	 */
 	setActiveToolsByName(toolNames: string[]): void {
-		this._requestedActiveToolNames = [...new Set(toolNames)];
+		this._requestedActiveToolNames = normalizeLegacyToolNames(toolNames);
 		this._applyRequestedActiveTools();
 	}
 
@@ -1370,7 +1377,6 @@ export class AgentSession {
 			selectedTools: validToolNames,
 			toolSnippets,
 			promptGuidelines,
-			preset: this.settingsManager.getSystemPromptPreset(),
 		};
 		return buildSystemPrompt(this._baseSystemPromptOptions);
 	}
@@ -3094,7 +3100,7 @@ export class AgentSession {
 
 		const defaultActiveToolNames = this._baseToolsOverride
 			? Object.keys(this._baseToolsOverride)
-			: ["read", "bash", "edit", "write", "deep_thinking"];
+			: ["read", "bash", "edit", "write", "commentary"];
 		const baseActiveToolNames = options.activeToolNames ?? defaultActiveToolNames;
 		this._refreshToolRegistry({
 			activeToolNames: baseActiveToolNames,

@@ -10,7 +10,7 @@ Pi considers a project to have resources that require trust when it finds any of
 
 - `.pi/settings.json`
 - `.pi/extensions`, `.pi/skills`, `.pi/prompts`, or `.pi/themes`
-- `.pi/SYSTEM.md` or `.pi/APPEND_SYSTEM.md`
+- `.mypi/SYSTEM.md` or `.mypi/APPEND_SYSTEM.md`
 - project `.agents/skills` in the current directory or an ancestor directory
 
 A bare `.pi` directory does not count as a project resource that requires trust.

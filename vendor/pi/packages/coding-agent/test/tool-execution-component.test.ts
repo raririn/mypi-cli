@@ -98,6 +98,23 @@ describe("ToolExecutionComponent parity", () => {
 		expect(component.render(120)).toEqual([]);
 	});
 
+	test("renders legacy deep_thinking transcript calls as commentary updates", () => {
+		const component = new ToolExecutionComponent(
+			"deep_thinking",
+			"tool-legacy-commentary",
+			{ thought: "Checking the compatibility path." },
+			{},
+			undefined,
+			createFakeTui(),
+			process.cwd(),
+		);
+
+		const rendered = stripAnsi(component.render(120).join("\n"));
+		expect(rendered).toContain("✳ update");
+		expect(rendered).toContain("Checking the compatibility path.");
+		expect(rendered).not.toContain("deep_thinking");
+	});
+
 	test("uses built-in rendering for built-in overrides without custom renderers", () => {
 		const overrideDefinition: ToolDefinition = {
 			...createBaseToolDefinition("edit"),

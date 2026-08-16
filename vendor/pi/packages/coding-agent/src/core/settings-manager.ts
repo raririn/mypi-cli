@@ -93,7 +93,6 @@ export interface Settings {
 	transport?: TransportSetting; // default: "auto"
 	steeringMode?: "all" | "one-at-a-time";
 	followUpMode?: "all" | "one-at-a-time";
-	systemPromptPreset?: "default" | "lean"; // default: "default" - built-in system prompt: comprehensive ("default") or minimal vendored prompt ("lean"); ignored when a SYSTEM.md override is present
 	theme?: string;
 	compaction?: CompactionSettings;
 	branchSummary?: BranchSummarySettings;
@@ -743,16 +742,6 @@ export class SettingsManager {
 
 	getFollowUpMode(): "all" | "one-at-a-time" {
 		return this.settings.followUpMode || "one-at-a-time";
-	}
-
-	getSystemPromptPreset(): "default" | "lean" {
-		return this.settings.systemPromptPreset === "lean" ? "lean" : "default";
-	}
-
-	setSystemPromptPreset(preset: "default" | "lean"): void {
-		this.globalSettings.systemPromptPreset = preset;
-		this.markModified("systemPromptPreset");
-		this.save();
 	}
 
 	setFollowUpMode(mode: "all" | "one-at-a-time"): void {

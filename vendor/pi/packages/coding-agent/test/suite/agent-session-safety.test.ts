@@ -16,20 +16,20 @@ describe("AgentSession turn-scoped safety", () => {
 		const harness = await createHarness({ settings: { safety: { defaultMode: "safe" } } });
 		harnesses.push(harness);
 		expect(harness.session.safetyMode).toBe("safe");
-		expect(harness.session.getActiveToolNames()).toEqual(["read_workspace", "write_workspace"]);
+		expect(harness.session.getActiveToolNames()).toEqual(["read_workspace", "write_workspace", "commentary"]);
 		expect(() => harness.session.requestSafetyMode("invalid" as never)).toThrow(/Invalid safety mode/);
 
 		harness.session.requestSafetyMode("full");
 		expect(harness.session.safetyMode).toBe("safe");
 		expect(harness.session.pendingSafetyMode).toBe("full");
-		expect(harness.session.getActiveToolNames()).toEqual(["read_workspace", "write_workspace"]);
+		expect(harness.session.getActiveToolNames()).toEqual(["read_workspace", "write_workspace", "commentary"]);
 
 		harness.setResponses([fauxAssistantMessage("done")]);
 		await harness.session.prompt("apply on this turn");
 
 		expect(harness.session.safetyMode).toBe("full");
 		expect(harness.session.pendingSafetyMode).toBeUndefined();
-		expect(harness.session.getActiveToolNames()).toEqual(["read", "bash", "edit", "write", "deep_thinking"]);
+		expect(harness.session.getActiveToolNames()).toEqual(["read", "bash", "edit", "write", "commentary"]);
 		expect(harness.eventsOfType("safety_mode_changed").at(-1)).toMatchObject({ effective: "full" });
 	});
 
@@ -80,6 +80,7 @@ describe("AgentSession turn-scoped safety", () => {
 		});
 		harnesses.push(harness);
 		const active = harness.session.getActiveToolNames();
+		expect(active.includes("commentary")).toBe(true);
 		expect(active.includes("bash")).toBe(bash);
 		expect(active.includes("read")).toBe(broadFiles);
 		expect(active.includes("write")).toBe(broadFiles);

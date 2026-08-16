@@ -283,6 +283,11 @@ const systemPrompt = await readFile(join(packageRoot, "dist", "core", "system-pr
 for (const fragment of [
   "You are running in MyPi.",
   "Documentation bundled with MyPi",
+  "# Security",
+  "passwords, API keys or access tokens",
+  "trusted non-echoing prompt or credential manager",
+  "# Intermediate commentary",
+  "use the \\`commentary\\` tool",
 ]) {
   if (!systemPrompt.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing the tracked MyPi prompt identity (${fragment}).`);
@@ -290,6 +295,31 @@ for (const fragment of [
 }
 if (systemPrompt.includes("operating inside pi, a coding agent harness")) {
   throw new Error(`Installed Pi ${expectedVersion} still injects the stock product identity.`);
+}
+if (systemPrompt.includes("deep_thinking")) {
+  throw new Error(`Installed Pi ${expectedVersion} still advertises the retired deep_thinking tool name.`);
+}
+
+const commentaryTool = await readFile(join(packageRoot, "dist", "core", "tools", "commentary.js"), "utf8");
+for (const fragment of ["commentary", "✳ update", "brief user-visible update", "never include secrets or hidden reasoning"]) {
+  if (!commentaryTool.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing commentary tool behavior (${fragment}).`);
+  }
+}
+
+const settingsManager = await readFile(join(packageRoot, "dist", "core", "settings-manager.js"), "utf8");
+if (settingsManager.includes("systemPromptPreset")) {
+  throw new Error(`Installed Pi ${expectedVersion} still carries the retired lean system-prompt preset switch.`);
+}
+
+const minimalSystemPrompt = await readFile(
+  join(packageRoot, "docs", "system-prompts", "minimal.md"),
+  "utf8",
+);
+for (const fragment of ["You are MyPi", "# Security", "trusted non-echoing prompt or credential manager"]) {
+  if (!minimalSystemPrompt.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing the packaged minimal system-prompt replacement (${fragment}).`);
+  }
 }
 
 const skillInvocation = await readFile(
@@ -325,4 +355,4 @@ for (const relativePath of ["models.js", "compat.js"]) {
   }
 }
 
-console.log(`Verified Pi ${expectedVersion}, bundled docs/examples without built-in skills, runtime-owned Plan/Goal/archive/web/TUI/safety core with model-aware /reasoning, workspace-confined tools, safe web provider selection, isolated fail-closed Anthropic shell sandboxing, suppressed automatic version-update metadata, one-line MyPi identity, outbound credential redaction, /hotkeys, resource viewers, acknowledged tree navigation, skill labels, typed agent settlement including preflight dispatch rejection, and Goal-aware proactive compaction continuation.`);
+console.log(`Verified Pi ${expectedVersion}, bundled docs/examples without built-in skills, runtime-owned Plan/Goal/archive/web/TUI/safety core with model-aware /reasoning, workspace-confined tools, canonical commentary updates with legacy-name compatibility, the built-in security baseline and packaged minimal prompt replacement, safe web provider selection, isolated fail-closed Anthropic shell sandboxing, suppressed automatic version-update metadata, one-line MyPi identity, outbound credential redaction, /hotkeys, resource viewers, acknowledged tree navigation, skill labels, typed agent settlement including preflight dispatch rejection, and Goal-aware proactive compaction continuation.`);

@@ -19,8 +19,16 @@ export {
 	type EditToolOptions,
 } from "./edit.ts";
 export {
+	createCommentaryTool,
+	createCommentaryToolDefinition,
+	type CommentaryToolInput,
+} from "./commentary.ts";
+export {
+	/** @deprecated Use createCommentaryTool. */
 	createDeepThinkingTool,
+	/** @deprecated Use createCommentaryToolDefinition. */
 	createDeepThinkingToolDefinition,
+	/** @deprecated Use CommentaryToolInput. */
 	type DeepThinkingToolInput,
 } from "./deep-thinking.ts";
 export { withFileMutationQueue } from "./file-mutation-queue.ts";
@@ -82,7 +90,7 @@ export {
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ToolDefinition } from "../extensions/types.ts";
 import { type BashToolOptions, createBashTool, createBashToolDefinition } from "./bash.ts";
-import { createDeepThinkingTool, createDeepThinkingToolDefinition } from "./deep-thinking.ts";
+import { createCommentaryTool, createCommentaryToolDefinition } from "./commentary.ts";
 import { createEditTool, createEditToolDefinition, type EditToolOptions } from "./edit.ts";
 import { createFindTool, createFindToolDefinition, type FindToolOptions } from "./find.ts";
 import { createGrepTool, createGrepToolDefinition, type GrepToolOptions } from "./grep.ts";
@@ -92,7 +100,8 @@ import { createWriteTool, createWriteToolDefinition, type WriteToolOptions } fro
 
 export type Tool = AgentTool<any>;
 export type ToolDef = ToolDefinition<any, any>;
-export type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls" | "deep_thinking";
+export type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls" | "commentary";
+export type LegacyToolName = "deep_thinking";
 export const allToolNames: Set<ToolName> = new Set([
 	"read",
 	"bash",
@@ -101,8 +110,16 @@ export const allToolNames: Set<ToolName> = new Set([
 	"grep",
 	"find",
 	"ls",
-	"deep_thinking",
+	"commentary",
 ]);
+
+export function normalizeLegacyToolName(toolName: string): string {
+	return toolName === "deep_thinking" ? "commentary" : toolName;
+}
+
+export function normalizeLegacyToolNames(toolNames: readonly string[]): string[] {
+	return [...new Set(toolNames.map(normalizeLegacyToolName))];
+}
 
 export interface ToolsOptions {
 	read?: ReadToolOptions;
@@ -114,7 +131,7 @@ export interface ToolsOptions {
 	ls?: LsToolOptions;
 }
 
-export function createToolDefinition(toolName: ToolName, cwd: string, options?: ToolsOptions): ToolDef {
+export function createToolDefinition(toolName: ToolName | LegacyToolName, cwd: string, options?: ToolsOptions): ToolDef {
 	switch (toolName) {
 		case "read":
 			return createReadToolDefinition(cwd, options?.read);
@@ -130,14 +147,15 @@ export function createToolDefinition(toolName: ToolName, cwd: string, options?: 
 			return createFindToolDefinition(cwd, options?.find);
 		case "ls":
 			return createLsToolDefinition(cwd, options?.ls);
+		case "commentary":
 		case "deep_thinking":
-			return createDeepThinkingToolDefinition();
+			return createCommentaryToolDefinition();
 		default:
 			throw new Error(`Unknown tool name: ${toolName}`);
 	}
 }
 
-export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptions): Tool {
+export function createTool(toolName: ToolName | LegacyToolName, cwd: string, options?: ToolsOptions): Tool {
 	switch (toolName) {
 		case "read":
 			return createReadTool(cwd, options?.read);
@@ -153,8 +171,9 @@ export function createTool(toolName: ToolName, cwd: string, options?: ToolsOptio
 			return createFindTool(cwd, options?.find);
 		case "ls":
 			return createLsTool(cwd, options?.ls);
+		case "commentary":
 		case "deep_thinking":
-			return createDeepThinkingTool();
+			return createCommentaryTool();
 		default:
 			throw new Error(`Unknown tool name: ${toolName}`);
 	}
@@ -187,7 +206,7 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 		grep: createGrepToolDefinition(cwd, options?.grep),
 		find: createFindToolDefinition(cwd, options?.find),
 		ls: createLsToolDefinition(cwd, options?.ls),
-		deep_thinking: createDeepThinkingToolDefinition(),
+		commentary: createCommentaryToolDefinition(),
 	};
 }
 
@@ -218,6 +237,6 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		grep: createGrepTool(cwd, options?.grep),
 		find: createFindTool(cwd, options?.find),
 		ls: createLsTool(cwd, options?.ls),
-		deep_thinking: createDeepThinkingTool(),
+		commentary: createCommentaryTool(),
 	};
 }

@@ -106,6 +106,7 @@ export function safetyUsesSandbox(mode: SafetyMode): boolean {
 
 const TRUSTED_MYPI_CORE_TOOLS = new Set(["web_search", "web_fetch", "get_goal", "create_goal", "update_goal"]);
 const TRUSTED_USER_INTERACTION_TOOLS = new Set(["ask_user"]);
+const TRUSTED_PASSIVE_BUILTIN_TOOLS = new Set(["commentary"]);
 
 function isWithin(path: string, parent: string): boolean {
 	const rel = relative(parent, path);
@@ -155,6 +156,9 @@ function isTrustedPackageTool(sourceInfo: SourceInfo, packageName: string): bool
 
 export function isTrustedSafetyTool(name: string, sourceInfo: SourceInfo | undefined): boolean {
 	if (!sourceInfo) return false;
+	if (TRUSTED_PASSIVE_BUILTIN_TOOLS.has(name)) {
+		return sourceInfo.source === "builtin" && sourceInfo.path === `<builtin:${name}>`;
+	}
 	if (TRUSTED_MYPI_CORE_TOOLS.has(name)) {
 		return sourceInfo.source === "builtin" && sourceInfo.path === "<builtin:mypi-core>";
 	}

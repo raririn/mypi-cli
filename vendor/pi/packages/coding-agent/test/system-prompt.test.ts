@@ -60,6 +60,75 @@ describe("buildSystemPrompt", () => {
 		});
 	});
 
+	describe("security baseline", () => {
+		test("keeps likely secrets out of model-visible commands and output", () => {
+			const prompt = buildSystemPrompt({
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(prompt).toContain("# Security");
+			expect(prompt).toContain("passwords, API keys or access tokens");
+			expect(prompt).toContain("report only presence and non-sensitive metadata");
+			expect(prompt).toContain("trusted non-echoing prompt or credential manager");
+		});
+
+		test("does not retain a hidden lean assembly branch", () => {
+			const legacyOptions = {
+				preset: "lean",
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			};
+			const prompt = buildSystemPrompt(legacyOptions);
+
+			expect(prompt).toContain("# Working effectively");
+			expect(prompt).toContain("# Security");
+			expect(prompt).toContain("# Formatting and communication");
+		});
+
+		test("preserves explicit custom system-prompt replacement semantics", () => {
+			const prompt = buildSystemPrompt({
+				customPrompt: "Custom operator prompt",
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(prompt).toContain("Custom operator prompt");
+			expect(prompt).not.toContain("# Security");
+		});
+	});
+
+	describe("intermediate commentary", () => {
+		test("describes commentary as concise user-visible collaboration", () => {
+			const prompt = buildSystemPrompt({
+				selectedTools: ["commentary"],
+				toolSnippets: { commentary: "Share a brief user-visible update" },
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(prompt).toContain("# Intermediate commentary");
+			expect(prompt).toContain("use the `commentary` tool");
+			expect(prompt).not.toContain("deep_thinking");
+			expect(prompt).not.toContain("chain-of-thought");
+		});
+
+		test("omits commentary instructions when the tool is unavailable", () => {
+			const prompt = buildSystemPrompt({
+				selectedTools: ["read"],
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(prompt).not.toContain("# Intermediate commentary");
+		});
+	});
+
 	describe("custom tool snippets", () => {
 		test("includes custom tools in available tools section when promptSnippet is provided", () => {
 			const prompt = buildSystemPrompt({

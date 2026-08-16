@@ -5,11 +5,12 @@ source-built [Pi](https://github.com/earendil-works/pi) runtime.
 
 ## Features
 
-- Comprehensive default system prompt (tool usage, autonomy, destructive-action
-  and formatting guidance), switchable to a lean preset via the
-  `systemPromptPreset` setting or overridable with a `SYSTEM.md` file
-- `deep_thinking` tool: makes model reasoning and progress visible, and gives
-  chain-of-thought to models whose native reasoning is absent or hidden
+- Comprehensive default system prompt with tool-use, autonomy, destructive-action,
+  security, and communication guidance. Override it with a `SYSTEM.md` file; a
+  packaged minimal replacement is available at
+  `docs/system-prompts/minimal.md`.
+- `commentary` tool: shares brief user-visible progress, assumptions, partial
+  findings, and non-blocking questions without presenting private reasoning
 - Hooks: user policy hooks via `hooks.json` (block/observe tool calls, inject
   context, notify on settle) plus agent-registered timer and file-watch hooks
   (`schedule_prompt`, `watch_files`); see `/hooks --help`
