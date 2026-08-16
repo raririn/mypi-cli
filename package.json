@@ -25,7 +25,7 @@
     "verify:public": "node scripts/verify-public-tree.mjs",
     "verify:release": "node scripts/verify-release.mjs",
     "verify:runtime": "node scripts/verify-pi-customizations.mjs",
-    "verify": "pnpm verify:public && pnpm typecheck && pnpm test && pnpm package && pnpm verify:runtime && node scripts/verify-distribution.mjs"
+    "verify": "pnpm verify:public && pnpm build && pnpm typecheck && pnpm test && pnpm package && pnpm verify:runtime && node scripts/verify-distribution.mjs"
   },
   "devDependencies": {
     "@bybrave/proper-lockfile2": "5.0.0",
