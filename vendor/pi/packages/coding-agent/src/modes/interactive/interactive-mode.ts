@@ -175,6 +175,10 @@ import {
 } from "./theme/theme.ts";
 import { InteractiveThemeController } from "./theme/theme-controller.ts";
 
+const SHIFT_TAB_TARGETS = ["thinking", "safety"] as const;
+type ShiftTabTarget = (typeof SHIFT_TAB_TARGETS)[number];
+const SHIFT_TAB_KEY: KeyId = "shift+tab";
+
 /** Interface for components that can be expanded/collapsed */
 interface Expandable {
 	setExpanded(expanded: boolean): void;
@@ -601,6 +605,19 @@ export class InteractiveMode {
 					label: item.id,
 					description: item.provider,
 				}));
+			};
+		}
+
+		const shiftTabCommand = slashCommands.find((command) => command.name === "shift-tab");
+		if (shiftTabCommand) {
+			shiftTabCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
+				const normalized = prefix.trim().toLowerCase();
+				const matches = SHIFT_TAB_TARGETS.filter((target) => target.startsWith(normalized)).map((target) => ({
+					value: target,
+					label: target,
+					description: target === "thinking" ? "Cycle reasoning levels" : "Cycle session safety modes",
+				}));
+				return matches.length > 0 ? matches : null;
 			};
 		}
 
@@ -2799,6 +2816,12 @@ export class InteractiveMode {
 				await this.showModelsSelector();
 				return;
 			}
+			if (text === "/shift-tab" || text.startsWith("/shift-tab ")) {
+				const target = text.startsWith("/shift-tab ") ? text.slice(11).trim() : undefined;
+				this.editor.setText("");
+				await this.handleShiftTabCommand(target);
+				return;
+			}
 			if (text === "/model" || text.startsWith("/model ")) {
 				const searchTerm = text.startsWith("/model ") ? text.slice(7).trim() : undefined;
 				this.editor.setText("");
@@ -3944,13 +3967,38 @@ export class InteractiveMode {
 
 	private cycleSafetyMode(): void {
 		try {
-			const mode = this.session.cycleSafetyMode();
+			this.session.cycleSafetyMode();
 			this.footer.invalidate();
-			this.showStatus(`Safety mode pending for next turn: ${mode}`);
 			this.ui.requestRender();
 		} catch (error) {
 			this.showWarning(error instanceof Error ? error.message : String(error));
 		}
+	}
+
+	private setShiftTabTarget(target: ShiftTabTarget): void {
+		const bindings = this.keybindings.getUserBindings();
+		const targetAction: AppKeybinding = target === "thinking" ? "app.thinking.cycle" : "app.safety.cycle";
+		for (const action of ["app.thinking.cycle", "app.safety.cycle"] as const) {
+			const keys = this.keybindings.getKeys(action).filter((key) => key !== SHIFT_TAB_KEY);
+			if (action === targetAction) keys.push(SHIFT_TAB_KEY);
+			bindings[action] = keys.length === 1 ? keys[0]! : keys;
+		}
+		this.keybindings.setUserBindings(bindings);
+	}
+
+	private async handleShiftTabCommand(value?: string): Promise<void> {
+		let target = value?.trim().toLowerCase() as ShiftTabTarget | undefined;
+		if (!target) {
+			const choice = await this.showExtensionSelector("Shift+Tab action", ["Safety mode", "Reasoning level"]);
+			if (!choice) return;
+			target = choice === "Reasoning level" ? "thinking" : "safety";
+		}
+		if (!SHIFT_TAB_TARGETS.includes(target)) {
+			this.showWarning("Usage: /shift-tab [thinking|safety]");
+			return;
+		}
+		this.setShiftTabTarget(target);
+		this.showStatus(`Shift+Tab now cycles ${target === "thinking" ? "reasoning levels" : "safety modes"}`);
 	}
 
 	private applyThinkingLevel(level: ThinkingLevel): void {

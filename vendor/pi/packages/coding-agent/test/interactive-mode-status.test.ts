@@ -423,6 +423,14 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 			"openai-codex/gpt-5.5",
 			"github-copilot/gpt-5.2-codex",
 		]);
+
+		const shiftTabLine = "/shift-tab th";
+		const shiftTabSuggestions = await provider.getSuggestions([shiftTabLine], 0, shiftTabLine.length, {
+			signal: new AbortController().signal,
+		});
+		expect(shiftTabSuggestions?.items).toEqual([
+			{ value: "thinking", label: "thinking", description: "Cycle reasoning levels" },
+		]);
 	});
 
 	test("matches login command arguments by provider id and name", async () => {

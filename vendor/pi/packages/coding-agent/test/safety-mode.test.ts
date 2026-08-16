@@ -29,7 +29,11 @@ describe("safety modes", () => {
 			},
 		];
 		expect(latestSafetySessionState(entries)).toEqual({ version: 1, effective: "sandbox", pending: "ask" });
-		expect(safetyModeFooterText("sandbox", "ask")).toBe("SANDBOXED -> ASK FIRST (next turn)");
+		expect(safetyModeFooterText("sandbox", "ask")).toBe("? Ask First");
+		expect(safetyModeFooterText("safe")).toBe("✓ Safe");
+		expect(safetyModeFooterText("sandbox")).toBe("▣ Sandboxed");
+		expect(safetyModeFooterText("sandbox-ask")).toBe("◈ Sandbox + Approval");
+		expect(safetyModeFooterText("full")).toBe("! Full Access");
 	});
 
 	it("accepts web tools only from the exact built-in MyPi core provenance", () => {

@@ -77,7 +77,7 @@ export const KEYBINDINGS = {
 	},
 	"app.safety.cycle": {
 		defaultKeys: "shift+tab",
-		description: "Cycle safety mode for the next turn",
+		description: "Cycle safety mode",
 	},
 	"app.model.cycleForward": {
 		defaultKeys: "ctrl+p",

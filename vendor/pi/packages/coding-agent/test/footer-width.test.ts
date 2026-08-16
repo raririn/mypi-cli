@@ -2,7 +2,11 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { beforeAll, describe, expect, it } from "vitest";
 import type { AgentSession } from "../src/core/agent-session.ts";
 import type { ReadonlyFooterDataProvider } from "../src/core/footer-data-provider.ts";
-import { FooterComponent, formatCwdForFooter } from "../src/modes/interactive/components/footer.ts";
+import {
+	FooterComponent,
+	formatCwdForFooter,
+	formatSafetyModeForFooter,
+} from "../src/modes/interactive/components/footer.ts";
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 
@@ -114,6 +118,21 @@ describe("formatCwdForFooter", () => {
 describe("FooterComponent width handling", () => {
 	beforeAll(() => {
 		initTheme(undefined, false);
+	});
+
+	it("gives every safety mode distinct icon, label, and color without pending narration", () => {
+		const rendered = ["safe", "sandbox", "sandbox-ask", "ask", "full"].map((mode) =>
+			formatSafetyModeForFooter(mode as Parameters<typeof formatSafetyModeForFooter>[0]),
+		);
+		expect(rendered.map(stripAnsi)).toEqual([
+			"✓ Safe",
+			"▣ Sandboxed",
+			"◈ Sandbox + Approval",
+			"? Ask First",
+			"! Full Access",
+		]);
+		expect(new Set(rendered).size).toBe(5);
+		expect(stripAnsi(formatSafetyModeForFooter("safe", "full"))).toBe("! Full Access");
 	});
 
 	it("keeps all lines within width for wide session names", () => {

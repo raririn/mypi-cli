@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { InteractiveMode } from "../src/modes/interactive/interactive-mode.ts";
 
 type SubmitContext = {
-	defaultEditor: { onSubmit?: (text: string) => void };
+	defaultEditor: { onSubmit?: (text: string) => void | Promise<void> };
 	editor: {
 		addToHistory?: (text: string) => void;
 		setText: (text: string) => void;
@@ -14,6 +14,7 @@ type SubmitContext = {
 		prompt: (text: string, options?: unknown) => Promise<void>;
 	};
 	flushPendingBashComponents: () => void;
+	handleShiftTabCommand: (target?: string) => Promise<void>;
 	takePendingClipboardImages: (text: string) => [];
 	onInputCallback?: (input: { text: string; images: unknown[] }) => void;
 	pendingUserInputs: Array<{ text: string; images: unknown[] }>;
@@ -45,6 +46,7 @@ function createSubmitContext(): SubmitContext {
 			prompt: vi.fn(async () => {}),
 		},
 		flushPendingBashComponents: vi.fn(),
+		handleShiftTabCommand: vi.fn(async () => {}),
 		takePendingClipboardImages: vi.fn(() => []),
 		pendingUserInputs: [],
 	};
@@ -60,6 +62,18 @@ describe("InteractiveMode startup input", () => {
 		expect(context.pendingUserInputs).toEqual([{ text: "early prompt", images: [] }]);
 		expect(context.flushPendingBashComponents).toHaveBeenCalledTimes(1);
 		expect(context.editor.addToHistory).toHaveBeenCalledWith("early prompt");
+	});
+
+	it("handles /shift-tab locally instead of sending it as a prompt", async () => {
+		const context = createSubmitContext();
+		interactiveModePrototype.setupEditorSubmitHandler.call(context);
+
+		await context.defaultEditor.onSubmit?.(" /shift-tab thinking ");
+
+		expect(context.handleShiftTabCommand).toHaveBeenCalledWith("thinking");
+		expect(context.editor.setText).toHaveBeenCalledWith("");
+		expect(context.session.prompt).not.toHaveBeenCalled();
+		expect(context.pendingUserInputs).toEqual([]);
 	});
 
 	it("returns queued startup input before installing a new input callback", async () => {

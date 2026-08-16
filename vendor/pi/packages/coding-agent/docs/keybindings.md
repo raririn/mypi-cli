@@ -112,8 +112,12 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 | `app.model.cycleForward` | `ctrl+p` | Cycle to next model |
 | `app.model.cycleBackward` | `shift+ctrl+p` | Cycle to previous model |
 | `app.thinking.cycle` | _(unbound)_ | Cycle thinking level |
-| `app.safety.cycle` | `shift+tab` | Cycle safety mode for the next turn |
+| `app.safety.cycle` | `shift+tab` | Cycle safety mode |
 | `app.thinking.toggle` | `ctrl+t` | Collapse or expand thinking blocks |
+
+Use `/shift-tab thinking` or `/shift-tab safety` to move only Shift+Tab
+between the two cycle actions for the current CLI process. Other custom keys
+bound to either action are preserved; a fresh process defaults to safety.
 
 ### Display and Message Queue
 

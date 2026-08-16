@@ -134,6 +134,37 @@ for (const fragment of [
     throw new Error(`Installed Pi ${expectedVersion} is missing built-in safety/reasoning control (${fragment}).`);
   }
 }
+if (safetyExtension.includes("is pending for the next user turn")) {
+  throw new Error(`Installed Pi ${expectedVersion} still emits the retired safety-change notification.`);
+}
+for (const fragment of [
+  'command.name === "shift-tab"',
+  'text === "/shift-tab"',
+  "handleShiftTabCommand",
+  "Shift+Tab now cycles",
+]) {
+  if (!interactiveMode.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing local /shift-tab behavior (${fragment}).`);
+  }
+}
+if (interactiveMode.includes("Safety mode pending for next turn")) {
+  throw new Error(`Installed Pi ${expectedVersion} still emits the retired Shift+Tab safety toast.`);
+}
+const safetyMode = await readFile(join(packageRoot, "dist", "core", "safety-mode.js"), "utf8");
+for (const fragment of ["SAFETY_MODE_ICONS", 'safe: "✓"', 'full: "!"', "displayedSafetyMode"]) {
+  if (!safetyMode.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing mode-specific safety footer copy (${fragment}).`);
+  }
+}
+const footer = await readFile(
+  join(packageRoot, "dist", "modes", "interactive", "components", "footer.js"),
+  "utf8",
+);
+for (const fragment of ["SAFETY_MODE_FOOTER_COLORS", 'safe: "success"', 'full: "error"']) {
+  if (!footer.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing mode-specific safety footer color (${fragment}).`);
+  }
+}
 const sandboxBash = await readFile(join(packageRoot, "dist", "core", "tools", "bash.js"), "utf8");
 if (
   !sandboxBash.includes("createMyPiSandboxProcessLaunch") ||
@@ -355,4 +386,4 @@ for (const relativePath of ["models.js", "compat.js"]) {
   }
 }
 
-console.log(`Verified Pi ${expectedVersion}, bundled docs/examples without built-in skills, runtime-owned Plan/Goal/archive/web/TUI/safety core with model-aware /reasoning, workspace-confined tools, canonical commentary updates with legacy-name compatibility, the built-in security baseline and packaged minimal prompt replacement, safe web provider selection, isolated fail-closed Anthropic shell sandboxing, suppressed automatic version-update metadata, one-line MyPi identity, outbound credential redaction, /hotkeys, resource viewers, acknowledged tree navigation, skill labels, typed agent settlement including preflight dispatch rejection, and Goal-aware proactive compaction continuation.`);
+console.log(`Verified Pi ${expectedVersion}, bundled docs/examples without built-in skills, runtime-owned Plan/Goal/archive/web/TUI/safety core with model-aware /reasoning and local /shift-tab selection, mode-specific safety footer presentation without change toasts, workspace-confined tools, canonical commentary updates with legacy-name compatibility, the built-in security baseline and packaged minimal prompt replacement, safe web provider selection, isolated fail-closed Anthropic shell sandboxing, suppressed automatic version-update metadata, one-line MyPi identity, outbound credential redaction, /hotkeys, resource viewers, acknowledged tree navigation, skill labels, typed agent settlement including preflight dispatch rejection, and Goal-aware proactive compaction continuation.`);

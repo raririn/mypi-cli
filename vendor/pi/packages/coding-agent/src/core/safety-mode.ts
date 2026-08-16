@@ -18,6 +18,14 @@ export const SAFETY_MODE_LABELS: Record<SafetyMode, string> = {
 	full: "Full Access",
 };
 
+export const SAFETY_MODE_ICONS: Record<SafetyMode, string> = {
+	safe: "✓",
+	sandbox: "▣",
+	"sandbox-ask": "◈",
+	ask: "?",
+	full: "!",
+};
+
 export const SAFETY_MODE_DESCRIPTIONS: Record<SafetyMode, string> = {
 	safe: "Workspace read/write and trusted web tools; shell hidden",
 	sandbox: "Workspace read/write and sandboxed shell; denials are final",
@@ -176,11 +184,13 @@ export function isWorkspaceTool(name: string, sourceInfo: SourceInfo | undefined
 	return Boolean(sourceInfo?.source === "builtin" && (name === "read_workspace" || name === "write_workspace"));
 }
 
+export function displayedSafetyMode(effective: SafetyMode, pending?: SafetyMode): SafetyMode {
+	return pending && pending !== effective ? pending : effective;
+}
+
 export function safetyModeFooterText(effective: SafetyMode, pending?: SafetyMode): string {
-	const current = SAFETY_MODE_LABELS[effective].toUpperCase();
-	return pending && pending !== effective
-		? `${current} -> ${SAFETY_MODE_LABELS[pending].toUpperCase()} (next turn)`
-		: current;
+	const mode = displayedSafetyMode(effective, pending);
+	return `${SAFETY_MODE_ICONS[mode]} ${SAFETY_MODE_LABELS[mode]}`;
 }
 
 export function isAbsoluteOnAnyPlatform(path: string): boolean {

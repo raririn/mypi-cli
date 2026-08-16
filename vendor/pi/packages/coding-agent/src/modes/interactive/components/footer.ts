@@ -3,9 +3,26 @@ import { type Component, truncateToWidth, visibleWidth } from "@earendil-works/p
 import type { InteractiveSessionSurface } from "../../../core/agent-session-runtime.ts";
 import { areExperimentalFeaturesEnabled } from "../../../core/experimental.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
-import { safetyModeFooterText } from "../../../core/safety-mode.ts";
+import {
+	displayedSafetyMode,
+	safetyModeFooterText,
+	type SafetyMode,
+} from "../../../core/safety-mode.ts";
 import { addUsageToTotals, createUsageTotals } from "../../../core/usage-totals.ts";
-import { theme } from "../theme/theme.ts";
+import { theme, type ThemeColor } from "../theme/theme.ts";
+
+const SAFETY_MODE_FOOTER_COLORS: Record<SafetyMode, ThemeColor> = {
+	safe: "success",
+	sandbox: "accent",
+	"sandbox-ask": "warning",
+	ask: "thinkingHigh",
+	full: "error",
+};
+
+export function formatSafetyModeForFooter(effective: SafetyMode, pending?: SafetyMode): string {
+	const displayed = displayedSafetyMode(effective, pending);
+	return theme.bold(theme.fg(SAFETY_MODE_FOOTER_COLORS[displayed], safetyModeFooterText(effective, pending)));
+}
 
 /**
  * Sanitize text for display in a single-line status.
@@ -129,9 +146,7 @@ export class FooterComponent implements Component {
 		// Build stats line
 		const statsParts = [];
 		if (this.session.safetyPolicyEnabled) {
-			statsParts.push(
-				theme.bold(theme.fg("warning", safetyModeFooterText(this.session.safetyMode, this.session.pendingSafetyMode))),
-			);
+			statsParts.push(formatSafetyModeForFooter(this.session.safetyMode, this.session.pendingSafetyMode));
 		}
 		if (usageTotals.input) statsParts.push(`↑${formatTokens(usageTotals.input)}`);
 		if (usageTotals.output) statsParts.push(`↓${formatTokens(usageTotals.output)}`);

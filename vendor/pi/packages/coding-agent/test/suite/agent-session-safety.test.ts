@@ -1,6 +1,7 @@
 import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ExtensionContext } from "../../src/core/extensions/types.ts";
 import type { BashOperations } from "../../src/core/tools/bash.ts";
 import safetyExtension from "../../src/extensions/mypi/safety.ts";
 import { createHarness, type Harness } from "./harness.ts";
@@ -137,5 +138,23 @@ describe("AgentSession turn-scoped safety", () => {
 			harness.session.getAvailableThinkingLevels(),
 		);
 		expect(harness.session.extensionRunner.getCommand("sandbox")).toBeUndefined();
+	});
+
+	it("projects a selected mode without a safety-change notification", async () => {
+		const harness = await createHarness({ extensionFactories: [safetyExtension] });
+		harnesses.push(harness);
+		const safety = harness.session.extensionRunner.getCommand("safety");
+		const notify = vi.fn();
+		const setStatus = vi.fn();
+		const context = {
+			mode: "rpc",
+			ui: { notify, setStatus },
+		} as unknown as ExtensionContext;
+
+		await safety?.handler("sandbox", context);
+
+		expect(harness.session.pendingSafetyMode).toBe("sandbox");
+		expect(notify).not.toHaveBeenCalled();
+		expect(setStatus).toHaveBeenLastCalledWith("safety", "▣ Sandboxed");
 	});
 });

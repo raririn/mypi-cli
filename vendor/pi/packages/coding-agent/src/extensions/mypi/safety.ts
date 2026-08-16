@@ -38,10 +38,7 @@ function updateRpcStatus(pi: ExtensionAPI, ctx: ExtensionContext): void {
 }
 
 async function selectSafetyMode(pi: ExtensionAPI, ctx: ExtensionContext): Promise<SafetyMode | undefined> {
-	const selected = await ctx.ui.select(
-		"Safety mode (takes effect on the next user turn)",
-		SAFETY_MODES.map(modeOption),
-	);
+	const selected = await ctx.ui.select("Safety mode", SAFETY_MODES.map(modeOption));
 	return SAFETY_MODES.find((mode) => modeOption(mode) === selected);
 }
 
@@ -99,13 +96,6 @@ export default function safetyExtension(pi: ExtensionAPI): void {
 				);
 			} else {
 				pi.requestSafetyMode(mode);
-				const state = pi.getSafetyState();
-				ctx.ui.notify(
-					state.pending
-						? `${SAFETY_MODE_LABELS[mode]} is pending for the next user turn.`
-						: `${SAFETY_MODE_LABELS[mode]} is already effective; pending change cleared.`,
-					mode === "full" ? "warning" : "info",
-				);
 			}
 			updateRpcStatus(pi, ctx);
 		},
