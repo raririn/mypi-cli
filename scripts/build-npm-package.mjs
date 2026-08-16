@@ -267,10 +267,12 @@ function copyProfilePackage() {
     join(destination, "package.json"),
   );
   const profileFiles = [
+    "cliproxy-provider-core.ts",
     "mypi-agent-signals.ts",
     "mypi-ask-user.ts",
     "mypi-chat-manage.ts",
     "mypi-chat-storage.mts",
+    "mypi-cliproxy-provider.ts",
     "mypi-credential-redaction.ts",
     "mypi-exit.ts",
     "mypi-identity.ts",

@@ -262,7 +262,8 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 				throw new Error(`No API key for provider: ${model.provider}`);
 			}
 
-			const accountId = extractAccountId(apiKey);
+			const accountId =
+				model.compat?.requiresChatGptAccountId === false ? undefined : extractAccountId(apiKey);
 			const grammarToolInputProperties = createGrammarToolInputProperties(
 				context.tools,
 				model.compat?.supportsOpenAIGrammarTools ?? false,
@@ -527,7 +528,7 @@ function buildRequestBody(
 	const supportsStrictMode = model.compat?.supportsStrictMode ?? true;
 	const supportsOpenAIGrammarTools = model.compat?.supportsOpenAIGrammarTools ?? false;
 	const toolPlacement = splitDeferredTools(context, model.compat?.supportsToolSearch ?? false);
-	const messages = convertResponsesMessages(model, context, CODEX_TOOL_CALL_PROVIDERS, {
+	const messages = convertResponsesMessages(model, context, codexToolCallProviders(model), {
 		includeSystemPrompt: false,
 		grammarToolInputProperties,
 		deferredTools: toolPlacement.deferred,
@@ -581,6 +582,13 @@ function buildRequestBody(
 	}
 
 	return body;
+}
+
+function codexToolCallProviders(model: Model<"openai-codex-responses">): ReadonlySet<string> {
+	if (!model.compat?.supportsCodexToolCallIds || CODEX_TOOL_CALL_PROVIDERS.has(model.provider)) {
+		return CODEX_TOOL_CALL_PROVIDERS;
+	}
+	return new Set([...CODEX_TOOL_CALL_PROVIDERS, model.provider]);
 }
 
 function getServiceTierCostMultiplier(
@@ -1493,7 +1501,7 @@ async function processWebSocketStream(
 		if (options?.signal?.aborted) {
 			keepConnection = false;
 		} else if (useCachedContext && entry && output.responseId) {
-			const responseItems = convertResponsesMessages(model, { messages: [output] }, CODEX_TOOL_CALL_PROVIDERS, {
+			const responseItems = convertResponsesMessages(model, { messages: [output] }, codexToolCallProviders(model), {
 				includeSystemPrompt: false,
 				grammarToolInputProperties,
 			}).filter((item) => item.type !== "function_call_output" && item.type !== "custom_tool_call_output");
@@ -1565,7 +1573,7 @@ function extractAccountId(token: string): string {
 function buildBaseCodexHeaders(
 	initHeaders: Record<string, string> | undefined,
 	additionalHeaders: ProviderHeaders | undefined,
-	accountId: string,
+	accountId: string | undefined,
 	token: string,
 ): Headers {
 	const headers = new Headers(initHeaders);
@@ -1577,7 +1585,7 @@ function buildBaseCodexHeaders(
 		}
 	}
 	headers.set("Authorization", `Bearer ${token}`);
-	headers.set("chatgpt-account-id", accountId);
+	if (accountId) headers.set("chatgpt-account-id", accountId);
 	headers.set("originator", "pi");
 	const userAgent = _os ? `pi (${_os.platform()} ${_os.release()}; ${_os.arch()})` : "pi (browser)";
 	headers.set("User-Agent", userAgent);
@@ -1587,7 +1595,7 @@ function buildBaseCodexHeaders(
 function buildSSEHeaders(
 	initHeaders: Record<string, string> | undefined,
 	additionalHeaders: ProviderHeaders | undefined,
-	accountId: string,
+	accountId: string | undefined,
 	token: string,
 	sessionId?: string,
 ): Headers {
@@ -1607,7 +1615,7 @@ function buildSSEHeaders(
 function buildWebSocketHeaders(
 	initHeaders: Record<string, string> | undefined,
 	additionalHeaders: ProviderHeaders | undefined,
-	accountId: string,
+	accountId: string | undefined,
 	token: string,
 	requestId: string,
 ): Headers {

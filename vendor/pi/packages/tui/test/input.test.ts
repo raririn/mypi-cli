@@ -35,6 +35,19 @@ describe("Input component", () => {
 	});
 
 	describe("render", () => {
+		it("masks secrets without changing the submitted value", () => {
+			const input = new Input();
+			let submitted: string | undefined;
+			input.setMasked(true);
+			input.onSubmit = (value) => { submitted = value; };
+			input.handleInput("secret-value");
+			const rendered = input.render(40).join("\n");
+			assert.ok(!rendered.includes("secret-value"));
+			assert.match(rendered, /•{12}/u);
+			input.handleInput("\n");
+			assert.equal(submitted, "secret-value");
+		});
+
 		it("does not overflow with wide CJK and fullwidth text", () => {
 			const width = 93;
 			const cases = [

@@ -579,6 +579,16 @@ export interface OpenAIResponsesCompat {
 	supportsExplicitPromptCacheMode?: boolean;
 }
 
+/** Additional compatibility settings for the ChatGPT Codex Responses transport. */
+export interface OpenAICodexResponsesCompat extends OpenAIResponsesCompat {
+	/** Whether Codex requests require a JWT-derived `chatgpt-account-id` header. Default: true. API-key gateways set this to false. */
+	requiresChatGptAccountId?: boolean;
+	/** Whether Codex tool-call item IDs must retain the paired `call_id|fc_id` form. Default: true only for built-in Codex providers. */
+	supportsCodexToolCallIds?: boolean;
+	/** Whether the catalog advertises the Codex priority service tier for this model. Default: false. */
+	supportsPriorityServiceTier?: boolean;
+}
+
 /** Compatibility settings for Anthropic Messages-compatible APIs. */
 export interface AnthropicMessagesCompat {
 	/**
@@ -766,13 +776,15 @@ export interface Model<TApi extends Api> {
 	/** Compatibility overrides for OpenAI-compatible APIs. If not set, auto-detected from baseUrl. */
 	compat?: TApi extends "openai-completions"
 		? OpenAICompletionsCompat
-		: TApi extends "openai-responses" | "azure-openai-responses" | "openai-codex-responses"
+		: TApi extends "openai-responses" | "azure-openai-responses"
 			? OpenAIResponsesCompat
-			: TApi extends "anthropic-messages"
-				? AnthropicMessagesCompat
-				: TApi extends "bedrock-converse-stream"
-					? BedrockCompat
-					: never;
+			: TApi extends "openai-codex-responses"
+				? OpenAICodexResponsesCompat
+				: TApi extends "anthropic-messages"
+					? AnthropicMessagesCompat
+					: TApi extends "bedrock-converse-stream"
+						? BedrockCompat
+						: never;
 }
 
 export interface ImagesModel<TApi extends ImagesApi>

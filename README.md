@@ -18,6 +18,8 @@ source-built [Pi](https://github.com/earendil-works/pi) runtime.
 - Turn-scoped Safe, Sandboxed, approval, and Full Access modes via `/safety`
 - Workspace trust preflight plus workspace-confined read/write tools in bounded modes
 - Model-aware `/reasoning` control with the existing thinking-level colors
+- Native CLIProxyAPI provider support with secure `/login cliproxyapi`, bounded
+  model discovery, and session-owned `/fast on|off|status`
 - Web search/fetch with Brave search API or curl
 - Atomic lifecycle and session lease (required by MyPi GUI)
 - Read-only mode and deprecated safe-mode compatibility

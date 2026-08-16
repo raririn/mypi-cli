@@ -58,6 +58,21 @@ describe("LoginDialogComponent OAuth prompts", () => {
 		await expect(secondPrompt).resolves.toBe("second-secret-demo");
 	});
 
+	test("masks secret prompts while editing and after submission", async () => {
+		const dialog = createDialog();
+		const prompt = dialog.showPrompt("API key:", undefined, true);
+		dialog.handleInput("secret-api-value");
+		let output = renderDialog(dialog).join("\n");
+		expect(output).not.toContain("secret-api-value");
+		expect(output).toContain("••••••••••••••••");
+
+		dialog.handleInput("\n");
+		await expect(prompt).resolves.toBe("secret-api-value");
+		output = renderDialog(dialog).join("\n");
+		expect(output).not.toContain("secret-api-value");
+		expect(output).toContain("[secret submitted]");
+	});
+
 	test("preserves auth instructions when showing a prompt", () => {
 		const dialog = createDialog();
 

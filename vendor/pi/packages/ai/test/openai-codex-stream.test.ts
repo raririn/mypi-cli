@@ -205,6 +205,48 @@ describe("openai-codex streaming", () => {
 		expect(sawDone).toBe(true);
 	});
 
+	it("supports API-key Codex gateways without a ChatGPT account header", async () => {
+		const tempDir = mkdtempSync(join(tmpdir(), "pi-codex-api-key-gateway-"));
+		process.env.PI_CODING_AGENT_DIR = tempDir;
+		const encoder = new TextEncoder();
+		let requestHeaders: Headers | undefined;
+		vi.stubGlobal("fetch", vi.fn(async (input: string | URL, init?: RequestInit) => {
+			const url = typeof input === "string" ? input : input.toString();
+			if (url !== "https://proxy.example/backend-api/codex/responses") {
+				return new Response("not found", { status: 404 });
+			}
+			requestHeaders = new Headers(init?.headers);
+			return new Response(new ReadableStream<Uint8Array>({
+				start(controller) {
+					controller.enqueue(encoder.encode(buildSSEPayload({ status: "completed" })));
+					controller.close();
+				},
+			}), { status: 200, headers: { "content-type": "text/event-stream" } });
+		}));
+
+		const model: Model<"openai-codex-responses"> = {
+			id: "gateway-model",
+			name: "Gateway model",
+			api: "openai-codex-responses",
+			provider: "cliproxyapi",
+			baseUrl: "https://proxy.example/backend-api/",
+			reasoning: true,
+			input: ["text"],
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+			contextWindow: 128000,
+			maxTokens: 16384,
+			compat: { requiresChatGptAccountId: false, supportsCodexToolCallIds: true },
+		};
+		const result = await streamOpenAICodexResponses(model, {
+			systemPrompt: "You are helpful.",
+			messages: [{ role: "user", content: "Hello", timestamp: Date.now() }],
+		}, { apiKey: "plain-api-key", transport: "sse" }).result();
+
+		expect(result.stopReason).toBe("stop");
+		expect(requestHeaders?.get("authorization")).toBe("Bearer plain-api-key");
+		expect(requestHeaders?.has("chatgpt-account-id")).toBe(false);
+	});
+
 	it("completes after response.completed even when the SSE body stays open", async () => {
 		const tempDir = mkdtempSync(join(tmpdir(), "pi-codex-stream-"));
 		process.env.PI_CODING_AGENT_DIR = tempDir;

@@ -57,6 +57,8 @@ for (const required of [
   "package/SOURCE_PROVENANCE.json",
   "package/MYPI_PROVENANCE.json",
   "package/bin/mypi.mjs",
+  "package/resources/mypi-core/extensions/cliproxy-provider-core.ts",
+  "package/resources/mypi-core/extensions/mypi-cliproxy-provider.ts",
 ]) {
   assert(entries.includes(required), `npm artifact is missing ${required}`);
 }

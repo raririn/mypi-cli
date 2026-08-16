@@ -150,6 +150,18 @@ for (const fragment of [
 if (interactiveMode.includes("Safety mode pending for next turn")) {
   throw new Error(`Installed Pi ${expectedVersion} still emits the retired Shift+Tab safety toast.`);
 }
+if (!interactiveMode.includes('prompt.type === "secret"')) {
+  throw new Error(`Installed Pi ${expectedVersion} does not route secret authentication prompts through masking.`);
+}
+const loginDialog = await readFile(
+  join(packageRoot, "dist", "modes", "interactive", "components", "login-dialog.js"),
+  "utf8",
+);
+for (const fragment of ["setMasked(secret)", "[secret submitted]"]) {
+  if (!loginDialog.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing non-echoing authentication input (${fragment}).`);
+  }
+}
 const safetyMode = await readFile(join(packageRoot, "dist", "core", "safety-mode.js"), "utf8");
 for (const fragment of ["SAFETY_MODE_ICONS", 'safe: "✓"', 'full: "!"', "displayedSafetyMode"]) {
   if (!safetyMode.includes(fragment)) {
@@ -377,6 +389,16 @@ for (const fragment of [
     throw new Error(`Installed Pi ${expectedVersion} is missing the outbound credential guard (${fragment}).`);
   }
 }
+
+const codexResponses = await readFile(
+  join(aiPackageRoot, "dist", "api", "openai-codex-responses.js"),
+  "utf8",
+);
+for (const fragment of ["requiresChatGptAccountId === false", "supportsCodexToolCallIds"]) {
+  if (!codexResponses.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing API-key Codex gateway support (${fragment}).`);
+  }
+}
 for (const relativePath of ["models.js", "compat.js"]) {
   const implementation = await readFile(join(aiPackageRoot, "dist", relativePath), "utf8");
   for (const fragment of ["redactCredentialPayload(context)", "withCredentialRedaction("]) {
@@ -386,4 +408,4 @@ for (const relativePath of ["models.js", "compat.js"]) {
   }
 }
 
-console.log(`Verified Pi ${expectedVersion}, bundled docs/examples without built-in skills, runtime-owned Plan/Goal/archive/web/TUI/safety core with model-aware /reasoning and local /shift-tab selection, mode-specific safety footer presentation without change toasts, workspace-confined tools, canonical commentary updates with legacy-name compatibility, the built-in security baseline and packaged minimal prompt replacement, safe web provider selection, isolated fail-closed Anthropic shell sandboxing, suppressed automatic version-update metadata, one-line MyPi identity, outbound credential redaction, /hotkeys, resource viewers, acknowledged tree navigation, skill labels, typed agent settlement including preflight dispatch rejection, and Goal-aware proactive compaction continuation.`);
+console.log(`Verified Pi ${expectedVersion}, bundled docs/examples without built-in skills, runtime-owned Plan/Goal/archive/web/TUI/safety core with model-aware /reasoning and local /shift-tab selection, mode-specific safety footer presentation without change toasts, workspace-confined tools, canonical commentary updates with legacy-name compatibility, the built-in security baseline and packaged minimal prompt replacement, safe web provider selection, isolated fail-closed Anthropic shell sandboxing, non-echoing authentication input, API-key Codex gateway compatibility, suppressed automatic version-update metadata, one-line MyPi identity, outbound credential redaction, /hotkeys, resource viewers, acknowledged tree navigation, skill labels, typed agent settlement including preflight dispatch rejection, and Goal-aware proactive compaction continuation.`);
