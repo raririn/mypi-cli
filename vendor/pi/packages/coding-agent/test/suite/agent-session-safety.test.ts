@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext } from "../../src/core/extensions/types.ts";
 import type { BashOperations } from "../../src/core/tools/bash.ts";
 import safetyExtension from "../../src/extensions/mypi/safety.ts";
+import planGoalExtension from "../../src/extensions/mypi/plan-goal.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 describe("AgentSession turn-scoped safety", () => {
@@ -89,6 +90,23 @@ describe("AgentSession turn-scoped safety", () => {
 		expect(active.includes("read_workspace")).toBe(!broadFiles);
 		expect(active.includes("write_workspace")).toBe(!broadFiles);
 	});
+
+	it.each(["safe", "sandbox", "sandbox-ask", "ask", "full"] as const)(
+		"keeps the complete Goal lifecycle tool set in $mode",
+		async (mode) => {
+			const harness = await createHarness({
+				settings: { safety: { defaultMode: mode } },
+				extensionFactories: [{ factory: planGoalExtension, path: "<builtin:mypi-core>" }],
+			});
+			harnesses.push(harness);
+			const active = harness.session.getActiveToolNames();
+			for (const name of ["get_goal", "get_goal_plan", "create_goal", "set_goal_plan", "update_goal_plan", "update_goal"]) {
+				expect(active, `${name} in ${mode}`).toContain(name);
+			}
+			harness.session.setActiveToolsByName(["get_goal", "get_goal_plan", "set_goal_plan"]);
+			expect(harness.session.getActiveToolNames()).toEqual(["get_goal", "get_goal_plan", "set_goal_plan"]);
+		},
+	);
 
 	it("persists the initial default and pending selection in session history", async () => {
 		const harness = await createHarness({ settings: { safety: { defaultMode: "sandbox" } } });

@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import planGoalExtension from "../../vendor/pi/packages/coding-agent/src/extensions/mypi/plan-goal.ts";
 
-const ROOT_PLAN = `# User plan\n\n- [ ] Preserve the API\n  <!-- acceptance: API remains stable -->\n  <!-- verify: node --test -->\n`;
+const ROOT_PLAN = "# Ordinary project planning notes\n\nThis file is not Goal state.\n";
 const STRUCTURED_ITEMS = [
   { task: "Preserve the API", acceptance: ["API remains stable"], verify: ["node --test"] },
   { task: "Document the result", acceptance: ["docs are current"], verify: ["inspect docs"] },
@@ -25,6 +25,7 @@ function createHarness(cwd: string, initialEntries: any[] = []) {
   let idle = true;
   let pendingMessages = false;
   let aborts = 0;
+  let inputValue: string | undefined = "Ship the requested change";
 
   const ctx = {
     cwd,
@@ -36,7 +37,7 @@ function createHarness(cwd: string, initialEntries: any[] = []) {
     ui: {
       setStatus: (key: string, value: string | undefined) => statuses.set(key, value),
       notify: (message: string, level = "info") => notices.push({ message, level }),
-      input: async () => undefined,
+      input: async () => inputValue,
       editor: async (title: string, content: string) => { editors.push({ title, content }); },
     },
   };
@@ -79,6 +80,7 @@ function createHarness(cwd: string, initialEntries: any[] = []) {
     notices, editors, statuses,
     setPendingMessages(value: boolean) { pendingMessages = value; },
     setIdle(value: boolean) { idle = value; },
+    setInputValue(value: string | undefined) { inputValue = value; },
     get activeTools() { return activeTools; },
     get aborts() { return aborts; },
   };
@@ -88,7 +90,7 @@ function latestState(harness: ReturnType<typeof createHarness>): any {
   return harness.persisted.filter((entry) => entry.customType === "mypi-goal").at(-1)?.data;
 }
 
-async function activate(harness: ReturnType<typeof createHarness>, args = "") {
+async function activate(harness: ReturnType<typeof createHarness>, args = "ship it") {
   await harness.commands.get("goal").handler(args, harness.ctx);
   assert.equal(latestState(harness).workflow, "goal-planning");
   const result = await harness.executeTool("set_goal_plan", { items: STRUCTURED_ITEMS });
@@ -102,21 +104,61 @@ test("registers the Goal v3 lifecycle and structured plan tools", async () => {
   assert.deepEqual([...harness.tools.keys()], ["get_goal", "get_goal_plan", "create_goal", "set_goal_plan", "update_goal_plan", "update_goal"]);
   assert.equal(harness.tools.get("set_goal_plan").executionMode, "sequential");
   assert.equal(harness.tools.get("update_goal_plan").executionMode, "sequential");
+  assert.deepEqual(harness.commands.get("plan").getArgumentCompletions("--").map((item: any) => item.value), ["--report", "--abort", "--help"]);
 });
 
-test("root PLAN.md is imported once as untrusted planning data and remains untouched", async () => {
-  const cwd = await mkdtemp(join(tmpdir(), "mypi-goal-v3-import-"));
-  await writeFile(join(cwd, "PLAN.md"), ROOT_PLAN, "utf8");
-  const harness = createHarness(cwd);
-  await harness.commands.get("goal").handler("preserve behavior", harness.ctx);
-  assert.equal(latestState(harness).workflow, "goal-planning");
-  assert.equal(latestState(harness).importedPlan.text, ROOT_PLAN);
-  const before = await harness.emit("before_agent_start", { prompt: "plan", systemPrompt: "base" });
-  assert.match(before.systemPrompt, /untrusted planning data only/);
-  assert.match(before.systemPrompt, /Root PLAN\.md is immutable to Goal/);
-  await harness.executeTool("set_goal_plan", { items: STRUCTURED_ITEMS });
-  assert.equal(latestState(harness).importedPlan, undefined);
-  assert.equal(await (await import("node:fs/promises")).readFile(join(cwd, "PLAN.md"), "utf8"), ROOT_PLAN);
+test("/plan creates a branch-local structured plan, stops, and /goal executes it", async () => {
+	const cwd = await mkdtemp(join(tmpdir(), "mypi-goal-v3-plan-"));
+	await writeFile(join(cwd, "PLAN.md"), ROOT_PLAN, "utf8");
+	const harness = createHarness(cwd);
+	await harness.commands.get("plan").handler("preserve behavior", harness.ctx);
+	assert.equal(latestState(harness).workflow, "goal-planning");
+	assert.equal(latestState(harness).autoStart, false);
+	const before = await harness.emit("before_agent_start", { prompt: "plan", systemPrompt: "base" });
+	assert.match(before.systemPrompt, /branch-local structured plan/);
+	assert.doesNotMatch(before.systemPrompt, /Ordinary project planning notes/);
+	const prepared = await harness.executeTool("set_goal_plan", { items: STRUCTURED_ITEMS });
+	assert.match(prepared.content[0].text, /Run \/goal to execute/);
+	assert.equal(harness.snapshot().status, "paused");
+	assert.equal(harness.snapshot().reason, "plan-ready");
+	assert.equal(await readFile(join(cwd, "PLAN.md"), "utf8"), ROOT_PLAN);
+
+	await harness.commands.get("goal").handler("", harness.ctx);
+	assert.equal(harness.snapshot().status, "active");
+	assert.equal(harness.snapshot().reason, undefined);
+	assert.match(harness.sent.at(-1) ?? "", /Continue the active structured Goal/);
+});
+
+test("/goal runs the same structured planner first and auto-starts after installation", async () => {
+	const harness = createHarness(await mkdtemp(join(tmpdir(), "mypi-goal-v3-pipeline-")));
+	await harness.commands.get("goal").handler("ship it", harness.ctx);
+	assert.equal(latestState(harness).workflow, "goal-planning");
+	assert.equal(latestState(harness).autoStart, true);
+	const lifecycle = await harness.executeTool("get_goal", {});
+	assert.equal(lifecycle.details.status, "planning");
+	assert.equal(lifecycle.details.autoStart, true);
+	const pending = await harness.executeTool("get_goal_plan", {});
+	assert.equal(pending.details.code, "goal-plan-pending");
+	await harness.executeTool("set_goal_plan", { items: STRUCTURED_ITEMS });
+	assert.equal(harness.snapshot().status, "active");
+});
+
+test("unfinished /plan planning survives reload and /goal promotes the same lineage", async () => {
+	const cwd = await mkdtemp(join(tmpdir(), "mypi-goal-v3-plan-reload-"));
+	const original = createHarness(cwd);
+	await original.commands.get("plan").handler("ship it", original.ctx);
+	const stored = latestState(original);
+	assert.equal(stored.autoStart, false);
+
+	const restored = createHarness(cwd, [{ type: "custom", customType: "mypi-goal", data: stored }]);
+	await restored.emit("session_start");
+	assert.equal(latestState(restored).goalId, stored.goalId);
+	assert.equal(latestState(restored).autoStart, false);
+	await restored.commands.get("goal").handler("", restored.ctx);
+	assert.equal(latestState(restored).goalId, stored.goalId);
+	assert.equal(latestState(restored).autoStart, true);
+	await restored.executeTool("set_goal_plan", { items: STRUCTURED_ITEMS });
+	assert.equal(restored.snapshot().status, "active");
 });
 
 test("Goal is unbounded by default; bare and numeric --budget select adaptive or fixed grants", async () => {
@@ -163,47 +205,11 @@ test("adaptive budget retains five turns per item and the 20-turn no-progress st
   assert.equal(harness.snapshot().turnsUsed, 20);
 });
 
-test("budget and PLAN import bounds fail explicitly without partial planning", async () => {
+test("invalid budgets fail explicitly without partial planning", async () => {
   const invalidBudget = createHarness(await mkdtemp(join(tmpdir(), "mypi-goal-budget-invalid-")));
   await invalidBudget.commands.get("goal").handler("--budget 0", invalidBudget.ctx);
   assert.match(invalidBudget.notices.at(-1)?.message ?? "", /integer from 1 through 10000/);
   assert.equal(latestState(invalidBudget), undefined);
-
-  const oversizedCwd = await mkdtemp(join(tmpdir(), "mypi-goal-import-large-"));
-  await writeFile(join(oversizedCwd, "PLAN.md"), "x".repeat(256 * 1024 + 1), "utf8");
-  const oversized = createHarness(oversizedCwd);
-  await oversized.commands.get("goal").handler("ship", oversized.ctx);
-  assert.match(oversized.notices.at(-1)?.message ?? "", /never truncates/);
-  assert.equal(latestState(oversized), undefined);
-
-  const symlinkCwd = await mkdtemp(join(tmpdir(), "mypi-goal-import-link-"));
-  await writeFile(join(symlinkCwd, "outside.md"), ROOT_PLAN, "utf8");
-  await symlink(join(symlinkCwd, "outside.md"), join(symlinkCwd, "PLAN.md"));
-  const linked = createHarness(symlinkCwd);
-  await linked.commands.get("goal").handler("ship", linked.ctx);
-  assert.match(linked.notices.at(-1)?.message ?? "", /regular non-symbolic-link/);
-  assert.equal(latestState(linked), undefined);
-
-  const invalidUtf8Cwd = await mkdtemp(join(tmpdir(), "mypi-goal-import-utf8-"));
-  await writeFile(join(invalidUtf8Cwd, "PLAN.md"), Buffer.from([0xc3, 0x28]));
-  const invalidUtf8 = createHarness(invalidUtf8Cwd);
-  await invalidUtf8.commands.get("goal").handler("ship", invalidUtf8.ctx);
-  assert.match(invalidUtf8.notices.at(-1)?.message ?? "", /not valid UTF-8/);
-  assert.equal(latestState(invalidUtf8), undefined);
-
-  const exactLimitCwd = await mkdtemp(join(tmpdir(), "mypi-goal-import-limit-"));
-  await writeFile(join(exactLimitCwd, "PLAN.md"), "x".repeat(256 * 1024), "utf8");
-  const exactLimit = createHarness(exactLimitCwd);
-  await exactLimit.commands.get("goal").handler("ship", exactLimit.ctx);
-  assert.equal(latestState(exactLimit).importedPlan.bytes, 256 * 1024);
-
-  const bomCwd = await mkdtemp(join(tmpdir(), "mypi-goal-import-bom-"));
-  await writeFile(join(bomCwd, "PLAN.md"), Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(ROOT_PLAN)]));
-  const bom = createHarness(bomCwd);
-  await bom.commands.get("goal").handler("ship", bom.ctx);
-  const restoredBom = createHarness(bomCwd, [{ type: "custom", customType: "mypi-goal", data: latestState(bom) }]);
-  await restoredBom.emit("session_start");
-  assert.equal(restoredBom.statuses.get("plan-goal"), "GOAL · PLANNING");
 });
 
 test("structured updates are revision-checked, atomic, and completion requires evidence", async () => {
@@ -271,6 +277,27 @@ test("reload restores only current-branch v3 state and pauses active execution",
   assert.equal(restored.snapshot().deferred, true);
 });
 
+test("restore rewrites early Goal v3 planning state without retired file payloads", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "mypi-goal-planning-rewrite-"));
+  const stored = {
+    schemaVersion: 3,
+    workflow: "goal-planning",
+    goalId: "goal-old-planning",
+    objective: "ship it",
+    budget: { kind: "unbounded" },
+    importedPlan: { text: "secret old file payload", sha256: "a".repeat(64), bytes: 23, importedAt: new Date().toISOString() },
+    planAgentEnds: 0,
+    toolsBeforePlan: ["read", "bash"],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  const restored = createHarness(cwd, [{ type: "custom", customType: "mypi-goal", data: stored }]);
+  await restored.emit("session_start");
+  assert.equal(latestState(restored).workflow, "goal-planning");
+  assert.equal(latestState(restored).autoStart, true);
+  assert.equal("importedPlan" in latestState(restored), false);
+});
+
 test("continue starts a fresh grant and resets protected-mutation warnings", async () => {
   const harness = createHarness(await mkdtemp(join(tmpdir(), "mypi-goal-warning-reset-")));
   await activate(harness);
@@ -294,14 +321,13 @@ test("corrupt v3 planning state is blocked on restore", async () => {
   assert.match(harness.notices.at(-1)?.message ?? "", /corrupt/i);
 });
 
-test("PLAN.md edit tools are blocked during active Goal while provider failures still stop unbounded runs", async () => {
+test("project planning files are ordinary workspace content while provider failures still stop unbounded runs", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "mypi-goal-policy-"));
   await writeFile(join(cwd, "PLAN.md"), ROOT_PLAN, "utf8");
   const harness = createHarness(cwd);
   await activate(harness);
   const edit = await harness.emit("tool_call", { toolName: "edit", input: { path: "PLAN.md" } });
-  assert.equal(edit.block, true);
-  assert.match(edit.reason, /immutable to Goal v3/);
+  assert.equal(edit, undefined);
   await harness.emit("after_provider_response", { status: 429, headers: { "retry-after": "30" } });
   await harness.emit("agent_settled", { outcome: { kind: "success" } });
   assert.equal(harness.snapshot().status, "usage-limited");

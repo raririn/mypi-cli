@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { describe } from "node:test";
@@ -542,7 +542,7 @@ test("archive is excluded by the authoritative atomic writer lock", async () => 
   }
 });
 
-test("single-session tools move, restore, and permanently delete only archived JSONL files", async () => {
+test("single-session tools move, restore, and permanently delete JSONL history with Goal plan artifacts", async () => {
   const agentDir = await mkdtemp(join(tmpdir(), "pi-archive-extension-files-"));
   const restoreAgentDir = setTestAgentDir(agentDir);
   try {
@@ -550,6 +550,16 @@ test("single-session tools move, restore, and permanently delete only archived J
     const current = createPersistedSession(workspace, "current", Date.now());
     const target = createPersistedSession(workspace, "archive me", Date.now());
     const targetFile = target.getSessionFile()!;
+    target.appendCustomEntry("mypi-goal", {
+      schemaVersion: 3,
+      workflow: "goal",
+      goalId: "archived-goal",
+      revision: 2,
+      objective: "prove plan co-lifecycle",
+      status: "paused",
+      pauseReason: "plan-ready",
+      plan: { items: [{ id: "I001", task: "archive with history", acceptance: ["same JSONL"], verify: ["restore and delete"], checked: false, evidence: [] }] },
+    });
 
     const harness = createHarness();
     archiveManageExtension(harness.api as any);
@@ -561,12 +571,16 @@ test("single-session tools move, restore, and permanently delete only archived J
     const archiveResult = await archiveTool.execute("archive", { session_id: target.getSessionId() }, undefined, undefined, context);
     assert.match(archiveResult.content[0].text, /Archived unarchived session/);
     assert.equal(await exists(targetFile), false);
+    const archivedFile = archiveResult.details.to;
+    assert.match(await readFile(archivedFile, "utf8"), /"customType":"mypi-goal"/);
+    assert.match(await readFile(archivedFile, "utf8"), /"goalId":"archived-goal"/);
 
     const listResult = await harness.tools.get("list_session_archives").execute("list", { state: "archived" }, undefined, undefined, context);
     assert.match(listResult.content[0].text, new RegExp(target.getSessionId()));
 
     await harness.tools.get("restore_archived_session").execute("restore", { session_id: target.getSessionId() }, undefined, undefined, context);
     assert.equal(await exists(targetFile), true);
+    assert.match(await readFile(targetFile, "utf8"), /"goalId":"archived-goal"/);
 
     await archiveTool.execute("archive-again", { session_id: target.getSessionId() }, undefined, undefined, context);
     await harness.tools.get("delete_archived_session").execute(
@@ -577,6 +591,7 @@ test("single-session tools move, restore, and permanently delete only archived J
       context,
     );
     assert.equal(await exists(targetFile), false);
+    assert.equal(await exists(archivedFile), false);
     const finalList = await harness.tools.get("list_session_archives").execute("final-list", { state: "archived" }, undefined, undefined, context);
     assert.equal(finalList.content[0].text, "No matching sessions found.");
   } finally {

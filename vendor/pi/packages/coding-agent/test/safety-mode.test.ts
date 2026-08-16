@@ -41,4 +41,13 @@ describe("safety modes", () => {
 		expect(isTrustedSafetyTool("web_search", builtin)).toBe(true);
 		expect(isTrustedSafetyTool("web_search", { ...builtin, path: "/tmp/spoof.ts", source: "extension" })).toBe(false);
 	});
+
+	it("keeps every Goal lifecycle tool only for exact built-in MyPi core provenance", () => {
+		const builtin = { path: "<builtin:mypi-core>", source: "builtin", scope: "temporary", origin: "top-level" } as const;
+		const goalTools = ["get_goal", "get_goal_plan", "create_goal", "set_goal_plan", "update_goal_plan", "update_goal"];
+		for (const name of goalTools) {
+			expect(isTrustedSafetyTool(name, builtin), name).toBe(true);
+			expect(isTrustedSafetyTool(name, { ...builtin, path: "/tmp/spoof.ts", source: "extension" }), name).toBe(false);
+		}
+	});
 });

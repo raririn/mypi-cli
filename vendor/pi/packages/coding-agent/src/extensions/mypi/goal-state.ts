@@ -2,8 +2,6 @@
 export const GOAL_SCHEMA_VERSION = 3 as const;
 export const GOAL_STATE_ENTRY = "mypi-goal";
 export const LEGACY_GOAL_STATE_ENTRY = "mypi-plan-goal";
-export const PLAN_FILE = "PLAN.md";
-export const MAX_IMPORTED_PLAN_BYTES = 256 * 1024;
 export const GOAL_TURNS_PER_CHECKLIST_ITEM = 5;
 export const MAX_GOAL_NO_PROGRESS_TURNS = 20;
 export const MAX_FIXED_GOAL_TURNS = 10_000;
@@ -20,6 +18,7 @@ export type GoalPauseReason =
 	| "no-progress"
 	| "user-interrupt"
 	| "reload"
+	| "plan-ready"
 	| "plan-invalidated"
 	| `error:${string}`;
 export type GoalAction = "report" | "pause" | "continue" | "abort";
@@ -51,13 +50,6 @@ export interface GoalPlanValidation {
 	readonly error?: string;
 }
 
-export interface ImportedPlan {
-	readonly text: string;
-	readonly sha256: string;
-	readonly bytes: number;
-	readonly importedAt: string;
-}
-
 export interface PendingGoalRequest {
 	readonly action: "start" | "continue";
 	readonly objective?: string;
@@ -72,19 +64,6 @@ export interface IdleGoalState {
 	readonly updatedAt: string;
 }
 
-/** The standalone /plan file workflow remains separate from Goal v3. */
-export interface FilePlanningState {
-	readonly schemaVersion: typeof GOAL_SCHEMA_VERSION;
-	readonly workflow: "planning";
-	readonly status: "active";
-	readonly interactive: boolean;
-	readonly interactiveCanWrite: boolean;
-	readonly planBaselineText?: string;
-	readonly planAgentEnds: number;
-	readonly toolsBeforePlan?: readonly string[];
-	readonly updatedAt: string;
-}
-
 export interface GoalPlanningState {
 	readonly schemaVersion: typeof GOAL_SCHEMA_VERSION;
 	readonly workflow: "goal-planning";
@@ -92,7 +71,8 @@ export interface GoalPlanningState {
 	readonly objective: string;
 	readonly budget: GoalBudgetRequest;
 	readonly supplemental?: string;
-	readonly importedPlan?: ImportedPlan;
+	/** Missing only on Goal v3 planning entries written before /plan was unified with Goal state. */
+	readonly autoStart?: boolean;
 	readonly planAgentEnds: number;
 	readonly toolsBeforePlan?: readonly string[];
 	readonly createdAt: string;
@@ -135,7 +115,6 @@ export interface LegacyGoalState {
 
 export type GoalRuntimeState =
 	| IdleGoalState
-	| FilePlanningState
 	| GoalPlanningState
 	| ActiveGoalState
 	| LegacyGoalState;
@@ -171,51 +150,8 @@ export interface CreateGoalStateInput {
 	readonly now: string;
 }
 
-export interface ParsedPlanItem extends GoalPlanDraftItem {
-	readonly checked: boolean;
-	readonly evidence: readonly string[];
-	readonly status: readonly string[];
-	readonly blocked: readonly string[];
-}
-
-export interface ParsedPlan {
-	readonly valid: boolean;
-	readonly items: readonly ParsedPlanItem[];
-	readonly error?: string;
-}
-
-const CHECKBOX_PATTERN = /^\s*[-*+]\s+\[([ xX])\]\s+(.+?)\s*$/gm;
-
 export function normalizeGoalText(value: string): string {
 	return value.replace(/\s+/g, " ").trim();
-}
-
-function commentValues(segment: string, name: "acceptance" | "verify" | "evidence" | "status" | "blocked"): string[] {
-	const pattern = new RegExp(`<!--\\s*${name}\\s*:\\s*([\\s\\S]*?)-->`, "gi");
-	return [...segment.matchAll(pattern)].map((match) => normalizeGoalText(match[1] ?? "")).filter(Boolean);
-}
-
-/** Parse root PLAN.md only for the standalone /plan workflow and optional import diagnostics. */
-export function parsePlanText(text: string): ParsedPlan {
-	const matches = [...text.matchAll(CHECKBOX_PATTERN)];
-	if (matches.length === 0) return { valid: false, items: [], error: `${PLAN_FILE} has no Markdown checklist items` };
-	return {
-		valid: true,
-		items: matches.map((match, index) => {
-			const start = match.index ?? 0;
-			const end = matches[index + 1]?.index ?? text.length;
-			const segment = text.slice(start, end);
-			return {
-				task: normalizeGoalText(match[2] ?? ""),
-				checked: (match[1] ?? "").toLowerCase() === "x",
-				acceptance: commentValues(segment, "acceptance"),
-				verify: commentValues(segment, "verify"),
-				evidence: commentValues(segment, "evidence"),
-				status: commentValues(segment, "status"),
-				blocked: commentValues(segment, "blocked"),
-			};
-		}),
-	};
 }
 
 function validText(value: unknown, max: number): value is string {
@@ -297,12 +233,6 @@ export function validateStructuredGoalPlan(plan: GoalPlan): GoalPlanValidation {
 
 export function createIdleGoalState(now = new Date().toISOString()): IdleGoalState {
 	return { schemaVersion: GOAL_SCHEMA_VERSION, workflow: "idle", updatedAt: now };
-}
-
-export function createFilePlanningState(
-	input: Omit<FilePlanningState, "schemaVersion" | "workflow" | "status">,
-): FilePlanningState {
-	return { schemaVersion: GOAL_SCHEMA_VERSION, workflow: "planning", status: "active", ...input };
 }
 
 export function createGoalPlanningState(
@@ -438,29 +368,13 @@ function validBudget(value: unknown): value is GoalBudgetRequest {
 		&& Number.isSafeInteger(value.turns) && (value.turns as number) >= 1 && (value.turns as number) <= MAX_FIXED_GOAL_TURNS;
 }
 
-function validImportedPlan(value: unknown): boolean {
-	if (value === undefined) return true;
-	if (!isRecord(value) || typeof value.text !== "string" || value.text.includes("\0")) return false;
-	const bytes = new TextEncoder().encode(value.text).byteLength;
-	return bytes <= MAX_IMPORTED_PLAN_BYTES && (value.bytes === bytes || value.bytes === bytes + 3)
-		&& typeof value.sha256 === "string" && /^[a-f0-9]{64}$/.test(value.sha256)
-		&& validText(value.importedAt, 128);
-}
-
 export function isValidStoredGoalState(value: unknown): value is Exclude<GoalRuntimeState, LegacyGoalState> {
 	if (!isRecord(value) || value.schemaVersion !== GOAL_SCHEMA_VERSION) return false;
 	if (value.workflow === "idle") return validText(value.updatedAt, 128);
-	if (value.workflow === "planning") {
-		return value.status === "active" && typeof value.interactive === "boolean"
-			&& typeof value.interactiveCanWrite === "boolean"
-			&& Number.isSafeInteger(value.planAgentEnds) && (value.planAgentEnds as number) >= 0
-			&& validOptionalText(value.planBaselineText, 1_000_000) && validTools(value.toolsBeforePlan)
-			&& validText(value.updatedAt, 128);
-	}
 	if (value.workflow === "goal-planning") {
 		return validText(value.goalId, 512) && validText(value.objective, 20_000)
 			&& validBudget(value.budget) && validOptionalText(value.supplemental, 20_000)
-			&& validImportedPlan(value.importedPlan)
+			&& (value.autoStart === undefined || typeof value.autoStart === "boolean")
 			&& Number.isSafeInteger(value.planAgentEnds) && (value.planAgentEnds as number) >= 0
 			&& validTools(value.toolsBeforePlan) && validText(value.createdAt, 128) && validText(value.updatedAt, 128);
 	}
@@ -488,6 +402,21 @@ export function isValidStoredGoalState(value: unknown): value is Exclude<GoalRun
 
 export function decodeStoredGoalState(value: unknown, now = new Date().toISOString()): GoalRuntimeState {
 	if (!isValidStoredGoalState(value)) return createIdleGoalState(now);
+	if (value.workflow === "goal-planning") {
+		// Rewrite early Goal v3 planning entries into the unified structured-only
+		// shape. In particular, do not carry the retired imported PLAN.md payload.
+		return createGoalPlanningState({
+			goalId: value.goalId,
+			objective: value.objective,
+			budget: value.budget,
+			supplemental: value.supplemental,
+			autoStart: value.autoStart !== false,
+			planAgentEnds: value.planAgentEnds,
+			toolsBeforePlan: value.toolsBeforePlan,
+			createdAt: value.createdAt,
+			updatedAt: value.updatedAt,
+		});
+	}
 	if (value.workflow === "goal" && value.status === "active") return pauseGoal(value, "reload", now);
 	return value;
 }

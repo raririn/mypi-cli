@@ -112,7 +112,16 @@ export function safetyUsesSandbox(mode: SafetyMode): boolean {
 	return mode === "sandbox" || mode === "sandbox-ask";
 }
 
-const TRUSTED_MYPI_CORE_TOOLS = new Set(["web_search", "web_fetch", "get_goal", "create_goal", "update_goal"]);
+const TRUSTED_MYPI_CORE_TOOLS = new Set([
+	"web_search",
+	"web_fetch",
+	"get_goal",
+	"get_goal_plan",
+	"create_goal",
+	"set_goal_plan",
+	"update_goal_plan",
+	"update_goal",
+]);
 const TRUSTED_USER_INTERACTION_TOOLS = new Set(["ask_user"]);
 const TRUSTED_PASSIVE_BUILTIN_TOOLS = new Set(["commentary"]);
 

@@ -12,7 +12,7 @@ Execution grant:
 Authoritative plan contract:
 - Goal's structured session plan is authoritative. Inspect it with get_goal_plan and update it only with update_goal_plan.
 - Protected item identity, order, task text, acceptance requirements, and verification requirements are immutable after activation.
-- Root PLAN.md is immutable to Goal and is not live Goal state. Do not create, edit, delete, rename, or retire it on Goal's behalf.
+- Project planning files are ordinary workspace content, not live Goal state. Never substitute them for the structured session plan.
 - Work through every open item in dependency order. Check an item only after its acceptance and verification requirements hold, and attach concise current evidence.
 - New items may be appended and requirements may be strengthened, but accepted scope may never be deleted, reordered, rewritten, replaced, or weakened.
 - A plan-tool rejection is authoritative. Correct course; do not repeat a protected mutation.

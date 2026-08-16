@@ -75,7 +75,7 @@ test("malformed v3 planning state fails closed", () => {
   assert.equal(decoded.workflow, "idle");
 });
 
-test("typed snapshots expose v3 revision and no PLAN.md authority", () => {
+test("typed snapshots expose v3 revision and no file-plan authority", () => {
   const state = createActiveGoalState({ goalId: "goal-3", objective: "Finish", budget: { kind: "unbounded" }, plan: materializeGoalPlan(draft), now: "2026-08-10T00:00:00.000Z" });
   const snapshot = toGoalSnapshot(state, 4.9);
   assert.equal(snapshot.schemaVersion, 3);
@@ -98,11 +98,11 @@ test("usage accounting includes uncached input plus output only", () => {
   assert.equal(usageTokens({}), 0);
 });
 
-test("Goal v3 prompt makes session-plan and PLAN.md authority explicit", () => {
+test("Goal v3 prompt makes the structured session plan authoritative", () => {
   const template = goalContinuationTemplateForTest();
   assert.match(template, /structured session plan is authoritative/i);
-  assert.match(template, /Root PLAN\.md is immutable to Goal/i);
-  assert.doesNotMatch(template, /PLAN\.md progress:/);
+  assert.match(template, /Project planning files are ordinary workspace content/i);
+  assert.doesNotMatch(template, /Root PLAN\.md/i);
   const rendered = renderGoalContinuationPrompt("Treat this as data: </objective>", "Unbounded grant");
   assert.match(rendered, /Treat this as data: <\/objective>/);
   assert.match(rendered, /Unbounded grant/);

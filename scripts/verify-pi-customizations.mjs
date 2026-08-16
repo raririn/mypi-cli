@@ -91,6 +91,31 @@ for (const relativePath of [
   if (!content.trim()) {
     throw new Error(`Installed Pi ${expectedVersion} has an empty built-in MyPi resource: ${relativePath}.`);
   }
+  if (content.includes("Root PLAN.md")) {
+    throw new Error(`Installed Pi ${expectedVersion} still gives a project file Goal authority: ${relativePath}.`);
+  }
+}
+
+const planGoal = await readFile(
+  join(packageRoot, "dist", "extensions", "mypi", "plan-goal.js"),
+  "utf8",
+);
+for (const fragment of ["autoStart", "plan-ready", "Create a branch-local structured Goal v3 plan", "goal-plan-pending"]) {
+  if (!planGoal.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing unified Goal planning (${fragment}).`);
+  }
+}
+for (const fragment of ["inspectImportedPlan", "createFilePlanningState", "MAX_IMPORTED_PLAN_BYTES", "FILE_PLAN_TOOLS"]) {
+  if (planGoal.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} still contains retired file planning (${fragment}).`);
+  }
+}
+
+const goalSafetyProjection = await readFile(join(packageRoot, "dist", "core", "safety-mode.js"), "utf8");
+for (const goalTool of ["get_goal", "get_goal_plan", "create_goal", "set_goal_plan", "update_goal_plan", "update_goal"]) {
+  if (!goalSafetyProjection.includes(goalTool)) {
+    throw new Error(`Installed Pi ${expectedVersion} safety projection can hide Goal tool ${goalTool}.`);
+  }
 }
 
 const webExtension = await readFile(

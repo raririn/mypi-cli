@@ -76,9 +76,9 @@ MyPi preflights sibling tool calls before executing them. Safe mode asks about g
 
 ## Interaction with /plan and /goal
 
-- /plan already restricts the agent to project inspection and PLAN.md edits. If safe mode is also on, permitted PLAN.md writes still require approval.
+- /plan uses the same branch-local structured Goal v3 planning phase as /goal and stops before execution.
 - /goal uses normal execution tools. With safe mode on, goal execution asks before every write, edit, shell command, or custom tool.
-- “Always approve” affects safe mode only; /plan’s independent PLAN.md-only enforcement remains active.
+- “Always approve” affects this deprecated compatibility mode only; Goal lifecycle enforcement remains active.
 
 ## Examples
 
