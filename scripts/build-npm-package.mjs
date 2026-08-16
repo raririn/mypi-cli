@@ -6,6 +6,7 @@ import {
   chmodSync,
   cpSync,
   existsSync,
+  mkdtempSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -13,6 +14,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readMyPiRepositoryVersionContract } from "./mypi-version-contract.mjs";
@@ -138,6 +140,7 @@ runNpm([
 ], stageRoot);
 
 writeJson(join(stageRoot, "package.json"), finalManifest);
+verifyStagedRuntimeProfile();
 pruneBundledPackages(packageManifests.map(({ manifest }) => manifest.name), customVersions);
 removeUnbundledInstallTree(new Set(customVersions.keys()));
 rmSync(join(stageRoot, "package-lock.json"), { force: true });
@@ -375,6 +378,33 @@ function removeUnbundledInstallTree(customNames) {
       }
     }
     if (readdirSync(path).length === 0) rmSync(path, { recursive: true, force: true });
+  }
+}
+
+function verifyStagedRuntimeProfile() {
+  const fixture = mkdtempSync(join(tmpdir(), "mypi-staged-profile-"));
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [join(stageRoot, "bin", "mypi.mjs"), "--list-models"],
+      {
+        cwd: stageRoot,
+        env: {
+          ...process.env,
+          MYPI_AGENT_DIR: join(fixture, "agent"),
+          MYPI_TUI_HOSTED: "0",
+        },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    if (result.error) throw result.error;
+    assert(
+      result.status === 0,
+      `staged MyPi profile failed to load:\n${result.stderr || result.stdout}`,
+    );
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
   }
 }
 

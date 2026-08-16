@@ -39,12 +39,12 @@ test("endpoint normalization confines HTTP to literal loopback and derives both 
   assert.deepEqual(resolveCliProxyEndpoints("127.0.0.1:8317/v1"), {
     rootUrl: "http://127.0.0.1:8317",
     inferenceBaseUrl: "http://127.0.0.1:8317/backend-api/",
-    modelsUrl: "http://127.0.0.1:8317/v1/models?client_version=pi",
+    modelsUrl: "http://127.0.0.1:8317/v1/models?client_version=mypi",
   });
   assert.deepEqual(resolveCliProxyEndpoints("https://proxy.example/team/backend-api"), {
     rootUrl: "https://proxy.example/team",
     inferenceBaseUrl: "https://proxy.example/team/backend-api/",
-    modelsUrl: "https://proxy.example/team/v1/models?client_version=pi",
+    modelsUrl: "https://proxy.example/team/v1/models?client_version=mypi",
   });
   assert.throws(() => resolveCliProxyEndpoints("http://proxy.example"), /Plain HTTP/);
   assert.throws(() => resolveCliProxyEndpoints("http://localhost:8317"), /Plain HTTP/);

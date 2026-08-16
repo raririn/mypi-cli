@@ -11,7 +11,7 @@ import {
   type RefreshModelsContext,
   type SimpleStreamOptions,
 } from "@earendil-works/pi-ai";
-import { openAICodexResponsesApi } from "@earendil-works/pi-ai/api/openai-codex-responses.lazy";
+import { openAICodexResponsesApi } from "@earendil-works/pi-ai/compat";
 
 export const CLIPROXY_PROVIDER_ID = "cliproxyapi";
 export const CLIPROXY_PROVIDER_NAME = "CLIProxyAPI";
@@ -96,7 +96,7 @@ export function resolveCliProxyEndpoints(input: string): CliProxyEndpoints {
   return {
     rootUrl,
     inferenceBaseUrl: `${rootUrl}/backend-api/`,
-    modelsUrl: `${rootUrl}/v1/models?client_version=pi`,
+    modelsUrl: `${rootUrl}/v1/models?client_version=mypi`,
   };
 }
 
