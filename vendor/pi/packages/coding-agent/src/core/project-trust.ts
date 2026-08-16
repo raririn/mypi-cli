@@ -32,7 +32,7 @@ export class ProjectTrustDeclinedError extends Error {
 }
 
 function formatProjectTrustPrompt(cwd: string): string {
-	return `Do you trust this workspace?\n${cwd}\n\nThe agent can read and overwrite files inside this workspace in every safety mode. Safety modes govern shell, approvals, and access beyond the workspace; they do not make workspace edits harmless.\n\nTrusting also allows MyPi to load ${CONFIG_DIR_NAME} settings, instructions, extensions, skills, prompts, and themes, and to install missing project packages.`;
+	return `Do you trust this workspace?\n${cwd}\n\nThe agent can read and overwrite files inside this workspace. Agents may perform destructive action in the workspace even in sandbox.\n\nTrusting also allows MyPi to load ${CONFIG_DIR_NAME} settings, instructions, extensions, skills, prompts, and themes, and to install missing project packages.`;
 }
 
 async function selectProjectTrustOption(
