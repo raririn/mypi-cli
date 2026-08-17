@@ -3,16 +3,18 @@ import {
 	closeSync,
 	fsyncSync,
 	lstatSync,
+	mkdtempSync,
 	mkdirSync,
 	openSync,
 	readFileSync,
+	realpathSync,
 	renameSync,
 	rmSync,
 	type Stats,
 	writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { getAgentDir } from "../config.ts";
@@ -37,6 +39,8 @@ export interface MyPiSandboxProcessLaunch {
 	args: string[];
 	env: NodeJS.ProcessEnv;
 	input: string;
+	/** Host-created, command-private scratch directory. The parent removes it after the helper exits. */
+	temporaryDirectory: string;
 }
 
 export const DEFAULT_MYPI_SANDBOX_PREFERENCE: MyPiSandboxPreference = {
@@ -152,14 +156,88 @@ function uniquePaths(paths: string[]): string[] {
 	return [...new Set(paths.map((path) => resolve(path)))];
 }
 
+function canonicalPathIfPresent(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return resolve(path);
+		throw error;
+	}
+}
+
+function defaultSharedScratchDirectories(): string[] {
+	const paths = [join(tmpdir(), "claude")];
+	if (process.platform !== "win32") paths.push("/tmp/claude", "/private/tmp/claude");
+	return uniquePaths(paths);
+}
+
+function sandboxReadDenyRoots(homeDir: string): string[] {
+	const paths = [homeDir, tmpdir()];
+	if (process.platform === "darwin") paths.push("/Users", "/Volumes", "/tmp", "/private/tmp");
+	if (process.platform === "linux") paths.push("/home", "/media", "/mnt", "/tmp");
+	return uniquePaths(paths.map(canonicalPathIfPresent));
+}
+
+function sandboxExecutableReadPaths(shell: string, env: NodeJS.ProcessEnv): string[] {
+	const pathEntries = (env.PATH ?? "")
+		.split(delimiter)
+		.filter(Boolean)
+		.map((entry) => (isAbsolute(entry) ? entry : resolve(entry)));
+	// Commands still need their executable directories. The running Node
+	// installation root also keeps npm/corepack usable when Node is installed
+	// under a user profile (for example through nvm).
+	return uniquePaths(
+		[
+			shell,
+			dirname(shell),
+			process.execPath,
+			dirname(process.execPath),
+			dirname(dirname(process.execPath)),
+			...pathEntries,
+		].map(canonicalPathIfPresent),
+	);
+}
+
+function isSameOrAncestor(candidate: string, target: string): boolean {
+	const rel = relative(candidate, target);
+	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+function createSandboxScratchDirectory(): string {
+	const directory = mkdtempSync(join(tmpdir(), "mypi-sandbox-"));
+	chmodSync(directory, 0o700);
+	return realpathSync(directory);
+}
+
+function assertSandboxScratchDirectory(path: string): string {
+	const root = canonicalPathIfPresent(tmpdir());
+	const candidate = resolve(path);
+	const rel = relative(root, candidate);
+	if (
+		dirname(candidate) !== root ||
+		!basename(candidate).startsWith("mypi-sandbox-") ||
+		rel === "" ||
+		rel.startsWith("..") ||
+		isAbsolute(rel)
+	) {
+		throw new Error(`Refusing unsafe sandbox scratch cleanup at ${candidate}.`);
+	}
+	return candidate;
+}
+
+export function cleanupMyPiSandboxProcessLaunch(launch: MyPiSandboxProcessLaunch | undefined): void {
+	if (!launch) return;
+	rmSync(assertSandboxScratchDirectory(launch.temporaryDirectory), { recursive: true, force: true });
+}
+
 export function buildMyPiSandboxRuntimeConfig(
 	cwd: string,
-	options: { agentDir?: string; homeDir?: string; tempDir?: string } = {},
+	options: { agentDir?: string; homeDir?: string; tempDir?: string; executableReadPaths?: string[] } = {},
 ): SandboxRuntimeConfig {
-	const workspace = resolve(cwd);
+	const workspace = canonicalPathIfPresent(cwd);
 	const agentDir = resolve(options.agentDir ?? getAgentDir());
 	const homeDir = resolve(options.homeDir ?? homedir());
-	const tempDir = resolve(options.tempDir ?? tmpdir());
+	const tempDir = options.tempDir ? canonicalPathIfPresent(options.tempDir) : undefined;
 	const protectedDirectories = uniquePaths([
 		agentDir,
 		join(homeDir, ".ssh"),
@@ -176,7 +254,17 @@ export function buildMyPiSandboxRuntimeConfig(
 		join(homeDir, ".npmrc"),
 		join(homeDir, ".pypirc"),
 	]);
-	const deniedDefaultWrites = uniquePaths([join(homeDir, ".npm", "_logs"), join(homeDir, ".claude", "debug")]);
+	const deniedDefaultWrites = uniquePaths([
+		join(homeDir, ".npm", "_logs"),
+		join(homeDir, ".claude", "debug"),
+		...defaultSharedScratchDirectories(),
+	]);
+	const readDenyRoots = sandboxReadDenyRoots(homeDir);
+	const executableReadPaths = (options.executableReadPaths ?? [])
+		.map(canonicalPathIfPresent)
+		// PATH is user-controlled. Never let a broad entry such as $HOME or /
+		// cancel the user-data deny; narrower tool directories remain usable.
+		.filter((path) => !readDenyRoots.some((root) => isSameOrAncestor(path, root)));
 
 	return {
 		network: {
@@ -186,8 +274,9 @@ export function buildMyPiSandboxRuntimeConfig(
 			allowLocalBinding: false,
 		},
 		filesystem: {
-			denyRead: protectedDirectories,
-			allowWrite: uniquePaths([workspace, tempDir]),
+			denyRead: uniquePaths([...readDenyRoots, ...protectedDirectories]),
+			allowRead: uniquePaths([workspace, ...(tempDir ? [tempDir] : []), ...executableReadPaths]),
+			allowWrite: uniquePaths([workspace, ...(tempDir ? [tempDir] : [])]),
 			denyWrite: uniquePaths([...protectedDirectories, ...deniedDefaultWrites]),
 			allowGitConfig: false,
 		},
@@ -231,21 +320,32 @@ export function createMyPiSandboxProcessLaunch(
 	if (!enabled) {
 		return undefined;
 	}
-	const helperPath = options.helperPath ?? sandboxHelperPath();
-	const helperArgs = helperPath.endsWith(".ts") ? ["--experimental-strip-types", helperPath] : [helperPath];
-	const request: MyPiSandboxHelperRequest = {
-		command,
-		cwd: resolve(cwd),
-		shell,
-		config: buildMyPiSandboxRuntimeConfig(cwd, { agentDir }),
-	};
-	const launchEnv = pruneMyPiSandboxEnvironment(env);
-	launchEnv.ELECTRON_RUN_AS_NODE = "1";
-	launchEnv.CLAUDE_CODE_TMPDIR = join(tmpdir(), "mypi-sandbox");
-	return {
-		command: options.executablePath ?? process.execPath,
-		args: helperArgs,
-		env: launchEnv,
-		input: JSON.stringify(request),
-	};
+	const temporaryDirectory = createSandboxScratchDirectory();
+	try {
+		const helperPath = options.helperPath ?? sandboxHelperPath();
+		const helperArgs = helperPath.endsWith(".ts") ? ["--experimental-strip-types", helperPath] : [helperPath];
+		const request: MyPiSandboxHelperRequest = {
+			command,
+			cwd: canonicalPathIfPresent(cwd),
+			shell,
+			config: buildMyPiSandboxRuntimeConfig(cwd, {
+				agentDir,
+				tempDir: temporaryDirectory,
+				executableReadPaths: sandboxExecutableReadPaths(shell, env),
+			}),
+		};
+		const launchEnv = pruneMyPiSandboxEnvironment(env);
+		launchEnv.ELECTRON_RUN_AS_NODE = "1";
+		launchEnv.CLAUDE_CODE_TMPDIR = temporaryDirectory;
+		return {
+			command: options.executablePath ?? process.execPath,
+			args: helperArgs,
+			env: launchEnv,
+			input: JSON.stringify(request),
+			temporaryDirectory,
+		};
+	} catch (error) {
+		rmSync(assertSandboxScratchDirectory(temporaryDirectory), { recursive: true, force: true });
+		throw error;
+	}
 }

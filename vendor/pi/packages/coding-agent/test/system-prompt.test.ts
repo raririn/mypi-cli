@@ -72,6 +72,7 @@ describe("buildSystemPrompt", () => {
 			expect(prompt).toContain("passwords, API keys or access tokens");
 			expect(prompt).toContain("report only presence and non-sensitive metadata");
 			expect(prompt).toContain("trusted non-echoing prompt or credential manager");
+			expect(prompt).toContain("Never try to evade an active safety or tool boundary through `cd`");
 		});
 
 		test("does not retain a hidden lean assembly branch", () => {

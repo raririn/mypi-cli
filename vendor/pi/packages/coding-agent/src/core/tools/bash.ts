@@ -16,7 +16,11 @@ import {
 	untrackDetachedChildPid,
 } from "../../utils/shell.ts";
 import type { ExtensionContext, ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
-import { createMyPiSandboxProcessLaunch, MYPI_SANDBOX_DENIAL_CONTROL } from "../mypi-sandbox.ts";
+import {
+	cleanupMyPiSandboxProcessLaunch,
+	createMyPiSandboxProcessLaunch,
+	MYPI_SANDBOX_DENIAL_CONTROL,
+} from "../mypi-sandbox.ts";
 import { OutputAccumulator } from "./output-accumulator.ts";
 import { getTextOutput, invalidArgText, str } from "./render-utils.ts";
 import { wrapToolDefinition } from "./tool-definition-wrapper.ts";
@@ -111,19 +115,25 @@ export function createLocalBashOperations(options?: LocalBashOperationsOptions):
 					env ?? getShellEnv(),
 					sandboxEnabled === undefined ? {} : { enabled: sandboxEnabled },
 				);
-				const child = spawn(
-					sandboxLaunch?.command ?? shellConfig.shell,
-					sandboxLaunch?.args ?? (commandFromStdin ? shellConfig.args : [...shellConfig.args, command]),
-					{
-						cwd,
-						detached: process.platform !== "win32",
-						env: sandboxLaunch?.env ?? env ?? getShellEnv(),
-						stdio: sandboxLaunch
-							? ["pipe", "pipe", "pipe", "pipe"]
-							: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
-						windowsHide: true,
-					},
-				);
+				let child: ReturnType<typeof spawn>;
+				try {
+					child = spawn(
+						sandboxLaunch?.command ?? shellConfig.shell,
+						sandboxLaunch?.args ?? (commandFromStdin ? shellConfig.args : [...shellConfig.args, command]),
+						{
+							cwd,
+							detached: process.platform !== "win32",
+							env: sandboxLaunch?.env ?? env ?? getShellEnv(),
+							stdio: sandboxLaunch
+								? ["pipe", "pipe", "pipe", "pipe"]
+								: [commandFromStdin ? "pipe" : "ignore", "pipe", "pipe"],
+							windowsHide: true,
+						},
+					);
+				} catch (error) {
+					cleanupMyPiSandboxProcessLaunch(sandboxLaunch);
+					throw error;
+				}
 				if (sandboxLaunch) {
 					child.stdin?.on("error", () => {});
 					child.stdin?.end(sandboxLaunch.input);
@@ -186,6 +196,7 @@ export function createLocalBashOperations(options?: LocalBashOperationsOptions):
 					if (child.pid) untrackDetachedChildPid(child.pid);
 					if (timeoutHandle) clearTimeout(timeoutHandle);
 					if (signal) signal.removeEventListener("abort", onAbort);
+					cleanupMyPiSandboxProcessLaunch(sandboxLaunch);
 				}
 			};
 

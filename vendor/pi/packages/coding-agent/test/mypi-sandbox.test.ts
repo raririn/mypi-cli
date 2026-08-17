@@ -1,9 +1,19 @@
-import { existsSync, lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import {
+	existsSync,
+	lstatSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	buildMyPiSandboxRuntimeConfig,
+	cleanupMyPiSandboxProcessLaunch,
 	createMyPiSandboxProcessLaunch,
 	myPiSandboxPreferencePath,
 	pruneMyPiSandboxEnvironment,
@@ -17,6 +27,13 @@ import {
 	setExecutionMode,
 } from "../src/core/mypi-exec-mode.ts";
 import { createLocalBashOperations } from "../src/core/tools/bash.ts";
+
+function commandScratchDirectories(): string[] {
+	return readdirSync(tmpdir(), { withFileTypes: true })
+		.filter((entry) => entry.isDirectory() && /^mypi-sandbox-[A-Za-z0-9]{6}$/.test(entry.name))
+		.map((entry) => entry.name)
+		.sort();
+}
 
 describe("MyPi shell sandbox", () => {
 	let agentDir: string;
@@ -90,9 +107,11 @@ describe("MyPi shell sandbox", () => {
 			strictAllowlist: true,
 			allowLocalBinding: false,
 		});
+		expect(config.filesystem.allowRead).toEqual(expect.arrayContaining([workspace, "/tmp/mypi-test"]));
 		expect(config.filesystem.allowWrite).toEqual(expect.arrayContaining([workspace, "/tmp/mypi-test"]));
 		expect(config.filesystem.denyRead).toEqual(
 			expect.arrayContaining([
+				"/home/mypi-test",
 				agentDir,
 				"/home/mypi-test/.ssh",
 				"/home/mypi-test/.aws",
@@ -109,7 +128,12 @@ describe("MyPi shell sandbox", () => {
 			]),
 		);
 		expect(config.filesystem.denyWrite).toEqual(
-			expect.arrayContaining([agentDir, "/home/mypi-test/.npm/_logs", "/home/mypi-test/.claude/debug"]),
+			expect.arrayContaining([
+				agentDir,
+				"/home/mypi-test/.npm/_logs",
+				"/home/mypi-test/.claude/debug",
+				...(process.platform === "win32" ? [] : ["/tmp/claude", "/private/tmp/claude"]),
+			]),
 		);
 		expect(config.filesystem.allowGitConfig).toBe(false);
 		expect(config.git?.safeDirectories).toEqual([workspace]);
@@ -143,21 +167,33 @@ describe("MyPi shell sandbox", () => {
 			},
 		);
 
-		expect(launch).toMatchObject({
-			command: "/usr/bin/node",
-			args: ["/opt/mypi/mypi-sandbox-helper.js"],
-		});
-		expect(launch?.env.ANTHROPIC_API_KEY).toBeUndefined();
-		expect(launch?.env.ELECTRON_RUN_AS_NODE).toBe("1");
-		expect(JSON.parse(launch!.input)).toMatchObject({
-			command: "echo on",
-			cwd: "/tmp/workspace",
-			shell: "/bin/bash",
-			config: {
-				network: { deniedDomains: ["*"] },
-				filesystem: { allowWrite: expect.arrayContaining(["/tmp/workspace"]) },
-			},
-		});
+		try {
+			expect(launch).toMatchObject({
+				command: "/usr/bin/node",
+				args: ["/opt/mypi/mypi-sandbox-helper.js"],
+			});
+			expect(launch?.env.ANTHROPIC_API_KEY).toBeUndefined();
+			expect(launch?.env.ELECTRON_RUN_AS_NODE).toBe("1");
+			expect(launch?.env.CLAUDE_CODE_TMPDIR).toBe(launch?.temporaryDirectory);
+			expect(existsSync(launch!.temporaryDirectory)).toBe(true);
+			const request = JSON.parse(launch!.input);
+			expect(request).toMatchObject({
+				command: "echo on",
+				cwd: "/tmp/workspace",
+				shell: "/bin/bash",
+				config: {
+					network: { deniedDomains: ["*"] },
+					filesystem: {
+						allowRead: expect.arrayContaining(["/tmp/workspace", launch!.temporaryDirectory]),
+						allowWrite: expect.arrayContaining(["/tmp/workspace", launch!.temporaryDirectory]),
+					},
+				},
+			});
+			expect(request.config.filesystem.allowWrite).not.toContain(tmpdir());
+		} finally {
+			cleanupMyPiSandboxProcessLaunch(launch);
+		}
+		expect(existsSync(launch!.temporaryDirectory)).toBe(false);
 	});
 
 	it.runIf(process.platform === "darwin")(
@@ -165,9 +201,14 @@ describe("MyPi shell sandbox", () => {
 		async () => {
 			const previousAgentDir = process.env.MYPI_CODING_AGENT_DIR;
 			const workspace = mkdtempSync(join(process.cwd(), ".mypi-sandbox-workspace-"));
-			const outsidePath = join(process.cwd(), `.mypi-sandbox-denied-${process.pid}-${Date.now()}`);
+			const outsideDirectory = mkdtempSync(join(process.cwd(), ".mypi-sandbox-outside-"));
+			const outsidePath = join(outsideDirectory, "direct.txt");
+			const chainedOutsidePath = join(outsideDirectory, "chained.txt");
+			const outsideSecretPath = join(outsideDirectory, "secret.txt");
+			const sharedTempPath = join(tmpdir(), `mypi-sandbox-shared-${process.pid}-${Date.now()}.txt`);
 			try {
 				process.env.MYPI_CODING_AGENT_DIR = agentDir;
+				writeFileSync(outsideSecretPath, "outside-secret", "utf8");
 				saveMyPiSandboxPreference(true, agentDir);
 				const operations = createLocalBashOperations();
 				const allowedChunks: Buffer[] = [];
@@ -194,6 +235,65 @@ describe("MyPi shell sandbox", () => {
 					/sandbox|operation not permitted|permission denied/i,
 				);
 
+				const chainedWrite = await operations.exec(
+					`cd ${JSON.stringify(outsideDirectory)} && printf blocked > chained.txt`,
+					workspace,
+					{ onData: () => {} },
+				);
+				expect(chainedWrite.exitCode).not.toBe(0);
+				expect(chainedWrite.sandboxDenied).toBe(true);
+				expect(existsSync(chainedOutsidePath)).toBe(false);
+
+				const chainedReadChunks: Buffer[] = [];
+				const chainedRead = await operations.exec(
+					`cd ${JSON.stringify(outsideDirectory)} && cat secret.txt`,
+					workspace,
+					{ onData: (data) => chainedReadChunks.push(data) },
+				);
+				expect(chainedRead.exitCode).not.toBe(0);
+				expect(chainedRead.sandboxDenied).toBe(true);
+				expect(Buffer.concat(chainedReadChunks).toString("utf8")).not.toContain("outside-secret");
+
+				const nestedRead = await operations.exec(
+					`/bin/bash -c ${JSON.stringify(`cd ${JSON.stringify(outsideDirectory)} && cat secret.txt`)}`,
+					workspace,
+					{ onData: () => {} },
+				);
+				expect(nestedRead.exitCode).not.toBe(0);
+				expect(nestedRead.sandboxDenied).toBe(true);
+
+				const sharedTempWrite = await operations.exec(
+					`cd ${JSON.stringify(tmpdir())} && printf blocked > ${JSON.stringify(sharedTempPath)}`,
+					workspace,
+					{ onData: () => {} },
+				);
+				expect(sharedTempWrite.exitCode).not.toBe(0);
+				expect(existsSync(sharedTempPath)).toBe(false);
+
+				const privateScratchChunks: Buffer[] = [];
+				const privateScratch = await operations.exec(
+					`cd "$TMPDIR" && printf scratch > file.txt && cat file.txt`,
+					workspace,
+					{ onData: (data) => privateScratchChunks.push(data) },
+				);
+				expect(privateScratch.exitCode, Buffer.concat(privateScratchChunks).toString("utf8")).toBe(0);
+				expect(Buffer.concat(privateScratchChunks).toString("utf8")).toBe("scratch");
+
+				let approvalContext: { command: string; cwd: string } | undefined;
+				const approvedChunks: Buffer[] = [];
+				const approvedCommand = `cd ${JSON.stringify(outsideDirectory)} && cat secret.txt`;
+				const approved = await createLocalBashOperations({
+					sandbox: true,
+					onSandboxDenied: async (context) => {
+						approvalContext = context;
+						return true;
+					},
+				}).exec(approvedCommand, workspace, { onData: (data) => approvedChunks.push(data) });
+				expect(approvalContext).toEqual({ command: approvedCommand, cwd: workspace });
+				expect(approved.exitCode).toBe(0);
+				expect(approved.escalated).toBe(true);
+				expect(Buffer.concat(approvedChunks).toString("utf8")).toContain("outside-secret");
+
 				let forgedApprovalRequested = false;
 				const forged = await createLocalBashOperations({
 					sandbox: true,
@@ -208,7 +308,8 @@ describe("MyPi shell sandbox", () => {
 				if (previousAgentDir === undefined) delete process.env.MYPI_CODING_AGENT_DIR;
 				else process.env.MYPI_CODING_AGENT_DIR = previousAgentDir;
 				rmSync(workspace, { recursive: true, force: true });
-				rmSync(outsidePath, { force: true });
+				rmSync(outsideDirectory, { recursive: true, force: true });
+				rmSync(sharedTempPath, { force: true });
 			}
 		},
 		30_000,
@@ -219,6 +320,7 @@ describe("MyPi shell sandbox", () => {
 		async () => {
 			const previousAgentDir = process.env.MYPI_CODING_AGENT_DIR;
 			const workspace = mkdtempSync(join(process.cwd(), ".mypi-sandbox-cancel-"));
+			const initialScratchDirectories = commandScratchDirectories();
 			try {
 				process.env.MYPI_CODING_AGENT_DIR = agentDir;
 				saveMyPiSandboxPreference(true, agentDir);
@@ -230,6 +332,7 @@ describe("MyPi shell sandbox", () => {
 						timeout: 0.1,
 					}),
 				).rejects.toThrow("timeout:0.1");
+				expect(commandScratchDirectories()).toEqual(initialScratchDirectories);
 
 				const controller = new AbortController();
 				const aborted = operations.exec("sleep 5", workspace, {
@@ -238,6 +341,7 @@ describe("MyPi shell sandbox", () => {
 				});
 				setTimeout(() => controller.abort(), 100);
 				await expect(aborted).rejects.toThrow("aborted");
+				expect(commandScratchDirectories()).toEqual(initialScratchDirectories);
 			} finally {
 				if (previousAgentDir === undefined) delete process.env.MYPI_CODING_AGENT_DIR;
 				else process.env.MYPI_CODING_AGENT_DIR = previousAgentDir;

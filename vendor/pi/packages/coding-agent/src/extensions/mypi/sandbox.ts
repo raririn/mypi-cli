@@ -148,7 +148,10 @@ export default function sandboxExtension(pi: ExtensionAPI): void {
 		if (request === "on") {
 			const effective = enterMode(ctx, "sandbox");
 			if (effective === "sandbox") {
-				ctx.ui.notify("Sandbox On. Shell writes are workspace/temp-only and shell network is blocked.", "warning");
+				ctx.ui.notify(
+					"Sandbox On. User-data access is workspace/private-scratch-only and shell network is blocked.",
+					"warning",
+				);
 			}
 		} else {
 			// Turning the default off drops this session out of sandbox, but keeps

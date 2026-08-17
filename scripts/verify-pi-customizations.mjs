@@ -205,9 +205,22 @@ for (const fragment of ["SAFETY_MODE_FOOTER_COLORS", 'safe: "success"', 'full: "
 const sandboxBash = await readFile(join(packageRoot, "dist", "core", "tools", "bash.js"), "utf8");
 if (
   !sandboxBash.includes("createMyPiSandboxProcessLaunch") ||
+  !sandboxBash.includes("cleanupMyPiSandboxProcessLaunch") ||
   !sandboxBash.includes("MYPI_SANDBOX_DENIAL_CONTROL")
 ) {
   throw new Error(`Installed Pi ${expectedVersion} does not apply sandboxing at the local BashOperations boundary.`);
+}
+const sandboxPolicy = await readFile(join(packageRoot, "dist", "core", "mypi-sandbox.js"), "utf8");
+for (const fragment of [
+  "mypi-sandbox-",
+  "temporaryDirectory",
+  "allowRead",
+  "defaultSharedScratchDirectories",
+  "Refusing unsafe sandbox scratch cleanup",
+]) {
+  if (!sandboxPolicy.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing workspace-confined shell policy (${fragment}).`);
+  }
 }
 const sandboxHelper = await readFile(
   join(packageRoot, "dist", "core", "mypi-sandbox-helper.js"),
@@ -354,6 +367,7 @@ for (const fragment of [
   "# Security",
   "passwords, API keys or access tokens",
   "trusted non-echoing prompt or credential manager",
+  "Never try to evade an active safety or tool boundary",
   "# Intermediate commentary",
   "use the \\`commentary\\` tool",
 ]) {
