@@ -22,7 +22,7 @@ const lockAttempts = 100;
 
 export async function ensureBundledProfile({
   env = process.env,
-  replaceManaged = false,
+  replaceManaged = true,
 } = {}) {
   const agentDir = resolve(env.MYPI_AGENT_DIR || join(homedir(), ".mypi", "agent"));
   assertSafeDirectory(agentDir);

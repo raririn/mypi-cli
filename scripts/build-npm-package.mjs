@@ -16,7 +16,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { readMyPiRepositoryVersionContract } from "./mypi-version-contract.mjs";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -384,6 +384,19 @@ function removeUnbundledInstallTree(customNames) {
 function verifyStagedRuntimeProfile() {
   const fixture = mkdtempSync(join(tmpdir(), "mypi-staged-profile-"));
   try {
+    const agentDir = join(fixture, "agent");
+    const legacyCore = join(agentDir, "packages", "mypi-core");
+    mkdirSync(legacyCore, { recursive: true });
+    writeJson(join(legacyCore, "package.json"), {
+      name: "@mypi/core",
+      version: "5.0.0-beta.2",
+      pi: { extensions: [] },
+    });
+    writeJson(join(agentDir, "settings.json"), {
+      packages: [legacyCore],
+      preserved: { sentinel: true },
+    });
+
     const result = spawnSync(
       process.execPath,
       [join(stageRoot, "bin", "mypi.mjs"), "--list-models"],
@@ -391,7 +404,7 @@ function verifyStagedRuntimeProfile() {
         cwd: stageRoot,
         env: {
           ...process.env,
-          MYPI_AGENT_DIR: join(fixture, "agent"),
+          MYPI_AGENT_DIR: agentDir,
           MYPI_TUI_HOSTED: "0",
         },
         encoding: "utf8",
@@ -402,6 +415,47 @@ function verifyStagedRuntimeProfile() {
     assert(
       result.status === 0,
       `staged MyPi profile failed to load:\n${result.stderr || result.stdout}`,
+    );
+
+    const activatedSettings = readJson(join(agentDir, "settings.json"));
+    const bundledCore = join(stageRoot, "resources", "mypi-core");
+    assert(
+      activatedSettings.packages.length === 1 && resolve(activatedSettings.packages[0]) === resolve(bundledCore),
+      "normal staged launch did not replace the legacy managed @mypi/core path",
+    );
+    assert(
+      activatedSettings.preserved?.sentinel === true,
+      "normal staged profile activation did not preserve unrelated settings",
+    );
+
+    const runtimeEntry = pathToFileURL(
+      join(stageRoot, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "index.js"),
+    ).href;
+    const providerProbe = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        `import { createAgentSessionServices } from ${JSON.stringify(runtimeEntry)};
+const services = await createAgentSessionServices({ cwd: process.cwd(), agentDir: process.env.MYPI_AGENT_DIR });
+const provider = services.modelRuntime.getProvider("cliproxyapi");
+if (!provider?.auth.apiKey?.login) throw new Error("CLIProxyAPI is absent from the API-key login inventory");`,
+      ],
+      {
+        cwd: stageRoot,
+        env: {
+          ...process.env,
+          MYPI_AGENT_DIR: agentDir,
+          MYPI_TUI_HOSTED: "0",
+        },
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    if (providerProbe.error) throw providerProbe.error;
+    assert(
+      providerProbe.status === 0,
+      `staged CLIProxyAPI login inventory probe failed:\n${providerProbe.stderr || providerProbe.stdout}`,
     );
   } finally {
     rmSync(fixture, { recursive: true, force: true });

@@ -71,7 +71,7 @@ test("profile activation preserves unrelated settings", async () => {
   assert.match(settings.packages[1], /resources\/mypi-core$/);
 });
 
-test("profile replacement removes only superseded MyPi-managed entries", async () => {
+test("normal profile activation replaces only superseded MyPi-managed entries", async () => {
   const fixture = mkdtempSync(join(tmpdir(), "mypi-profile-replace-test-"));
   const agentDir = join(fixture, "agent");
   const formerCore = join(agentDir, "packages", "mypi-core");
@@ -87,10 +87,7 @@ test("profile replacement removes only superseded MyPi-managed entries", async (
   })}\n`);
   const modulePath = `${join(root, "npm", "lib", "ensure-profile.mjs")}?replace=${Date.now()}`;
   const { ensureBundledProfile } = await import(modulePath);
-  await ensureBundledProfile({
-    env: { MYPI_AGENT_DIR: agentDir },
-    replaceManaged: true,
-  });
+  await ensureBundledProfile({ env: { MYPI_AGENT_DIR: agentDir } });
   const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
   assert.match(settings.packages[0], /resources\/mypi-core$/);
   assert.equal(settings.packages[1], "npm:someone/extension");
