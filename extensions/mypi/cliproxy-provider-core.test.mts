@@ -3,6 +3,7 @@ import test from "node:test";
 import type { ApiKeyCredential } from "@earendil-works/pi-ai";
 import {
   CLIPROXY_BASE_URL_ENV,
+  CLIPROXY_CATALOG_MAX_BYTES,
   CLIPROXY_CATALOG_TIMEOUT_MS,
   CLIPROXY_PROVIDER_ID,
   applyCliProxyFastPayload,
@@ -97,6 +98,36 @@ test("model discovery sends bearer auth, bounds errors, and never includes the r
       fetch: async () => new Response("secret upstream diagnostic", { status: 401 }),
     }),
     (error: Error) => error.message === "CLIProxyAPI model discovery failed with HTTP 401.",
+  );
+});
+
+test("model discovery accepts a legitimate rich catalog above 1 MiB while retaining a hard response bound", async () => {
+  const endpoints = resolveCliProxyEndpoints("https://proxy.example");
+  const richCatalog = {
+    models: Array.from({ length: 25 }, (_, index) => ({
+      slug: `rich-model-${index}`,
+      display_name: `Rich Model ${index}`,
+      description: "x".repeat(45_000),
+      supported_reasoning_levels: [{ effort: "low" }, { effort: "high" }],
+    })),
+  };
+  const richCatalogBytes = Buffer.byteLength(JSON.stringify(richCatalog));
+  assert.ok(richCatalogBytes > 1024 * 1024);
+  assert.ok(richCatalogBytes < CLIPROXY_CATALOG_MAX_BYTES);
+
+  const models = await fetchCliProxyModels(endpoints, "test-api-key", {
+    fetch: async () => response(richCatalog),
+  });
+  assert.equal(models.length, 25);
+  assert.equal(models[0]?.id, "rich-model-0");
+
+  await assert.rejects(
+    fetchCliProxyModels(endpoints, "test-api-key", {
+      fetch: async () => new Response("{}", {
+        headers: { "content-length": String(CLIPROXY_CATALOG_MAX_BYTES + 1) },
+      }),
+    }),
+    (error: Error) => error.message === "CLIProxyAPI model catalog exceeds the 16 MiB limit.",
   );
 });
 

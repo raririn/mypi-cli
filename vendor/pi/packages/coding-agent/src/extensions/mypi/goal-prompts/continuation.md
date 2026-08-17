@@ -23,6 +23,7 @@ Completion audit:
 - Compare every accepted plan item and requirement against current, direct evidence.
 - Treat missing, indirect, stale, or narrow evidence as incomplete.
 - Call update_goal with status "complete" only after every item is checked and carries verification evidence.
+- After update_goal succeeds, give the user a concise final response summarizing the outcome, important changes, verification evidence, and any remaining caveats. Do not stop at the tool call or treat its result as the final response.
 - Call update_goal with status "blocked" only after the same genuine blocker has survived three consecutive settled Goal runs without progress.
 
 Provider limits, policy denials, user interruption, corrupt state, and protected-plan enforcement still stop an unbounded grant. Model prose cannot assert completion, blocking, or restoration; the harness verifies every transition.

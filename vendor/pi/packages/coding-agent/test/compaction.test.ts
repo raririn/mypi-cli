@@ -506,7 +506,7 @@ describe("prepareCompaction with previous compaction", () => {
 });
 
 describe("raw user retention", () => {
-	it("summarizes user messages older than the five-message raw tail", () => {
+	it("retains the first user message and keeps the last three raw", () => {
 		const entries: SessionEntry[] = [];
 		const users: SessionMessageEntry[] = [];
 		for (let index = 1; index <= 7; index++) {
@@ -521,19 +521,25 @@ describe("raw user retention", () => {
 		});
 
 		expect(preparation).toBeDefined();
-		expect(preparation!.firstKeptEntryId).toBe(users[2].id);
+		expect(preparation!.firstKeptEntryId).toBe(users[4].id);
 		expect(extractText(preparation!.messagesToSummarize)).toContain("user-1");
-		expect(extractText(preparation!.messagesToSummarize)).toContain("user-2");
-		expect(extractText(preparation!.messagesToSummarize)).not.toContain("user-3");
-		expect(preparation!.retainedUserMessages).toEqual([]);
+		expect(extractText(preparation!.messagesToSummarize)).toContain("user-4");
+		expect(extractText(preparation!.messagesToSummarize)).not.toContain("user-5");
+		expect(preparation!.retainedUserMessages).toEqual([
+			{ entryId: users[0].id, message: users[0].message },
+		]);
 	});
 
-	it("reinjects at most five latest raw user messages after the checkpoint", () => {
+	it("reinjects the first and last three raw user messages after the checkpoint", () => {
 		const users = Array.from({ length: 6 }, (_, index) =>
 			createMessageEntry(createUserMessage(`raw-user-${index + 1}`)),
 		);
 		const keptAssistant = createMessageEntry(createAssistantMessage("kept assistant"));
 		const compaction = createCompactionEntry("checkpoint", users[5].id);
+		compaction.retainedUserMessages = [users[0], users[3], users[4]].map((entry) => ({
+			entryId: entry.id,
+			message: entry.message,
+		}));
 		compaction.details = {
 			checkpointVersion: 2,
 			checkpointId: "checkpoint-five-users",
@@ -543,7 +549,7 @@ describe("raw user retention", () => {
 				firstKeptEntryId: users[5].id,
 				sourceBranchHeadId: keptAssistant.id,
 			},
-			retainedUserMessages: users.slice(1, 5).map((entry) => ({ entryId: entry.id, message: entry.message })),
+			retainedUserMessages: [],
 			evidence: { userMessages: [], toolResults: [], readFiles: [], modifiedFiles: [] },
 			validation: {
 				valid: true,
@@ -560,12 +566,42 @@ describe("raw user retention", () => {
 		const rawUsers = context.messages.filter((message) => message.role === "user");
 
 		expect(rawUsers.map((message) => extractText([message]))).toEqual([
-			"raw-user-2",
-			"raw-user-3",
+			"raw-user-1",
 			"raw-user-4",
 			"raw-user-5",
 			"raw-user-6",
 		]);
+	});
+
+	it("continues to load the former five-message checkpoint details", () => {
+		const users = Array.from({ length: 6 }, (_, index) =>
+			createMessageEntry(createUserMessage(`legacy-user-${index + 1}`)),
+		);
+		const compaction = createCompactionEntry("legacy checkpoint", users[5].id);
+		compaction.details = {
+			checkpointVersion: 2,
+			checkpointId: "legacy-five-users",
+			source: {
+				firstSummarizedEntryId: users[0].id,
+				lastSummarizedEntryId: users[4].id,
+				firstKeptEntryId: users[5].id,
+				sourceBranchHeadId: users[5].id,
+			},
+			retainedUserMessages: users.slice(0, 5).map((entry) => ({ entryId: entry.id, message: entry.message })),
+			evidence: { userMessages: [], toolResults: [], readFiles: [], modifiedFiles: [] },
+			validation: {
+				valid: true,
+				gaps: [],
+				deterministicRepairs: [],
+				generationAttempts: 1,
+				method: "single-pass",
+			},
+			readFiles: [],
+			modifiedFiles: [],
+		};
+
+		const context = buildSessionContext([...users, compaction]);
+		expect(context.messages.filter((message) => message.role === "user")).toHaveLength(6);
 	});
 });
 

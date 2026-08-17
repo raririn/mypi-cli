@@ -40,6 +40,7 @@ import {
 	deterministicCheckpoint,
 	extractCheckpointEvidence,
 	MAX_RETAINED_RAW_USER_MESSAGES,
+	RETAINED_RECENT_RAW_USER_MESSAGES,
 	repairCheckpointSummary,
 	type RetainedRawUserMessage,
 	type CompactionCheckpointDetails,
@@ -944,7 +945,7 @@ export interface CompactionPreparation {
 	fileOps: FileOperations;
 	/** Compaction settions from settings.jsonl	*/
 	settings: CompactionSettings;
-	/** Up to five latest user messages that would otherwise fall before the kept boundary. */
+	/** The first plus last three user messages that would otherwise fall before the kept boundary. */
 	retainedUserMessages: RetainedRawUserMessage[];
 	/** Stable source range for backup/recall and checkpoint provenance. */
 	source: {
@@ -967,32 +968,34 @@ function rawUserEntryIndices(entries: SessionEntry[], startIndex: number, endInd
 	return indices;
 }
 
-/** The kept tail may contain no more than Claude's five most recent raw user messages. */
-function capCutPointAtFiveRawUsers(
+/** Keep at most the three most recent raw user messages in the ordinary tail. */
+function capCutPointAtRecentRawUsers(
 	entries: SessionEntry[],
 	startIndex: number,
 	endIndex: number,
 	cutPoint: CutPointResult,
 ): CutPointResult {
 	const users = rawUserEntryIndices(entries, startIndex, endIndex);
-	if (users.length <= MAX_RETAINED_RAW_USER_MESSAGES) return cutPoint;
-	const earliestAllowed = users[users.length - MAX_RETAINED_RAW_USER_MESSAGES];
+	if (users.length <= RETAINED_RECENT_RAW_USER_MESSAGES) return cutPoint;
+	const earliestAllowed = users[users.length - RETAINED_RECENT_RAW_USER_MESSAGES];
 	if (cutPoint.firstKeptEntryIndex >= earliestAllowed) return cutPoint;
 	return { firstKeptEntryIndex: earliestAllowed, turnStartIndex: -1, isSplitTurn: false };
 }
 
-function collectRetainedRawUsers(
+function selectedRawUserEntryIndices(entries: SessionEntry[], endIndex: number): number[] {
+	const allUsers = rawUserEntryIndices(entries, 0, endIndex);
+	if (allUsers.length === 0) return [];
+	const selected = new Set([allUsers[0], ...allUsers.slice(-RETAINED_RECENT_RAW_USER_MESSAGES)]);
+	return allUsers.filter((index) => selected.has(index));
+}
+
+function collectRetainedRawUsersBefore(
 	entries: SessionEntry[],
 	firstKeptEntryIndex: number,
 	endIndex: number,
 ): RetainedRawUserMessage[] {
-	const allUsers = rawUserEntryIndices(entries, 0, endIndex);
-	const keptUserCount = allUsers.filter((index) => index >= firstKeptEntryIndex).length;
-	const available = Math.max(0, MAX_RETAINED_RAW_USER_MESSAGES - keptUserCount);
-	if (available === 0) return [];
-	return allUsers
+	const retained = selectedRawUserEntryIndices(entries, endIndex)
 		.filter((index) => index < firstKeptEntryIndex)
-		.slice(-available)
 		.map((index) => {
 			const entry = entries[index];
 			if (entry.type !== "message" || entry.message.role !== "user") {
@@ -1000,6 +1003,25 @@ function collectRetainedRawUsers(
 			}
 			return { entryId: entry.id, message: entry.message };
 		});
+	if (retained.length > MAX_RETAINED_RAW_USER_MESSAGES) {
+		throw new Error("Retained raw user selection exceeded its program-owned limit");
+	}
+	return retained;
+}
+
+/**
+ * Select the program-owned raw user records for an actual compaction boundary.
+ * This is recomputed after extension hooks so custom summaries cannot remove it.
+ */
+export function collectRetainedRawUserMessages(
+	entries: SessionEntry[],
+	firstKeptEntryId: string,
+): RetainedRawUserMessage[] {
+	const firstKeptEntryIndex = entries.findIndex((entry) => entry.id === firstKeptEntryId);
+	if (firstKeptEntryIndex < 0) {
+		throw new Error("Compaction first-kept entry is not on the active branch");
+	}
+	return collectRetainedRawUsersBefore(entries, firstKeptEntryIndex, entries.length);
 }
 
 export function prepareCompaction(
@@ -1030,7 +1052,7 @@ export function prepareCompaction(
 
 	const tokensBefore = estimateContextTokens(buildSessionContext(pathEntries).messages).tokens;
 
-	const cutPoint = capCutPointAtFiveRawUsers(
+	const cutPoint = capCutPointAtRecentRawUsers(
 		pathEntries,
 		boundaryStart,
 		boundaryEnd,
@@ -1045,7 +1067,11 @@ export function prepareCompaction(
 	const firstKeptEntryId = firstKeptEntry.id;
 
 	const historyEnd = cutPoint.isSplitTurn ? cutPoint.turnStartIndex : cutPoint.firstKeptEntryIndex;
-	const retainedUserMessages = collectRetainedRawUsers(pathEntries, cutPoint.firstKeptEntryIndex, boundaryEnd);
+	const retainedUserMessages = collectRetainedRawUsersBefore(
+		pathEntries,
+		cutPoint.firstKeptEntryIndex,
+		boundaryEnd,
+	);
 	const estimatedTailTokensAfter = [
 		...retainedUserMessages.map((retained) => retained.message),
 		...pathEntries

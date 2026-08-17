@@ -638,7 +638,7 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "update_goal",
 		label: "Update Goal",
-		description: "Request complete or blocked status. The harness validates structured scope, evidence, and the three-settlement blocker audit.",
+		description: "Request complete or blocked status. The harness validates structured scope, evidence, and the three-settlement blocker audit. After successful completion, give the user a concise final response summarizing the outcome and verification; the tool result is not the final response.",
 		parameters: Type.Object({ status: Type.Union([Type.Literal("complete"), Type.Literal("blocked")]) }, { additionalProperties: false }),
 		executionMode: "sequential",
 		async execute(_id, raw, _signal, _update, ctx) {
@@ -647,7 +647,9 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 				if (state.status !== "active") return toolResult(`Rejected: Goal status is ${state.status}.`, { accepted: false, code: "goal-not-active", snapshot: currentSnapshot() });
 				if ((raw as { status: string }).status === "complete") {
 					const result = completeGoal(ctx);
-					return result.success ? toolResult("Goal completed after structured plan and evidence validation.", { accepted: true, snapshot: currentSnapshot() }, true) : toolResult(`Rejected: ${result.error}`, { accepted: false, code: "completion-unproven", snapshot: currentSnapshot() });
+					return result.success
+						? toolResult("Goal completed after structured plan and evidence validation. Now give the user a concise final response summarizing the outcome, verification evidence, and any remaining caveats.", { accepted: true, snapshot: currentSnapshot() })
+						: toolResult(`Rejected: ${result.error}`, { accepted: false, code: "completion-unproven", snapshot: currentSnapshot() });
 				}
 				if (!state.blockerFingerprint || state.blockedRuns < 3) return toolResult("Rejected: blocking requires the same non-empty blocker across three consecutive settled runs without progress.", { accepted: false, code: "blocked-audit-incomplete", blockedRuns: state.blockedRuns, blockerFingerprint: state.blockerFingerprint });
 				transitionGoal(ctx, (goal) => ({ ...goal, revision: goal.revision + 1, status: "blocked", pauseReason: "error:blocked-audit", continuationPending: false, updatedAt: now() }), "Goal blocked after the same blocker repeated across three settled runs.", "warning");

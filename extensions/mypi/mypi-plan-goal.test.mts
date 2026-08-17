@@ -104,6 +104,7 @@ test("registers the Goal v3 lifecycle and structured plan tools", async () => {
   assert.deepEqual([...harness.tools.keys()], ["get_goal", "get_goal_plan", "create_goal", "set_goal_plan", "update_goal_plan", "update_goal"]);
   assert.equal(harness.tools.get("set_goal_plan").executionMode, "sequential");
   assert.equal(harness.tools.get("update_goal_plan").executionMode, "sequential");
+  assert.match(harness.tools.get("update_goal").description, /tool result is not the final response/i);
   assert.deepEqual(harness.commands.get("plan").getArgumentCompletions("--").map((item: any) => item.value), ["--report", "--abort", "--help"]);
 });
 
@@ -230,6 +231,8 @@ test("structured updates are revision-checked, atomic, and completion requires e
   await harness.executeTool("update_goal_plan", { goalId: snapshot.goalId, revision: snapshot.revision, operations: [{ op: "add_evidence", itemId: "I002", evidence: "docs inspected" }] });
   const complete = await harness.executeTool("update_goal", { status: "complete" });
   assert.equal(complete.details.accepted, true);
+  assert.equal(complete.terminate, undefined);
+  assert.match(complete.content[0].text, /final response/i);
   assert.equal(harness.snapshot().status, "complete");
 });
 

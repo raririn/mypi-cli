@@ -29,7 +29,9 @@ import type { FileEntry, SessionEntry } from "../session-manager.ts";
 import { describeUserContent, serializeConversation } from "./utils.ts";
 
 export const CHECKPOINT_VERSION = 2 as const;
-export const MAX_RETAINED_RAW_USER_MESSAGES = 5;
+export const RETAINED_RECENT_RAW_USER_MESSAGES = 3;
+export const MAX_RETAINED_RAW_USER_MESSAGES = RETAINED_RECENT_RAW_USER_MESSAGES + 1;
+const LEGACY_MAX_RETAINED_RAW_USER_MESSAGES = 5;
 export const CHECKPOINT_START =
 	"This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.";
 export const CHECKPOINT_RESUME =
@@ -43,6 +45,29 @@ const EVIDENCE_LINE_MAX_CHARS = 700;
 export interface RetainedRawUserMessage {
 	entryId: string;
 	message: AgentMessage;
+}
+
+export function isRetainedRawUserMessages(
+	value: unknown,
+	maxMessages = MAX_RETAINED_RAW_USER_MESSAGES,
+): value is RetainedRawUserMessage[] {
+	if (!Array.isArray(value) || value.length > maxMessages) return false;
+	const entryIds = new Set<string>();
+	return value.every((item) => {
+		if (
+			!item ||
+			typeof item !== "object" ||
+			typeof item.entryId !== "string" ||
+			!item.message ||
+			typeof item.message !== "object" ||
+			item.message.role !== "user" ||
+			entryIds.has(item.entryId)
+		) {
+			return false;
+		}
+		entryIds.add(item.entryId);
+		return true;
+	});
 }
 
 export interface CheckpointBackupRef {
@@ -451,17 +476,7 @@ export function isCompactionCheckpointDetails(value: unknown): value is Compacti
 				typeof backup.bytes === "number" &&
 				Number.isSafeInteger(backup.bytes) &&
 				backup.bytes > 0)) &&
-		Array.isArray(details.retainedUserMessages) &&
-		details.retainedUserMessages.length <= MAX_RETAINED_RAW_USER_MESSAGES &&
-		details.retainedUserMessages.every(
-			(item) =>
-				item &&
-				typeof item === "object" &&
-				typeof item.entryId === "string" &&
-				item.message &&
-				typeof item.message === "object" &&
-				item.message.role === "user",
-		)
+		isRetainedRawUserMessages(details.retainedUserMessages, LEGACY_MAX_RETAINED_RAW_USER_MESSAGES)
 	);
 }
 

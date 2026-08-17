@@ -26,7 +26,11 @@ import {
 	createCompactionSummaryMessage,
 	createCustomMessage,
 } from "./messages.ts";
-import { isCompactionCheckpointDetails } from "./compaction/checkpoint.ts";
+import {
+	isCompactionCheckpointDetails,
+	isRetainedRawUserMessages,
+	type RetainedRawUserMessage,
+} from "./compaction/checkpoint.ts";
 
 export const CURRENT_SESSION_VERSION = 3;
 
@@ -72,6 +76,8 @@ export interface CompactionEntry<T = unknown> extends SessionEntryBase {
 	summary: string;
 	firstKeptEntryId: string;
 	tokensBefore: number;
+	/** Program-owned verbatim user records, independent of generated or extension details. */
+	retainedUserMessages?: RetainedRawUserMessage[];
 	/** Extension-specific data (e.g., ArtifactIndex, version markers for structured compaction) */
 	details?: T;
 	/** Usage from the LLM call(s) that generated this summary, if available */
@@ -404,6 +410,9 @@ export function sessionEntryToContextMessages(entry: SessionEntry): AgentMessage
 	}
 	if (entry.type === "compaction") {
 		const summary = createCompactionSummaryMessage(entry.summary, entry.tokensBefore, entry.timestamp);
+		if (isRetainedRawUserMessages(entry.retainedUserMessages)) {
+			return [summary, ...entry.retainedUserMessages.map((retained) => retained.message)];
+		}
 		if (!isCompactionCheckpointDetails(entry.details)) return [summary];
 		return [summary, ...entry.details.retainedUserMessages.map((retained) => retained.message)];
 	}
@@ -1120,6 +1129,7 @@ export class SessionManager {
 		details?: T,
 		fromHook?: boolean,
 		usage?: Usage,
+		retainedUserMessages?: RetainedRawUserMessage[],
 	): string {
 		const entry: CompactionEntry<T> = {
 			type: "compaction",
@@ -1129,6 +1139,7 @@ export class SessionManager {
 			summary,
 			firstKeptEntryId,
 			tokensBefore,
+			retainedUserMessages,
 			details,
 			usage,
 			fromHook,

@@ -57,6 +57,7 @@ import {
 	backupSessionJsonl,
 	calculateContextTokens,
 	collectEntriesForBranchSummary,
+	collectRetainedRawUserMessages,
 	compact,
 	estimateContextTokens,
 	estimateTokens,
@@ -2311,7 +2312,16 @@ export class AgentSession {
 				throw new Error("Compaction cancelled");
 			}
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
+			const retainedUserMessages = collectRetainedRawUserMessages(pathEntries, firstKeptEntryId);
+			this.sessionManager.appendCompaction(
+				summary,
+				firstKeptEntryId,
+				tokensBefore,
+				details,
+				fromExtension,
+				usage,
+				retainedUserMessages,
+			);
 			markBackupStatus(checkpointBackup, "applied");
 			checkpointApplied = true;
 			const newEntries = this.sessionManager.getEntries();
@@ -2603,7 +2613,16 @@ export class AgentSession {
 				return false;
 			}
 
-			this.sessionManager.appendCompaction(summary, firstKeptEntryId, tokensBefore, details, fromExtension, usage);
+			const retainedUserMessages = collectRetainedRawUserMessages(pathEntries, firstKeptEntryId);
+			this.sessionManager.appendCompaction(
+				summary,
+				firstKeptEntryId,
+				tokensBefore,
+				details,
+				fromExtension,
+				usage,
+				retainedUserMessages,
+			);
 			markBackupStatus(checkpointBackup, "applied");
 			checkpointApplied = true;
 			const newEntries = this.sessionManager.getEntries();

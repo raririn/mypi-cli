@@ -177,6 +177,9 @@ describe("AgentSession compaction characterization", () => {
 		const compactionEntry = compactionEntries[0];
 		if (compactionEntry?.type === "compaction") {
 			expect(compactionEntry.usage).toEqual(summaryUsage);
+			expect(compactionEntry.retainedUserMessages?.map((item) => item.message.content)).toEqual([
+				[{ type: "text", text: "one" }],
+			]);
 		}
 		const statsAfter = harness.session.getSessionStats();
 		expect(statsAfter.tokens.input).toBe(statsBefore.tokens.input + summaryUsage.input);
@@ -185,6 +188,12 @@ describe("AgentSession compaction characterization", () => {
 		expect(statsAfter.tokens.cacheWrite).toBe(statsBefore.tokens.cacheWrite + summaryUsage.cacheWrite);
 		expect(statsAfter.cost).toBe(statsBefore.cost + summaryUsage.cost.total);
 		expect(harness.session.messages[0]?.role).toBe("compactionSummary");
+		expect(
+			harness.session.messages.filter((message) => message.role === "user").map((message) => message.content),
+		).toEqual([
+			[{ type: "text", text: "one" }],
+			[{ type: "text", text: "two" }],
+		]);
 	});
 
 	it("throws when compacting without a model", async () => {
@@ -277,6 +286,9 @@ describe("AgentSession compaction characterization", () => {
 		const compactionEntries = harness.sessionManager.getEntries().filter((entry) => entry.type === "compaction");
 		const compactionEnd = harness.eventsOfType("compaction_end").at(-1);
 		expect(compactionEntries).toHaveLength(1);
+		expect(compactionEntries[0]?.retainedUserMessages?.map((item) => item.message.content)).toEqual([
+			[{ type: "text", text: "message to compact" }],
+		]);
 		expect(compactionEnd?.result?.estimatedTokensAfter).toBeGreaterThan(0);
 		expect(getStreamCallCount()).toBe(1);
 	});

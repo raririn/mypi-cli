@@ -19,9 +19,9 @@ export const CLIPROXY_BASE_URL_ENV = "CLIPROXYAPI_BASE_URL";
 export const CLIPROXY_API_KEY_ENV = "CLIPROXYAPI_API_KEY";
 export const CLIPROXY_DEFAULT_BASE_URL = "http://127.0.0.1:8317";
 export const CLIPROXY_CATALOG_TIMEOUT_MS = 15_000;
+export const CLIPROXY_CATALOG_MAX_BYTES = 16 * 1024 * 1024;
 
 const CATALOG_MAX_AGE_MS = 4 * 60 * 60 * 1000;
-const CATALOG_MAX_BYTES = 1024 * 1024;
 const CATALOG_MAX_MODELS = 256;
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 16_384;
@@ -196,8 +196,8 @@ function boundedSignal(signal?: AbortSignal): AbortSignal {
 
 async function readBoundedText(response: Response): Promise<string> {
   const length = Number(response.headers.get("content-length"));
-  if (Number.isFinite(length) && length > CATALOG_MAX_BYTES) {
-    throw new Error("CLIProxyAPI model catalog exceeds the 1 MiB limit.");
+  if (Number.isFinite(length) && length > CLIPROXY_CATALOG_MAX_BYTES) {
+    throw new Error("CLIProxyAPI model catalog exceeds the 16 MiB limit.");
   }
   if (!response.body) return "";
   const reader = response.body.getReader();
@@ -209,12 +209,12 @@ async function readBoundedText(response: Response): Promise<string> {
       const { done, value } = await reader.read();
       if (done) break;
       bytes += value.byteLength;
-      if (bytes > CATALOG_MAX_BYTES) throw new Error("CLIProxyAPI model catalog exceeds the 1 MiB limit.");
+      if (bytes > CLIPROXY_CATALOG_MAX_BYTES) throw new Error("CLIProxyAPI model catalog exceeds the 16 MiB limit.");
       text += decoder.decode(value, { stream: true });
     }
     return text + decoder.decode();
   } finally {
-    if (bytes > CATALOG_MAX_BYTES) await reader.cancel().catch(() => undefined);
+    if (bytes > CLIPROXY_CATALOG_MAX_BYTES) await reader.cancel().catch(() => undefined);
   }
 }
 

@@ -94,13 +94,18 @@ for (const relativePath of [
   if (content.includes("Root PLAN.md")) {
     throw new Error(`Installed Pi ${expectedVersion} still gives a project file Goal authority: ${relativePath}.`);
   }
+  for (const fragment of ["After update_goal succeeds", "final response", "Do not stop at the tool call"]) {
+    if (!content.includes(fragment)) {
+      throw new Error(`Installed Pi ${expectedVersion} is missing the Goal completion handoff (${fragment}): ${relativePath}.`);
+    }
+  }
 }
 
 const planGoal = await readFile(
   join(packageRoot, "dist", "extensions", "mypi", "plan-goal.js"),
   "utf8",
 );
-for (const fragment of ["autoStart", "plan-ready", "Create a branch-local structured Goal v3 plan", "goal-plan-pending"]) {
+for (const fragment of ["autoStart", "plan-ready", "Create a branch-local structured Goal v3 plan", "goal-plan-pending", "the tool result is not the final response", "Now give the user a concise final response"]) {
   if (!planGoal.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing unified Goal planning (${fragment}).`);
   }
@@ -278,6 +283,7 @@ for (const fragment of [
   'mypiQueuedMessageMode: "steer"',
   'mypiQueuedMessageMode: "followUp"',
   "mypiShouldContinueAfterThresholdCompaction",
+  "collectRetainedRawUserMessages",
   "_mypiProactiveContinuationBudget = 1",
   "mypi-proactive-compaction-continuation",
   "display: false",
@@ -299,7 +305,7 @@ for (const fragment of [
 }
 
 const compaction = await readFile(join(packageRoot, "dist", "core", "compaction", "compaction.js"), "utf8");
-for (const fragment of ["## Active Request", "## User Intent Ledger", "## Governing Constraints", "## Working Set", "## Decisions and Error History", "## Open Loops", "## Handoff", "Immediate next operation", "yield-gate:deterministic-fallback"]) {
+for (const fragment of ["## Active Request", "## User Intent Ledger", "## Governing Constraints", "## Working Set", "## Decisions and Error History", "## Open Loops", "## Handoff", "Immediate next operation", "yield-gate:deterministic-fallback", "RETAINED_RECENT_RAW_USER_MESSAGES", "collectRetainedRawUserMessages"]) {
   if (!compaction.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing the continuation-safe compaction checkpoint (${fragment}).`);
   }
@@ -311,9 +317,17 @@ for (const fragment of [
   "compaction-backups",
   "Compaction backup integrity check failed",
   "recall_compacted_history",
+  "RETAINED_RECENT_RAW_USER_MESSAGES = 3",
+  "isRetainedRawUserMessages",
 ]) {
   if (!checkpoint.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing durable compaction checkpoint behavior (${fragment}).`);
+  }
+}
+const sessionManager = await readFile(join(packageRoot, "dist", "core", "session-manager.js"), "utf8");
+for (const fragment of ["isRetainedRawUserMessages(entry.retainedUserMessages)", "retainedUserMessages,"]) {
+  if (!sessionManager.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing program-owned raw-user retention (${fragment}).`);
   }
 }
 const compactionRecall = await readFile(
@@ -447,4 +461,4 @@ for (const relativePath of ["models.js", "compat.js"]) {
   }
 }
 
-console.log(`Verified Pi ${expectedVersion}, bundled docs/examples without built-in skills, runtime-owned Plan/Goal/archive/web/TUI/safety core with model-aware /reasoning and local /shift-tab selection, mode-specific safety footer presentation without change toasts, workspace-confined tools, canonical commentary updates with legacy-name compatibility, the built-in security baseline and packaged minimal prompt replacement, safe web provider selection, isolated fail-closed Anthropic shell sandboxing, non-echoing authentication input, API-key Codex gateway compatibility, suppressed automatic version-update metadata, one-line MyPi identity, outbound credential redaction, /hotkeys, resource viewers, acknowledged tree navigation, skill labels, typed agent settlement including preflight dispatch rejection, and Goal-aware proactive compaction continuation.`);
+console.log(`Verified Pi ${expectedVersion}, bundled docs/examples without built-in skills, runtime-owned Plan/Goal/archive/web/TUI/safety core with model-aware /reasoning and local /shift-tab selection, mode-specific safety footer presentation without change toasts, workspace-confined tools, canonical commentary updates with legacy-name compatibility, the built-in security baseline and packaged minimal prompt replacement, safe web provider selection, isolated fail-closed Anthropic shell sandboxing, non-echoing authentication input, API-key Codex gateway compatibility, suppressed automatic version-update metadata, one-line MyPi identity, outbound credential redaction, /hotkeys, resource viewers, acknowledged tree navigation, skill labels, typed agent settlement including preflight dispatch rejection, program-owned first-plus-last-three raw-user compaction continuity, post-completion Goal summaries, and Goal-aware proactive compaction continuation.`);
