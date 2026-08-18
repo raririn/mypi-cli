@@ -110,4 +110,42 @@ describe("RPC unknown command responses (#5868)", () => {
 			restoreListeners(listenerSnapshot);
 		}
 	});
+
+	test("reloads externally persisted provider state before setting a model", async () => {
+		const listenerSnapshot = takeListenerSnapshot();
+		const harness = await createHarness();
+		const model = harness.session.model;
+		if (!model) throw new Error("Harness model is missing");
+		const reload = vi
+			.spyOn(harness.session.modelRuntime, "reloadPersistedModelState")
+			.mockResolvedValue({ aborted: false, errors: new Map() });
+		vi.spyOn(harness.session.modelRuntime, "getAvailable").mockResolvedValue([model]);
+		const setModel = vi.spyOn(harness.session, "setModel").mockResolvedValue();
+
+		try {
+			void runRpcMode(createRuntimeHost(harness));
+			await vi.waitFor(() => expect(rpcIo.lineHandler).toBeDefined());
+
+			rpcIo.lineHandler?.(JSON.stringify({
+				id: "external-model",
+				type: "set_model",
+				provider: model.provider,
+				modelId: model.id,
+			}));
+
+			await vi.waitFor(() => {
+				expect(parseOutputLines()).toContainEqual(expect.objectContaining({
+					id: "external-model",
+					type: "response",
+					command: "set_model",
+					success: true,
+				}));
+			});
+			expect(reload).toHaveBeenCalledOnce();
+			expect(setModel).toHaveBeenCalledWith(model);
+		} finally {
+			harness.cleanup();
+			restoreListeners(listenerSnapshot);
+		}
+	});
 });

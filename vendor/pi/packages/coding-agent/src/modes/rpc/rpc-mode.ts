@@ -538,6 +538,14 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 	registerSignalHandlers();
 
 	// Handle a single command
+	const getExternallyCurrentModels = async () => {
+		// A hosted TUI/GUI may complete login and catalog discovery in its own
+		// process. Reload both the credential and the provider-scoped disk cache;
+		// reloading auth alone leaves dynamic provider getModels() state empty.
+		await session.modelRuntime.reloadPersistedModelState();
+		return session.modelRuntime.getAvailable();
+	};
+
 	const handleCommand = async (command: RpcCommand): Promise<RpcResponse | undefined> => {
 		const id = command.id;
 
@@ -685,10 +693,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			// =================================================================
 
 			case "set_model": {
-				// A surface (TUI/GUI) may have completed /login in another process;
-				// pick up its credentials before deciding what is available.
-				session.modelRuntime.reloadCredentials();
-				const models = await session.modelRuntime.getAvailable();
+				const models = await getExternallyCurrentModels();
 				const model = models.find((m) => m.provider === command.provider && m.id === command.modelId);
 				if (!model) {
 					return error(id, "set_model", `Model not found: ${command.provider}/${command.modelId}`);
@@ -706,8 +711,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "get_available_models": {
-				session.modelRuntime.reloadCredentials();
-				const models = await session.modelRuntime.getAvailable();
+				const models = await getExternallyCurrentModels();
 				return success(id, "get_available_models", { models });
 			}
 
@@ -990,7 +994,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			// =================================================================
 
 			case "set_scoped_models": {
-				const available = await session.modelRuntime.getAvailable();
+				const available = await getExternallyCurrentModels();
 				const resolved: Array<{ model: (typeof available)[number]; thinkingLevel?: (typeof command.models)[number]["thinkingLevel"] }> =
 					[];
 				for (const requested of command.models) {

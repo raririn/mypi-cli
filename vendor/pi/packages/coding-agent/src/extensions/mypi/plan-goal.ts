@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext, RegisteredCommand } from "../../core/extensions/types.ts";
-import { renderGoalContinuationPrompt } from "./goal-prompts.ts";
+import { goalPlanningPrompt, renderGoalContinuationPrompt } from "./goal-prompts.ts";
 import {
 	type ActiveGoalState,
 	auditSettledBlockers,
@@ -39,7 +39,7 @@ import {
 
 const MAX_PLAN_AGENT_ENDS = 2;
 const MAX_PLAN_PAGE_SIZE = 50;
-const GOAL_PLANNING_TOOLS = new Set(["read", "grep", "find", "ls", "read_workspace", "ask_user", "ask_question", "questionnaire", "question", "get_goal", "get_goal_plan", "set_goal_plan"]);
+const GOAL_PLANNING_TOOLS = new Set(["read", "grep", "find", "ls", "read_workspace", "web_search", "web_fetch", "ask_user", "ask_question", "questionnaire", "question", "get_goal", "get_goal_plan", "set_goal_plan"]);
 const GOAL_SNAPSHOT_STATUS_KEY = "mypi-goal-snapshot";
 
 const PLAN_HELP = `# /plan
@@ -150,14 +150,14 @@ function budgetDescription(state: ActiveGoalState): string {
 }
 
 const DraftItemSchema = Type.Object({
-	task: Type.String({ minLength: 1, maxLength: 20_000 }),
-	acceptance: Type.Array(Type.String({ minLength: 1, maxLength: 10_000 }), { minItems: 1, maxItems: 50 }),
-	verify: Type.Array(Type.String({ minLength: 1, maxLength: 10_000 }), { minItems: 1, maxItems: 50 }),
+	task: Type.String({ minLength: 1, maxLength: 20_000, description: "Concrete outcome for this dependency-ordered item" }),
+	acceptance: Type.Array(Type.String({ minLength: 1, maxLength: 10_000 }), { minItems: 1, maxItems: 50, description: "Conditions that must hold before this item can be checked" }),
+	verify: Type.Array(Type.String({ minLength: 1, maxLength: 10_000 }), { minItems: 1, maxItems: 50, description: "Current direct evidence required to verify completion" }),
 }, { additionalProperties: false });
 
 const GoalPlanOperationSchema = Type.Union([
 	Type.Object({ op: Type.Literal("set_checked"), itemId: Type.String(), checked: Type.Boolean() }, { additionalProperties: false }),
-	Type.Object({ op: Type.Literal("add_evidence"), itemId: Type.String(), evidence: Type.String({ minLength: 1, maxLength: 10_000 }) }, { additionalProperties: false }),
+	Type.Object({ op: Type.Literal("add_evidence"), itemId: Type.String(), evidence: Type.String({ minLength: 1, maxLength: 10_000, description: "Concise locator for current direct evidence, not an unsupported model assertion" }) }, { additionalProperties: false }),
 	Type.Object({ op: Type.Literal("set_status"), itemId: Type.String(), status: Type.String({ minLength: 1, maxLength: 10_000 }) }, { additionalProperties: false }),
 	Type.Object({ op: Type.Literal("set_blocker"), itemId: Type.String(), blocker: Type.String({ minLength: 1, maxLength: 10_000 }) }, { additionalProperties: false }),
 	Type.Object({ op: Type.Literal("clear_blocker"), itemId: Type.String() }, { additionalProperties: false }),
@@ -342,7 +342,7 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 		enableTools(GOAL_PLANNING_TOOLS);
 		updateStatus(ctx);
 		try {
-			pi.sendUserMessage(`Create the authoritative structured Goal plan for this objective: ${objective}\n\nInspect current evidence, then call set_goal_plan with dependency-ordered items. Only plan now; do not implement.`);
+			pi.sendUserMessage(`Create the authoritative structured Goal plan for the objective below.\n\n<objective>\n${objective}\n</objective>\n\nFollow the Goal planning contract, then call set_goal_plan when the complete dependency-ordered plan is ready. Do not implement.`);
 		} catch (error) {
 			ctx.ui.notify(`Goal planning is durable but its first turn could not be dispatched: ${error instanceof Error ? error.message : String(error)}. Use /goal --continue to retry planning.`, "error");
 		}
@@ -360,7 +360,7 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 		persist();
 		enableTools(GOAL_PLANNING_TOOLS);
 		updateStatus(ctx);
-		pi.sendUserMessage("Resume structured Goal planning and call set_goal_plan when the complete plan is ready. Execution will begin automatically after the plan is installed.");
+		pi.sendUserMessage("Resume structured Goal planning. Inspect current evidence, finish the complete dependency-ordered plan with acceptance requirements and direct verification evidence, then call set_goal_plan. Execution will begin automatically after the plan is installed.");
 	}
 
 	function beginGoalExecution(ctx: ExtensionContext, request: PendingGoalRequest): void {
@@ -548,7 +548,7 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "set_goal_plan",
 		label: "Set Goal Plan",
-		description: "Install the complete structured plan during Goal planning. After activation, full-plan replacement is a protected mutation.",
+		description: "Install the complete dependency-ordered structured plan during Goal planning. Every item needs a concrete outcome, acceptance requirements, and direct verification requirements. After activation, full-plan replacement is a protected mutation.",
 		parameters: Type.Object({ items: Type.Array(DraftItemSchema, { minItems: 1, maxItems: 500 }) }, { additionalProperties: false }),
 		executionMode: "sequential",
 		async execute(_id, raw, _signal, _update, ctx) {
@@ -584,7 +584,7 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "update_goal_plan",
 		label: "Update Goal Plan",
-		description: "Atomically record progress, evidence, status, blockers, new items, or monotonic requirement strengthening by stable item ID. Protected scope cannot be weakened.",
+		description: "Atomically record progress, current direct evidence with concise source locators, status, blockers, new items, or monotonic requirement strengthening by stable item ID. Protected scope cannot be weakened.",
 		parameters: Type.Object({ goalId: Type.String(), revision: Type.Integer({ minimum: 1 }), operations: Type.Array(GoalPlanOperationSchema, { minItems: 1, maxItems: 50 }) }, { additionalProperties: false }),
 		executionMode: "sequential",
 		async execute(_id, raw, _signal, _update, ctx) {
@@ -661,7 +661,7 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 	pi.on("before_agent_start", (event) => {
 		createGoalConsent = explicitGoalCreationRequested(event.prompt);
 		if (state.workflow === "goal-planning") {
-			return { systemPrompt: `${event.systemPrompt}\n\n[MYPI GOAL V3 PLANNING]\nCreate the complete branch-local structured plan and call set_goal_plan. Do not implement. Project planning files are ordinary workspace content and are not Goal state.` };
+			return { systemPrompt: `${event.systemPrompt}\n\n[MYPI GOAL V3 PLANNING]\n${goalPlanningPrompt()}` };
 		}
 		if (state.workflow === "goal" && state.status === "active") {
 			if (runStartedAt === undefined) runStartedAt = Date.now();
@@ -733,7 +733,7 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 			if (attempts >= MAX_PLAN_AGENT_ENDS) { restoreTools(state.toolsBeforePlan); setState(createIdleGoalState(now())); updateStatus(ctx); ctx.ui.notify("Goal planning aborted because set_goal_plan was not called after two settled attempts.", "error"); return; }
 			state = { ...state, planAgentEnds: attempts, updatedAt: now() };
 			persist();
-			pi.sendMessage({ customType: "mypi-goal-plan-correction", content: "The structured Goal plan has not been installed. Finish planning and call set_goal_plan now; do not implement.", display: false }, { deliverAs: "followUp", triggerTurn: true });
+			pi.sendMessage({ customType: "mypi-goal-plan-correction", content: "The structured Goal plan has not been installed. Finish the complete dependency-ordered plan with acceptance requirements and direct verification evidence, then call set_goal_plan. Do not implement.", display: false }, { deliverAs: "followUp", triggerTurn: true });
 			return;
 		}
 		if (state.workflow !== "goal") return;

@@ -102,6 +102,22 @@ describe("buildSystemPrompt", () => {
 		});
 	});
 
+	describe("evidence baseline", () => {
+		test("separates observed facts from assumptions and requires source inspection", () => {
+			const prompt = buildSystemPrompt({
+				contextFiles: [],
+				skills: [],
+				cwd: process.cwd(),
+			});
+
+			expect(prompt).toContain("# Evidence and uncertainty");
+			expect(prompt).toContain("Do not guess factual claims, URLs, citations");
+			expect(prompt).toContain("Search results and snippets are leads, not evidence");
+			expect(prompt).toContain("Prefer primary sources for technical claims");
+			expect(prompt).toContain("never presented as verified facts");
+		});
+	});
+
 	describe("intermediate commentary", () => {
 		test("describes commentary as concise user-visible collaboration", () => {
 			const prompt = buildSystemPrompt({

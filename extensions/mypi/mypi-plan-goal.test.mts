@@ -21,7 +21,7 @@ function createHarness(cwd: string, initialEntries: any[] = []) {
   const persisted: Array<{ customType: string; data: any }> = [];
   const notices: Array<{ message: string; level: string }> = [];
   const editors: Array<{ title: string; content: string }> = [];
-  let activeTools = ["read", "write", "edit", "bash"];
+  let activeTools = ["read", "write", "edit", "bash", "web_search", "web_fetch"];
   let idle = true;
   let pendingMessages = false;
   let aborts = 0;
@@ -45,7 +45,7 @@ function createHarness(cwd: string, initialEntries: any[] = []) {
     appendEntry: (customType: string, data: unknown) => persisted.push({ customType, data }),
     events: { emit: () => undefined },
     getActiveTools: () => [...activeTools],
-    getAllTools: () => ["read", "write", "edit", "bash", ...tools.keys()].map((name) => ({ name })),
+    getAllTools: () => ["read", "write", "edit", "bash", "web_search", "web_fetch", ...tools.keys()].map((name) => ({ name })),
     setActiveTools: (next: string[]) => { activeTools = [...next]; },
     sendUserMessage: (message: string) => { sent.push(message); },
     sendMessage: (message: any, options: any) => { customMessages.push({ message, options }); },
@@ -115,8 +115,14 @@ test("/plan creates a branch-local structured plan, stops, and /goal executes it
 	await harness.commands.get("plan").handler("preserve behavior", harness.ctx);
 	assert.equal(latestState(harness).workflow, "goal-planning");
 	assert.equal(latestState(harness).autoStart, false);
+	assert.equal(harness.activeTools.includes("web_search"), true);
+	assert.equal(harness.activeTools.includes("web_fetch"), true);
+	assert.equal(harness.activeTools.includes("bash"), false);
 	const before = await harness.emit("before_agent_start", { prompt: "plan", systemPrompt: "base" });
-	assert.match(before.systemPrompt, /branch-local structured plan/);
+	assert.match(before.systemPrompt, /complete dependency-ordered structured plan/);
+	assert.match(before.systemPrompt, /acceptance requirements/);
+	assert.match(before.systemPrompt, /direct evidence needed to verify completion/);
+	assert.match(harness.sent.at(-1) ?? "", /Follow the Goal planning contract/);
 	assert.doesNotMatch(before.systemPrompt, /Ordinary project planning notes/);
 	const prepared = await harness.executeTool("set_goal_plan", { items: STRUCTURED_ITEMS });
 	assert.match(prepared.content[0].text, /Run \/goal to execute/);
@@ -142,6 +148,21 @@ test("/goal runs the same structured planner first and auto-starts after install
 	assert.equal(pending.details.code, "goal-plan-pending");
 	await harness.executeTool("set_goal_plan", { items: STRUCTURED_ITEMS });
 	assert.equal(harness.snapshot().status, "active");
+	const before = await harness.emit("before_agent_start", { prompt: "execute", systemPrompt: "base" });
+	assert.match(before.systemPrompt, /Workspace claims require current file or command evidence/);
+	assert.match(before.systemPrompt, /External factual claims require an opened source/);
+	assert.match(before.systemPrompt, /generated summaries, search-result snippets, and model assertions are pointers/);
+});
+
+test("planning correction repeats the evidence-complete plan requirement without implementing", async () => {
+	const harness = createHarness(await mkdtemp(join(tmpdir(), "mypi-goal-v3-planning-correction-")));
+	await harness.commands.get("goal").handler("ship it", harness.ctx);
+	await harness.emit("agent_settled", { outcome: { kind: "success" } });
+	const correction = harness.customMessages.at(-1);
+	assert.equal(correction.message.customType, "mypi-goal-plan-correction");
+	assert.match(correction.message.content, /complete dependency-ordered plan/);
+	assert.match(correction.message.content, /acceptance requirements and direct verification evidence/);
+	assert.match(correction.message.content, /Do not implement/);
 });
 
 test("unfinished /plan planning survives reload and /goal promotes the same lineage", async () => {
@@ -158,6 +179,8 @@ test("unfinished /plan planning survives reload and /goal promotes the same line
 	await restored.commands.get("goal").handler("", restored.ctx);
 	assert.equal(latestState(restored).goalId, stored.goalId);
 	assert.equal(latestState(restored).autoStart, true);
+	assert.match(restored.sent.at(-1) ?? "", /Resume structured Goal planning/);
+	assert.match(restored.sent.at(-1) ?? "", /acceptance requirements and direct verification evidence/);
 	await restored.executeTool("set_goal_plan", { items: STRUCTURED_ITEMS });
 	assert.equal(restored.snapshot().status, "active");
 });

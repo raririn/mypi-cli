@@ -85,6 +85,7 @@ for (const fragment of [
   }
 }
 for (const relativePath of [
+  join("dist", "extensions", "mypi", "goal-prompts", "planning.md"),
   join("dist", "extensions", "mypi", "goal-prompts", "continuation.md"),
 ]) {
   const content = await readFile(join(packageRoot, relativePath), "utf8");
@@ -94,9 +95,12 @@ for (const relativePath of [
   if (content.includes("Root PLAN.md")) {
     throw new Error(`Installed Pi ${expectedVersion} still gives a project file Goal authority: ${relativePath}.`);
   }
-  for (const fragment of ["After update_goal succeeds", "final response", "Do not stop at the tool call"]) {
+  const requiredFragments = relativePath.endsWith("planning.md")
+    ? ["complete dependency-ordered structured plan", "direct evidence needed to verify completion", "Do not implement during planning"]
+    : ["External factual claims require an opened source", "After update_goal succeeds", "final response", "Do not stop at the tool call"];
+  for (const fragment of requiredFragments) {
     if (!content.includes(fragment)) {
-      throw new Error(`Installed Pi ${expectedVersion} is missing the Goal completion handoff (${fragment}): ${relativePath}.`);
+      throw new Error(`Installed Pi ${expectedVersion} is missing the Goal prompt contract (${fragment}): ${relativePath}.`);
     }
   }
 }
@@ -352,10 +356,16 @@ if (!agentSessionTypes.includes("AgentSettledOutcome") || !agentSessionTypes.inc
 
 const rpcMode = await readFile(join(packageRoot, "dist", "modes", "rpc", "rpc-mode.js"), "utf8");
 const rpcTypes = await readFile(join(packageRoot, "dist", "modes", "rpc", "rpc-types.d.ts"), "utf8");
-for (const fragment of ["mypiAskUser", 'method: "dismiss"', "targetId: id", 'case "navigate_tree"']) {
-  if (!rpcMode.includes(fragment)) {
-    throw new Error(`Installed Pi ${expectedVersion} is missing trusted ask_user RPC cleanup (${fragment}).`);
-  }
+for (const fragment of ["mypiAskUser", 'method: "dismiss"', "targetId: id", 'case "navigate_tree"', "getExternallyCurrentModels", "reloadPersistedModelState"]) {
+	if (!rpcMode.includes(fragment)) {
+		throw new Error(`Installed Pi ${expectedVersion} is missing trusted ask_user RPC cleanup (${fragment}).`);
+	}
+}
+const modelRuntime = await readFile(join(packageRoot, "dist", "core", "model-runtime.js"), "utf8");
+for (const fragment of ["reloadPersistedModelState", "allowNetwork: false"]) {
+	if (!modelRuntime.includes(fragment)) {
+		throw new Error(`Installed Pi ${expectedVersion} is missing external provider-state reload (${fragment}).`);
+	}
 }
 for (const fragment of [
   'method: "mypiAskUser"',
@@ -382,6 +392,9 @@ for (const fragment of [
   "passwords, API keys or access tokens",
   "trusted non-echoing prompt or credential manager",
   "Never try to evade an active safety or tool boundary",
+  "# Evidence and uncertainty",
+  "Search results and snippets are leads, not evidence",
+  "Prefer primary sources for technical claims",
   "# Intermediate commentary",
   "use the \\`commentary\\` tool",
 ]) {
@@ -412,7 +425,7 @@ const minimalSystemPrompt = await readFile(
   join(packageRoot, "docs", "system-prompts", "minimal.md"),
   "utf8",
 );
-for (const fragment of ["You are MyPi", "# Security", "trusted non-echoing prompt or credential manager"]) {
+for (const fragment of ["You are MyPi", "# Evidence and uncertainty", "search snippets are leads, not evidence", "# Security", "trusted non-echoing prompt or credential manager"]) {
   if (!minimalSystemPrompt.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing the packaged minimal system-prompt replacement (${fragment}).`);
   }
@@ -461,4 +474,4 @@ for (const relativePath of ["models.js", "compat.js"]) {
   }
 }
 
-console.log(`Verified Pi ${expectedVersion}, bundled docs/examples without built-in skills, runtime-owned Plan/Goal/archive/web/TUI/safety core with model-aware /reasoning and local /shift-tab selection, mode-specific safety footer presentation without change toasts, workspace-confined tools, canonical commentary updates with legacy-name compatibility, the built-in security baseline and packaged minimal prompt replacement, safe web provider selection, isolated fail-closed Anthropic shell sandboxing, non-echoing authentication input, API-key Codex gateway compatibility, suppressed automatic version-update metadata, one-line MyPi identity, outbound credential redaction, /hotkeys, resource viewers, acknowledged tree navigation, skill labels, typed agent settlement including preflight dispatch rejection, program-owned first-plus-last-three raw-user compaction continuity, post-completion Goal summaries, and Goal-aware proactive compaction continuation.`);
+console.log(`Verified Pi ${expectedVersion}, bundled docs/examples without built-in skills, runtime-owned Plan/Goal/archive/web/TUI/safety core with model-aware /reasoning and local /shift-tab selection, mode-specific safety footer presentation without change toasts, workspace-confined tools, canonical commentary updates with legacy-name compatibility, the built-in security and evidence baseline plus packaged minimal prompt replacement, source-opening web guidance, isolated fail-closed Anthropic shell sandboxing, non-echoing authentication input, API-key Codex gateway compatibility, offline cross-process provider-state reload, suppressed automatic version-update metadata, one-line MyPi identity, outbound credential redaction, /hotkeys, resource viewers, acknowledged tree navigation, skill labels, typed agent settlement including preflight dispatch rejection, program-owned first-plus-last-three raw-user compaction continuity, post-completion Goal summaries, and Goal-aware proactive compaction continuation.`);

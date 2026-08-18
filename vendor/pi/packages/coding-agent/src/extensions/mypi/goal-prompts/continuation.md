@@ -19,6 +19,13 @@ Authoritative plan contract:
 
 Work from current evidence. Earlier conversation can point toward relevant work, but inspect the present worktree and external state before relying on it. Do not narrow the objective to whatever is easiest to finish now.
 
+Evidence requirements:
+- Workspace claims require current file or command evidence.
+- Behavioral claims require an appropriate test or direct manual check.
+- External factual claims require an opened source with relevant date or version context.
+- Earlier conversation, generated summaries, search-result snippets, and model assertions are pointers, not completion evidence.
+- If required evidence is unavailable, incomplete, or conflicting, leave the item open and report what would verify it.
+
 Completion audit:
 - Compare every accepted plan item and requirement against current, direct evidence.
 - Treat missing, indirect, stale, or narrow evidence as incomplete.

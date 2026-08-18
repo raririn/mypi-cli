@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import {
   auditSettledBlockers,
@@ -16,6 +17,7 @@ import {
 } from "../../vendor/pi/packages/coding-agent/src/extensions/mypi/goal-state.ts";
 import {
   goalContinuationTemplateForTest,
+  goalPlanningTemplateForTest,
   renderGoalContinuationPrompt,
 } from "../../vendor/pi/packages/coding-agent/src/extensions/mypi/goal-prompts.ts";
 
@@ -99,9 +101,21 @@ test("usage accounting includes uncached input plus output only", () => {
 });
 
 test("Goal v3 prompt makes the structured session plan authoritative", () => {
+  const planning = goalPlanningTemplateForTest();
+  assert.equal(createHash("sha256").update(planning).digest("hex"), "4155e7df7bdcc5385891b253b21fb2ca986250052a1c13e1e3bba8c4f1508362");
+  assert.match(planning, /complete dependency-ordered structured plan/i);
+  assert.match(planning, /acceptance requirements/i);
+  assert.match(planning, /direct evidence needed to verify completion/i);
+  assert.match(planning, /unresolved facts as research or inspection items/i);
+  assert.match(planning, /Do not implement during planning/i);
+
   const template = goalContinuationTemplateForTest();
+  assert.equal(createHash("sha256").update(template).digest("hex"), "16f4be3bb9183521c7bfa54fc60336a3d0c6da8eba61ac50921c6aa8e44f07ef");
   assert.match(template, /structured session plan is authoritative/i);
   assert.match(template, /Project planning files are ordinary workspace content/i);
+  assert.match(template, /Workspace claims require current file or command evidence/i);
+  assert.match(template, /External factual claims require an opened source/i);
+  assert.match(template, /search-result snippets, and model assertions are pointers/i);
   assert.match(template, /after update_goal succeeds/i);
   assert.match(template, /final response/i);
   assert.doesNotMatch(template, /Root PLAN\.md/i);

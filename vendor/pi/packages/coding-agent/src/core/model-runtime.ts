@@ -432,6 +432,17 @@ export class ModelRuntime implements Models {
 		this.credentials.reload();
 	}
 
+	/**
+	 * Re-read credentials and cache-backed dynamic catalogs persisted by another
+	 * process. This is deliberately offline: surfaces may save provider login
+	 * state while a daemon engine is already running, but an RPC lookup must not
+	 * start an independent network refresh.
+	 */
+	async reloadPersistedModelState(): Promise<ModelsRefreshResult> {
+		this.reloadCredentials();
+		return this.refresh({ allowNetwork: false });
+	}
+
 	getProviderAuthStatus(providerId: string): AuthStatus {
 		if (this.credentials.hasRuntimeApiKey(providerId)) return { configured: true, source: "runtime" };
 		if (this.snapshot.storedProviders.has(providerId)) return { configured: true, source: "stored" };
