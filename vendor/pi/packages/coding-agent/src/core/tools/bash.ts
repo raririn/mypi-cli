@@ -206,6 +206,11 @@ export function createLocalBashOperations(options?: LocalBashOperationsOptions):
 			if (!(await options.onSandboxDenied({ command, cwd }))) return first;
 			onData(Buffer.from("\nMyPi: approved exact-command retry outside the sandbox.\n"));
 			const retried = await execOnce(false);
+			onData(
+				Buffer.from(
+					`\nMyPi: outside-sandbox retry completed with exit code ${retried.exitCode === null ? "signal" : retried.exitCode}.\n`,
+				),
+			);
 			return { ...retried, escalated: true };
 		},
 	};

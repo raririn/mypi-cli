@@ -221,7 +221,8 @@ const sandboxBash = await readFile(join(packageRoot, "dist", "core", "tools", "b
 if (
   !sandboxBash.includes("createMyPiSandboxProcessLaunch") ||
   !sandboxBash.includes("cleanupMyPiSandboxProcessLaunch") ||
-  !sandboxBash.includes("MYPI_SANDBOX_DENIAL_CONTROL")
+  !sandboxBash.includes("MYPI_SANDBOX_DENIAL_CONTROL") ||
+  !sandboxBash.includes("outside-sandbox retry completed with exit code")
 ) {
   throw new Error(`Installed Pi ${expectedVersion} does not apply sandboxing at the local BashOperations boundary.`);
 }

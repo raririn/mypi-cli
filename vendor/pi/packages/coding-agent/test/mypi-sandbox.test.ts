@@ -8,6 +8,7 @@ import {
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
+import { spawn } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -293,6 +294,27 @@ describe("MyPi shell sandbox", () => {
 				expect(approved.exitCode).toBe(0);
 				expect(approved.escalated).toBe(true);
 				expect(Buffer.concat(approvedChunks).toString("utf8")).toContain("outside-secret");
+				expect(Buffer.concat(approvedChunks).toString("utf8")).toContain(
+					"MyPi: outside-sandbox retry completed with exit code 0.",
+				);
+
+				const externalProcess = spawn("sleep", ["30"], { stdio: "ignore" });
+				try {
+					const signalChunks: Buffer[] = [];
+					const signalResult = await createLocalBashOperations({
+						sandbox: true,
+						onSandboxDenied: async () => true,
+					}).exec(`kill -0 ${externalProcess.pid}`, workspace, {
+						onData: (data) => signalChunks.push(data),
+					});
+					expect(signalResult.exitCode).toBe(0);
+					expect(signalResult.escalated).toBe(true);
+					expect(Buffer.concat(signalChunks).toString("utf8")).toContain(
+						"MyPi: outside-sandbox retry completed with exit code 0.",
+					);
+				} finally {
+					externalProcess.kill();
+				}
 
 				let forgedApprovalRequested = false;
 				const forged = await createLocalBashOperations({
