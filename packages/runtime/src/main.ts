@@ -49,7 +49,7 @@ import { assertValidSessionId, SessionManager } from "./core/session-manager.ts"
 import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { ProjectTrustStore, resolveProjectTrustRoot } from "./core/trust-manager.ts";
-import { builtInExtensions } from "./extensions/index.ts";
+import { productModules } from "./product/index.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.ts";
@@ -557,7 +557,7 @@ export interface MainOptions {
 export async function main(args: string[], options?: MainOptions) {
 	resetTimings();
 	const extensionFactories = options?.extensionFactories ?? [];
-	const commandExtensionFactories = [...builtInExtensions, ...extensionFactories];
+	const commandExtensionFactories = [...productModules, ...extensionFactories];
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(process.env.PI_OFFLINE);
 	if (offlineMode) {
 		process.env.PI_OFFLINE = "1";
@@ -756,7 +756,7 @@ export async function main(args: string[], options?: MainOptions) {
 					}
 				: undefined,
 			resourceLoaderOptions: {
-				includeBuiltInExtensions: process.env.MYPI_RUNTIME_PROFILE !== "chat",
+				includeProductModules: true,
 				additionalExtensionPaths: resolvedExtensionPaths,
 				additionalSkillPaths: resolvedSkillPaths,
 				additionalPromptTemplatePaths: resolvedPromptTemplatePaths,
@@ -770,6 +770,7 @@ export async function main(args: string[], options?: MainOptions) {
 				appendSystemPrompt: parsed.appendSystemPrompt,
 				extensionFactories,
 			},
+			productProfile: process.env.MYPI_RUNTIME_PROFILE === "chat" ? "chat" : "coding",
 		});
 		const { settingsManager, modelRuntime, resourceLoader } = services;
 		const diagnostics: AgentSessionRuntimeDiagnostic[] = [
@@ -897,10 +898,11 @@ export async function main(args: string[], options?: MainOptions) {
 					settingsManager: hostedSettingsManager,
 					extensionFlagValues: parsed.unknownFlags,
 					resourceLoaderOptions: {
-						includeBuiltInExtensions: process.env.MYPI_RUNTIME_PROFILE !== "chat",
+						includeProductModules: true,
 						additionalThemePaths: resolvedThemePaths,
 						noThemes: parsed.noThemes,
 					},
+					productProfile: process.env.MYPI_RUNTIME_PROFILE === "chat" ? "chat" : "coding",
 				});
 				reportDiagnostics([
 					...hostedServices.diagnostics,

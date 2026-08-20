@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "../src/core/extensions/types.ts";
 import { describe, expect, it } from "vitest";
-import compactionRecallExtension from "../src/extensions/mypi/compaction-recall.ts";
+import compactionRecallExtension from "../src/product/compaction-recall.ts";
 
 function createHarness(branch: unknown[] = []) {
 	let tool: any;

@@ -2,7 +2,7 @@ import { join } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../config.ts";
-import { builtInExtensions } from "../extensions/index.ts";
+import { productModulesForProfile, type ProductProfile } from "../product/index.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
 import { ModelRuntime } from "./model-runtime.ts";
@@ -43,6 +43,8 @@ export interface CreateAgentSessionServicesOptions {
 	extensionFlagValues?: Map<string, boolean | string>;
 	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
 	resourceLoaderReloadOptions?: ResourceLoaderReloadOptions;
+	/** Select sealed MyPi composition independently from user extension discovery. */
+	productProfile?: ProductProfile;
 }
 
 /**
@@ -145,8 +147,14 @@ export async function createAgentSessionServices(
 			modelsPath: join(agentDir, "models.json"),
 		}));
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
+	const includeProductModules =
+		options.resourceLoaderOptions?.includeProductModules ??
+		true;
+	const selectedProductModules = includeProductModules
+		? productModulesForProfile(options.productProfile ?? "coding")
+		: [];
 	const {
-		includeBuiltInExtensions = true,
+		includeProductModules: _includeProductModules,
 		extensionFactories = [],
 		...resourceLoaderOptions
 	} = options.resourceLoaderOptions ?? {};
@@ -155,7 +163,7 @@ export async function createAgentSessionServices(
 		cwd,
 		agentDir,
 		settingsManager,
-		extensionFactories: includeBuiltInExtensions ? [...builtInExtensions, ...extensionFactories] : extensionFactories,
+		extensionFactories: [...selectedProductModules, ...extensionFactories],
 	});
 	await resourceLoader.reload(options.resourceLoaderReloadOptions);
 

@@ -72,25 +72,28 @@ for (const fragment of ["checkForNewPiVersion", "showNewVersionNotification", "s
   }
 }
 
-const builtInExtensions = await readFile(join(packageRoot, "dist", "extensions", "index.js"), "utf8");
+const productComposition = await readFile(join(packageRoot, "dist", "product", "index.js"), "utf8");
 for (const fragment of [
-  "mypi-core",
-  "myPiCoreExtension",
+  "productModules",
+  "defineProductModule",
+  'defineProductModule("goal", "required"',
+  'defineProductModule("cliproxy", "provider"',
+  'defineProductModule("gui-control", "surface"',
   "webSearchExtension",
   "planGoalExtension",
   "safetyExtension",
 ]) {
-  if (!builtInExtensions.includes(fragment)) {
-    throw new Error(`Installed Pi ${expectedVersion} is missing a runtime-owned MyPi core feature (${fragment}).`);
+  if (!productComposition.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing sealed MyPi product composition (${fragment}).`);
   }
 }
 for (const relativePath of [
-  join("dist", "extensions", "mypi", "goal-prompts", "planning.md"),
-  join("dist", "extensions", "mypi", "goal-prompts", "continuation.md"),
+  join("dist", "product", "goal-prompts", "planning.md"),
+  join("dist", "product", "goal-prompts", "continuation.md"),
 ]) {
   const content = await readFile(join(packageRoot, relativePath), "utf8");
   if (!content.trim()) {
-    throw new Error(`Installed Pi ${expectedVersion} has an empty built-in MyPi resource: ${relativePath}.`);
+    throw new Error(`Installed Pi ${expectedVersion} has an empty sealed MyPi resource: ${relativePath}.`);
   }
   if (content.includes("Root PLAN.md")) {
     throw new Error(`Installed Pi ${expectedVersion} still gives a project file Goal authority: ${relativePath}.`);
@@ -106,7 +109,7 @@ for (const relativePath of [
 }
 
 const planGoal = await readFile(
-  join(packageRoot, "dist", "extensions", "mypi", "plan-goal.js"),
+  join(packageRoot, "dist", "product", "plan-goal.js"),
   "utf8",
 );
 for (const fragment of ["autoStart", "plan-ready", "Create a branch-local structured Goal v3 plan", "goal-plan-pending", "the tool result is not the final response", "Now give the user a concise final response"]) {
@@ -128,7 +131,7 @@ for (const goalTool of ["get_goal", "get_goal_plan", "create_goal", "set_goal_pl
 }
 
 const webExtension = await readFile(
-  join(packageRoot, "dist", "extensions", "mypi", "web", "index.js"),
+  join(packageRoot, "dist", "product", "web", "index.js"),
   "utf8",
 );
 for (const fragment of [
@@ -141,7 +144,7 @@ for (const fragment of [
   }
 }
 const webSearch = await readFile(
-  join(packageRoot, "dist", "extensions", "mypi", "web", "search.js"),
+  join(packageRoot, "dist", "product", "web", "search.js"),
   "utf8",
 );
 for (const fragment of [
@@ -155,7 +158,7 @@ for (const fragment of [
 }
 
 const safetyExtension = await readFile(
-  join(packageRoot, "dist", "extensions", "mypi", "safety.js"),
+  join(packageRoot, "dist", "product", "safety.js"),
   "utf8",
 );
 for (const fragment of [
@@ -202,7 +205,8 @@ for (const fragment of [
   'safe: "✓"',
   'full: "!"',
   "displayedSafetyMode",
-  'TRUSTED_PASSIVE_MYPI_PACKAGE_TOOLS = new Set(["set_status"])',
+  'name === "ask_user" || name === "set_status"',
+  "hasProductAuthority",
 ]) {
   if (!safetyMode.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing mode-specific safety footer copy (${fragment}).`);
@@ -342,7 +346,7 @@ for (const fragment of ["isRetainedRawUserMessages(entry.retainedUserMessages)",
   }
 }
 const compactionRecall = await readFile(
-  join(packageRoot, "dist", "extensions", "mypi", "compaction-recall.js"),
+  join(packageRoot, "dist", "product", "compaction-recall.js"),
   "utf8",
 );
 for (const fragment of ["recall_compacted_history", "current session branch", "sealed pre-compaction transcript"]) {

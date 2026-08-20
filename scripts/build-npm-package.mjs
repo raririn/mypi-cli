@@ -34,7 +34,6 @@ const customPackageDirectories = [
   "packages/runtime",
 ];
 const productManifest = readJson(join(productRoot, "package.json"));
-const coreManifest = readJson(join(productRoot, "resources", "mypi-core-package", "package.json"));
 const provenance = readJson(join(productRoot, "PI_UPSTREAM_PROVENANCE.json"));
 const version = productManifest.version;
 const release = productManifest.mypiRelease;
@@ -44,7 +43,6 @@ assert(version === versionContract.productVersion, "MyPi version contract does n
 assert(release?.name === versionContract.releaseName, "MyPi release name contract does not match the CLI");
 assert(release?.chronicle === versionContract.releaseChronicle, "MyPi release chronicle contract does not match the CLI");
 assert(release?.protocol === versionContract.protocolGeneration, "MyPi protocol generation contract does not match the CLI");
-assert(version === coreManifest.version, "@mypi/core version does not match the CLI");
 assert(
   normalizeVersion(productManifest.devDependencies?.["@earendil-works/pi-coding-agent"])
     === provenance.upstreamVersion,
@@ -60,8 +58,6 @@ mkdirSync(npmCache, { recursive: true });
 
 copyTemplateTree();
 copyRuntimeLaunchers();
-copyChatRuntime();
-copyProfilePackage();
 copyFile(join(productRoot, "LICENSE"), join(stageRoot, "LICENSE"));
 copyFile(join(productRoot, "LICENSES", "pi-MIT.txt"), join(stageRoot, "LICENSES", "pi-MIT.txt"));
 copyFile(join(productRoot, "SOURCE_PROVENANCE.json"), join(stageRoot, "SOURCE_PROVENANCE.json"));
@@ -100,8 +96,6 @@ const finalManifest = {
     "bin",
     "lib",
     "scripts",
-    "extensions",
-    "resources",
     "README.md",
     "LICENSE",
     "LICENSES",
@@ -246,77 +240,6 @@ function copyRuntimeLaunchers() {
   }
 }
 
-function copyChatRuntime() {
-  const extensionsRoot = join(stageRoot, "extensions", "mypi");
-  mkdirSync(extensionsRoot, { recursive: true });
-  const esbuild = join(productRoot, "node_modules", ".bin", "esbuild");
-  assert(existsSync(esbuild), "esbuild is required to compile the npm-safe Chat runtime");
-  for (const [source, output] of [
-    ["mypi-chat.ts", "mypi-chat.mjs"],
-    ["mypi-chat-storage.mts", "mypi-chat-storage.mjs"],
-  ]) {
-    const result = spawnSync(esbuild, [
-      join(productRoot, "extensions", "mypi", source),
-      "--bundle",
-      "--platform=node",
-      "--format=esm",
-      "--target=node22",
-      "--packages=external",
-      `--outfile=${join(extensionsRoot, output)}`,
-    ], { stdio: "inherit" });
-    if (result.error) throw result.error;
-    assert(result.status === 0, `esbuild failed while compiling ${source}`);
-  }
-  const piCliPath = join(stageRoot, "scripts", "pi-cli.mjs");
-  const compiledPiCli = readFileSync(piCliPath, "utf8")
-    .replace("../extensions/mypi/mypi-chat-storage.mts", "../extensions/mypi/mypi-chat-storage.mjs")
-    .replace('"mypi-chat.ts"', '"mypi-chat.mjs"');
-  writeFileSync(piCliPath, compiledPiCli);
-}
-
-function copyProfilePackage() {
-  const destination = join(stageRoot, "resources", "mypi-core");
-  copyFile(
-    join(productRoot, "resources", "mypi-core-package", "package.json"),
-    join(destination, "package.json"),
-  );
-  const profileFiles = [
-    "cliproxy-provider-core.ts",
-    "mypi-agent-signals.ts",
-    "mypi-ask-user.ts",
-    "mypi-chat-manage.ts",
-    "mypi-chat-storage.mts",
-    "mypi-cliproxy-provider.ts",
-    "mypi-credential-redaction.ts",
-    "mypi-exit.ts",
-    "mypi-identity.ts",
-    "mypi-keyword-skill-router.ts",
-    "mypi-progress-briefs.ts",
-    "mypi-readonly.ts",
-    "mypi-redpanda-provider.ts",
-    "mypi-safemode.ts",
-    "mypi-trusted-read-tools.mts",
-    "mypi-tui-auto-title.ts",
-    "mypi-working-timer.ts",
-    "redpanda-provider-core.ts",
-  ];
-  for (const name of profileFiles) {
-    copyFile(
-      join(productRoot, "extensions", "mypi", name),
-      join(destination, "extensions", name),
-    );
-  }
-  copyTree(
-    join(productRoot, "extensions", "gui-control"),
-    join(destination, "extensions", "gui-control"),
-    (path) => (
-      !path.includes("/node_modules/")
-      && !path.endsWith("package-lock.json")
-      && !path.includes(".test.")
-    ),
-  );
-}
-
 function mergeDependencies(target, values, customVersions) {
   for (const [name, rawVersion] of Object.entries(values)) {
     if (customVersions.has(name)) continue;
@@ -429,10 +352,9 @@ function verifyStagedRuntimeProfile() {
     );
 
     const activatedSettings = readJson(join(agentDir, "settings.json"));
-    const bundledCore = join(stageRoot, "resources", "mypi-core");
     assert(
-      activatedSettings.packages.length === 1 && resolve(activatedSettings.packages[0]) === resolve(bundledCore),
-      "normal staged launch did not replace the legacy managed @mypi/core path",
+      activatedSettings.packages.length === 0,
+      "normal staged launch did not remove the legacy managed @mypi/core path",
     );
     assert(
       activatedSettings.preserved?.sentinel === true,

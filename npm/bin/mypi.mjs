@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
-import { ensureBundledProfile } from "../lib/ensure-profile.mjs";
+import { convergeLegacyProfile } from "../lib/converge-profile.mjs";
 
 const command = process.argv[2];
 if (command === "__install-profile") {
-  const result = await ensureBundledProfile();
-  process.stdout.write(`${result.changed ? "Activated" : "Verified"} bundled @mypi/core at ${result.source}.\n`);
+  const result = await convergeLegacyProfile();
+  process.stdout.write(`${result.changed ? "Removed" : "Verified absence of"} legacy MyPi profile packages.\n`);
   process.exit(0);
 }
 
@@ -18,9 +18,9 @@ const skipsProfileActivation =
   || command === "__remote-workspace";
 
 if (!skipsProfileActivation) {
-  // Every normal launch converges only recognized MyPi-managed package paths
-  // onto this installation's bundled core. Unknown/user packages are retained.
-  await ensureBundledProfile();
+  // Product behavior is sealed in the runtime. Remove only recognized legacy
+  // managed package paths; unknown/user packages remain untouched.
+  await convergeLegacyProfile();
 }
 
 await import("../scripts/mypi.mjs");

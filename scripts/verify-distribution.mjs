@@ -21,7 +21,9 @@ assert(report.piCoreVersion === "0.82.1", "npm report has Pi-version drift");
 assert(statSync(artifact).size === report.packageSize, "npm report has artifact-size drift");
 assert(sha256(artifact) === report.sha256, "npm report has artifact-digest drift");
 assert(report.packageSize <= 80 * 1024 * 1024, "npm artifact exceeds the 80 MiB size budget");
-assert(report.entryCount <= 2_000, "npm artifact exceeds the 2,000-entry content budget");
+// Sealed product modules now compile into JS, declarations, and source maps in
+// the runtime package instead of shipping as a smaller profile-source copy.
+assert(report.entryCount <= 2_200, "npm artifact exceeds the 2,200-entry content budget");
 
 const packageJson = JSON.parse(execFileSync(
   "tar",
@@ -55,6 +57,8 @@ assert(
   !entries.some((entry) => entry.includes("/@earendil-works/pi-coding-agent/skills/")),
   "npm artifact must not bundle built-in Pi skills",
 );
+assert(!entries.some((entry) => entry.includes("/resources/mypi-core/")),
+  "npm artifact must not contain the retired @mypi/core profile package");
 for (const required of [
   "package/LICENSE",
   "package/LICENSES/pi-MIT.txt",
@@ -62,8 +66,9 @@ for (const required of [
   "package/SOURCE_PROVENANCE.json",
   "package/MYPI_PROVENANCE.json",
   "package/bin/mypi.mjs",
-  "package/resources/mypi-core/extensions/cliproxy-provider-core.ts",
-  "package/resources/mypi-core/extensions/mypi-cliproxy-provider.ts",
+  "package/node_modules/@earendil-works/pi-coding-agent/dist/product/registry.js",
+  "package/node_modules/@earendil-works/pi-coding-agent/dist/product/mypi-agent-signals.js",
+  "package/node_modules/@earendil-works/pi-coding-agent/dist/product/mypi-cliproxy-provider.js",
 ]) {
   assert(entries.includes(required), `npm artifact is missing ${required}`);
 }

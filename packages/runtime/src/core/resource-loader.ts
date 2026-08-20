@@ -16,7 +16,9 @@ import {
 	loadExtensionsCached,
 } from "./extensions/loader.ts";
 import type { Extension, ExtensionRuntime, InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
-import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
+import { getProductModuleClass } from "../product/registry.ts";
+import { createSyntheticSourceInfo, hasProductAuthority } from "./source-info.ts";
+import { DefaultPackageManager, type PathMetadata, type ResolvedPaths, type ResolvedResource } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import { loadPromptTemplates } from "./prompt-templates.ts";
 import { SettingsManager } from "./settings-manager.ts";
@@ -29,6 +31,28 @@ export interface ResourceExtensionPaths {
 	skillPaths?: Array<{ path: string; metadata: PathMetadata }>;
 	promptPaths?: Array<{ path: string; metadata: PathMetadata }>;
 	themePaths?: Array<{ path: string; metadata: PathMetadata }>;
+}
+
+const RETIRED_MYPI_PROFILE_PACKAGES = new Set(["@mypi/core", "@mypi/web-search"]);
+
+function filterRetiredProductPackages(paths: ResolvedPaths): ResolvedPaths {
+	const keep = (resource: ResolvedResource): boolean => {
+		if (resource.metadata.origin !== "package" || !resource.metadata.baseDir) return true;
+		try {
+			const manifest = JSON.parse(readFileSync(join(resource.metadata.baseDir, "package.json"), "utf8")) as {
+				name?: unknown;
+			};
+			return typeof manifest.name !== "string" || !RETIRED_MYPI_PROFILE_PACKAGES.has(manifest.name);
+		} catch {
+			return true;
+		}
+	};
+	return {
+		extensions: paths.extensions.filter(keep),
+		skills: paths.skills.filter(keep),
+		prompts: paths.prompts.filter(keep),
+		themes: paths.themes.filter(keep),
+	};
 }
 
 export interface ResourceLoaderReloadOptions {
@@ -133,7 +157,8 @@ export interface DefaultResourceLoaderOptions {
 	additionalThemePaths?: string[];
 	extensionFactories?: InlineExtension[];
 	/** Include runtime-owned MyPi extensions when constructed through session services. */
-	includeBuiltInExtensions?: boolean;
+	/** Include sealed MyPi runtime/product modules. Defaults to true. */
+	includeProductModules?: boolean;
 	noExtensions?: boolean;
 	noSkills?: boolean;
 	noPromptTemplates?: boolean;
@@ -356,7 +381,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 		// reload() preserves SettingsManager.projectTrusted and reloads settings for that trust state.
 		await this.settingsManager.reload();
-		const resolvedPaths = await this.packageManager.resolve();
+		const resolvedPaths = filterRetiredProductPackages(await this.packageManager.resolve());
 		const cliExtensionPaths = await this.packageManager.resolveExtensionSources(this.additionalExtensionPaths, {
 			temporary: true,
 		});
@@ -495,7 +520,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	private async loadCurrentExtensionSet(options: { includeInlineFactories: boolean }): Promise<LoadExtensionsResult> {
-		const resolvedPaths = await this.packageManager.resolve();
+		const resolvedPaths = filterRetiredProductPackages(await this.packageManager.resolve());
 		const cliExtensionPaths = await this.packageManager.resolveExtensionSources(this.additionalExtensionPaths, {
 			temporary: true,
 		});
@@ -686,9 +711,11 @@ export class DefaultResourceLoader implements ResourceLoader {
 
 	private applyExtensionSourceInfo(extensions: Extension[], metadataByPath: Map<string, PathMetadata>): void {
 		for (const extension of extensions) {
-			extension.sourceInfo =
-				this.findSourceInfoForPath(extension.path, undefined, metadataByPath) ??
-				this.getDefaultSourceInfoForPath(extension.path);
+			if (!hasProductAuthority(extension.sourceInfo)) {
+				extension.sourceInfo =
+					this.findSourceInfoForPath(extension.path, undefined, metadataByPath) ??
+					this.getDefaultSourceInfoForPath(extension.path);
+			}
 			for (const command of extension.commands.values()) {
 				command.sourceInfo = extension.sourceInfo;
 			}
@@ -899,10 +926,25 @@ export class DefaultResourceLoader implements ResourceLoader {
 		for (const [index, input] of this.extensionFactories.entries()) {
 			const isNamed = typeof input !== "function";
 			const factory = isNamed ? input.factory : input;
+			const productClass = getProductModuleClass(input);
 			const extensionPath =
-				isNamed && input.builtIn ? `<builtin:${input.name}>` : `<inline:${isNamed ? input.name : index + 1}>`;
+				productClass && isNamed
+					? `<product:${productClass}:${input.name}>`
+					: isNamed && input.builtIn
+						? `<builtin:${input.name}>`
+						: `<inline:${isNamed ? input.name : index + 1}>`;
 			try {
-				const extension = await loadExtensionFromFactory(factory, this.cwd, this.eventBus, runtime, extensionPath);
+				const sourceInfo = productClass
+					? createSyntheticSourceInfo(extensionPath, { source: "product", productClass })
+					: undefined;
+				const extension = await loadExtensionFromFactory(
+					factory,
+					this.cwd,
+					this.eventBus,
+					runtime,
+					extensionPath,
+					sourceInfo,
+				);
 				extension.hidden = isNamed && input.hidden;
 				extensions.push(extension);
 			} catch (error) {

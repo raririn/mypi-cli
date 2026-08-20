@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,24 +14,31 @@ const packages = [
   ["@earendil-works/pi-coding-agent", "build"],
 ];
 
+function packageDirectory(packageName) {
+  if (packageName === "@earendil-works/pi-agent-core") return "agent";
+  if (packageName === "@earendil-works/pi-coding-agent") return "runtime";
+  return packageName.slice("@earendil-works/pi-".length);
+}
+
 if (typeof provenance.upstreamVersion !== "string") {
   throw new Error("Pi upstream provenance is missing upstreamVersion.");
 }
 
 for (const [packageName] of packages) {
-  const packageDirectory = packageName === "@earendil-works/pi-agent-core"
-    ? "agent"
-    : packageName === "@earendil-works/pi-coding-agent"
-      ? "runtime"
-      : packageName.slice("@earendil-works/pi-".length);
+  const directory = packageDirectory(packageName);
   const manifest = JSON.parse(
-    readFileSync(join(root, "packages", packageDirectory, "package.json"), "utf8"),
+    readFileSync(join(root, "packages", directory, "package.json"), "utf8"),
   );
   if (manifest.name !== packageName || manifest.version !== provenance.upstreamVersion) {
     throw new Error(
       `Forked ${packageName} must match provenance version ${provenance.upstreamVersion}; found ${manifest.name}@${manifest.version}.`,
     );
   }
+}
+
+// Never let removed product modules or generated files survive into a package.
+for (const [packageName] of packages) {
+  rmSync(join(root, "packages", packageDirectory(packageName), "dist"), { recursive: true, force: true });
 }
 
 const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";

@@ -54,7 +54,7 @@ test("remote host metadata advertises the workspace index implemented by the hel
   assert.ok(info.workspaceCapabilities.includes("workspace-index"));
 });
 
-test("profile activation preserves unrelated settings", async () => {
+test("profile convergence leaves unrelated settings unchanged", async () => {
   const fixture = mkdtempSync(join(tmpdir(), "mypi-profile-test-"));
   const agentDir = join(fixture, "agent");
   const settingsPath = join(agentDir, "settings.json");
@@ -64,20 +64,20 @@ test("profile activation preserves unrelated settings", async () => {
     packages: ["npm:someone/extension"],
     unknown: { retained: true },
   })}\n`);
-  const modulePath = `${join(root, "npm", "lib", "ensure-profile.mjs")}?test=${Date.now()}`;
-  const { ensureBundledProfile } = await import(modulePath);
-  const first = await ensureBundledProfile({ env: { MYPI_AGENT_DIR: agentDir } });
-  const second = await ensureBundledProfile({ env: { MYPI_AGENT_DIR: agentDir } });
+  const modulePath = `${join(root, "npm", "lib", "converge-profile.mjs")}?test=${Date.now()}`;
+  const { convergeLegacyProfile } = await import(modulePath);
+  const first = await convergeLegacyProfile({ env: { MYPI_AGENT_DIR: agentDir } });
+  const second = await convergeLegacyProfile({ env: { MYPI_AGENT_DIR: agentDir } });
   const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
-  assert.equal(first.changed, true);
+  assert.equal(first.changed, false);
   assert.equal(second.changed, false);
   assert.equal(settings.theme, "dark");
   assert.deepEqual(settings.unknown, { retained: true });
   assert.equal(settings.packages[0], "npm:someone/extension");
-  assert.match(settings.packages[1], /resources\/mypi-core$/);
+  assert.equal(settings.packages.length, 1);
 });
 
-test("normal profile activation replaces only superseded MyPi-managed entries", async () => {
+test("normal profile convergence removes only superseded MyPi-managed entries", async () => {
   const fixture = mkdtempSync(join(tmpdir(), "mypi-profile-replace-test-"));
   const agentDir = join(fixture, "agent");
   const formerCore = join(agentDir, "packages", "mypi-core");
@@ -91,12 +91,11 @@ test("normal profile activation replaces only superseded MyPi-managed entries", 
     packages: ["packages/mypi-core", "packages/web-search", "npm:someone/extension"],
     preserved: true,
   })}\n`);
-  const modulePath = `${join(root, "npm", "lib", "ensure-profile.mjs")}?replace=${Date.now()}`;
-  const { ensureBundledProfile } = await import(modulePath);
-  await ensureBundledProfile({ env: { MYPI_AGENT_DIR: agentDir } });
+  const modulePath = `${join(root, "npm", "lib", "converge-profile.mjs")}?replace=${Date.now()}`;
+  const { convergeLegacyProfile } = await import(modulePath);
+  await convergeLegacyProfile({ env: { MYPI_AGENT_DIR: agentDir } });
   const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
-  assert.match(settings.packages[0], /resources\/mypi-core$/);
-  assert.equal(settings.packages[1], "npm:someone/extension");
-  assert.equal(settings.packages.length, 2);
+  assert.equal(settings.packages[0], "npm:someone/extension");
+  assert.equal(settings.packages.length, 1);
   assert.equal(settings.preserved, true);
 });

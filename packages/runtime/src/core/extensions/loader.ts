@@ -29,7 +29,7 @@ import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
-import { createSyntheticSourceInfo } from "../source-info.ts";
+import { createSyntheticSourceInfo, type SourceInfo } from "../source-info.ts";
 import { time } from "../timings.ts";
 import type {
 	EntryRenderer,
@@ -512,8 +512,10 @@ export async function loadExtensionFromFactory(
 	eventBus: EventBus,
 	runtime: ExtensionRuntime,
 	extensionPath = "<inline>",
+	sourceInfo?: SourceInfo,
 ): Promise<Extension> {
 	const extension = createExtension(extensionPath, extensionPath);
+	if (sourceInfo) extension.sourceInfo = sourceInfo;
 	const resolvedCwd = resolvePath(cwd);
 	const api = createExtensionAPI(extension, runtime, resolvedCwd, eventBus);
 	await factory(api);

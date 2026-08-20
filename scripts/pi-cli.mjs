@@ -13,7 +13,7 @@ import {
   listChats,
   resolveChatPaths,
   restoreChat,
-} from "../extensions/mypi/mypi-chat-storage.mts";
+} from "@earendil-works/pi-coding-agent";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const piRoot = resolve(scriptDirectory, "..");
@@ -48,14 +48,12 @@ async function runChat(chatArgs) {
   await mkdir(launch.cwd, { recursive: true });
   if (launch.create) await writeFile(join(launch.cwd, "canvas.md"), "", { flag: "wx" });
 
-  const profile = join(piRoot, "extensions", "mypi", "mypi-chat.ts");
   const forwarded = [
     "--no-extensions",
     "--no-skills",
     "--no-prompt-templates",
     "--no-context-files",
     "--tools", "read_canvas,edit_canvas,replace_canvas,list_attachments,read_attachment,calculate,web_search,web_fetch",
-    "--extension", profile,
     "--session-dir", paths.activeHistory,
     ...launch.args,
   ];

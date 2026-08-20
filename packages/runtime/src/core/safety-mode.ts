@@ -1,6 +1,6 @@
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
+import { isAbsolute, relative, sep, win32 } from "node:path";
 import type { SourceInfo } from "./source-info.ts";
+import { hasProductAuthority } from "./source-info.ts";
 
 export const SAFETY_MODES = ["safe", "sandbox", "sandbox-ask", "ask", "full"] as const;
 export type SafetyMode = (typeof SAFETY_MODES)[number];
@@ -112,7 +112,7 @@ export function safetyUsesSandbox(mode: SafetyMode): boolean {
 	return mode === "sandbox" || mode === "sandbox-ask";
 }
 
-const TRUSTED_MYPI_CORE_TOOLS = new Set([
+const TRUSTED_PRODUCT_TOOLS = new Set([
 	"web_search",
 	"web_fetch",
 	"get_goal",
@@ -122,69 +122,18 @@ const TRUSTED_MYPI_CORE_TOOLS = new Set([
 	"update_goal_plan",
 	"update_goal",
 ]);
-const TRUSTED_USER_INTERACTION_TOOLS = new Set(["ask_user"]);
 const TRUSTED_PASSIVE_BUILTIN_TOOLS = new Set(["commentary"]);
-const TRUSTED_PASSIVE_MYPI_PACKAGE_TOOLS = new Set(["set_status"]);
-
-function isWithin(path: string, parent: string): boolean {
-	const rel = relative(parent, path);
-	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-}
-
-function findPackageRoot(entryPath: string, baseDir?: string): string | undefined {
-	let directory = dirname(entryPath);
-	const boundary = baseDir ? realpathSync(resolve(baseDir)) : undefined;
-	while (true) {
-		const manifest = join(directory, "package.json");
-		if (existsSync(manifest)) return directory;
-		const parent = dirname(directory);
-		if (parent === directory || (boundary && !isWithin(directory, boundary))) return undefined;
-		directory = parent;
-	}
-}
-
-function isTrustedPackageTool(sourceInfo: SourceInfo, packageName: string): boolean {
-	if (sourceInfo.origin !== "package" || sourceInfo.path.startsWith("<")) return false;
-	try {
-		const entryPath = realpathSync(resolve(sourceInfo.path));
-		const packageRoot = findPackageRoot(entryPath, sourceInfo.baseDir);
-		if (!packageRoot) return false;
-		const canonicalRoot = realpathSync(packageRoot);
-		if (!isWithin(entryPath, canonicalRoot)) return false;
-		const manifestPath = join(canonicalRoot, "package.json");
-		const stat = lstatSync(manifestPath);
-		if (!stat.isFile() || stat.isSymbolicLink()) return false;
-		const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
-			name?: unknown;
-			pi?: { extensions?: unknown };
-		};
-		if (manifest.name !== packageName || !Array.isArray(manifest.pi?.extensions)) return false;
-		return manifest.pi.extensions.some((candidate) => {
-			if (typeof candidate !== "string") return false;
-			try {
-				return realpathSync(resolve(canonicalRoot, candidate)) === entryPath;
-			} catch {
-				return false;
-			}
-		});
-	} catch {
-		return false;
-	}
-}
 
 export function isTrustedSafetyTool(name: string, sourceInfo: SourceInfo | undefined): boolean {
 	if (!sourceInfo) return false;
 	if (TRUSTED_PASSIVE_BUILTIN_TOOLS.has(name)) {
 		return sourceInfo.source === "builtin" && sourceInfo.path === `<builtin:${name}>`;
 	}
-	if (TRUSTED_MYPI_CORE_TOOLS.has(name)) {
-		return sourceInfo.source === "builtin" && sourceInfo.path === "<builtin:mypi-core>";
+	if (TRUSTED_PRODUCT_TOOLS.has(name)) {
+		return hasProductAuthority(sourceInfo, ["required", "capability"]);
 	}
-	if (TRUSTED_USER_INTERACTION_TOOLS.has(name)) {
-		return isTrustedPackageTool(sourceInfo, "@mypi/core");
-	}
-	if (TRUSTED_PASSIVE_MYPI_PACKAGE_TOOLS.has(name)) {
-		return isTrustedPackageTool(sourceInfo, "@mypi/core");
+	if (name === "ask_user" || name === "set_status") {
+		return hasProductAuthority(sourceInfo, ["capability"]);
 	}
 	return false;
 }

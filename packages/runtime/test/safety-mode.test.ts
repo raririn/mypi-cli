@@ -36,14 +36,14 @@ describe("safety modes", () => {
 		expect(safetyModeFooterText("full")).toBe("! Full Access");
 	});
 
-	it("accepts web tools only from the exact built-in MyPi core provenance", () => {
-		const builtin = { path: "<builtin:mypi-core>", source: "builtin", scope: "temporary", origin: "top-level" } as const;
+	it("accepts web tools only from sealed product capability provenance", () => {
+		const builtin = { path: "<product:capability:web>", source: "product", scope: "temporary", origin: "top-level", productClass: "capability" } as const;
 		expect(isTrustedSafetyTool("web_search", builtin)).toBe(true);
 		expect(isTrustedSafetyTool("web_search", { ...builtin, path: "/tmp/spoof.ts", source: "extension" })).toBe(false);
 	});
 
-	it("keeps every Goal lifecycle tool only for exact built-in MyPi core provenance", () => {
-		const builtin = { path: "<builtin:mypi-core>", source: "builtin", scope: "temporary", origin: "top-level" } as const;
+	it("keeps every Goal lifecycle tool only for sealed required-product provenance", () => {
+		const builtin = { path: "<product:required:goal>", source: "product", scope: "temporary", origin: "top-level", productClass: "required" } as const;
 		const goalTools = ["get_goal", "get_goal_plan", "create_goal", "set_goal_plan", "update_goal_plan", "update_goal"];
 		for (const name of goalTools) {
 			expect(isTrustedSafetyTool(name, builtin), name).toBe(true);

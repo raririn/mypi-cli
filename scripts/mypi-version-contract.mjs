@@ -71,10 +71,10 @@ export function readMyPiRuntimeVersion(root = defaultRoot) {
 
 export function readMyPiRepositoryVersionContract(root = defaultRoot) {
   const contract = readMyPiRuntimeVersion(root);
-  const protocolSource = readFileSync(join(root, "extensions/gui-control/protocol.ts"), "utf8");
+  const protocolSource = readFileSync(join(root, "packages/runtime/src/product/gui-control/protocol.ts"), "utf8");
   const protocolMatch = protocolSource.match(/^export const MYPI_CONTROL_PROTOCOL = ([1-9]\d*)$/m);
   if (!protocolMatch) {
-    throw new Error("extensions/gui-control/protocol.ts must declare a positive integer MYPI_CONTROL_PROTOCOL.");
+    throw new Error("product/gui-control/protocol.ts must declare a positive integer MYPI_CONTROL_PROTOCOL.");
   }
   const sourceProtocolGeneration = Number(protocolMatch[1]);
   if (sourceProtocolGeneration !== contract.protocolGeneration) {
@@ -87,14 +87,6 @@ export function readMyPiRepositoryVersionContract(root = defaultRoot) {
     throw new Error(
       `MyPi CLI major version ${productMajor} must equal MyPi protocol generation ${contract.protocolGeneration}.`,
     );
-  }
-  for (const relativePath of ["resources/mypi-core-package/package.json"]) {
-    const manifest = readManifest(join(root, relativePath));
-    if (manifest.version !== contract.productVersion) {
-      throw new Error(
-        `${relativePath} version must equal MyPi ${contract.productVersion}; found ${JSON.stringify(manifest.version)}.`,
-      );
-    }
   }
   return contract;
 }

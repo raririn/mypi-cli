@@ -12,8 +12,7 @@
  */
 
 import * as crypto from "node:crypto";
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { existsSync } from "node:fs";
 import type { AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
 import type {
 	ExtensionUIContext,
@@ -28,6 +27,7 @@ import {
 	writeRawStdout,
 } from "../../core/output-guard.ts";
 import { SessionManager } from "../../core/session-manager.ts";
+import { hasProductAuthority } from "../../core/source-info.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
@@ -56,45 +56,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isWithin(filePath: string, parentPath: string): boolean {
-	const rel = relative(parentPath, filePath);
-	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
-}
-
 function isTrustedMyPiAskUser(session: AgentSessionRuntime["session"]): boolean {
 	const tool = session.getAllTools().find((candidate) => candidate.name === "ask_user");
-	const sourceInfo = tool?.sourceInfo;
-	if (!sourceInfo || sourceInfo.origin !== "package" || sourceInfo.path.startsWith("<")) return false;
-	try {
-		const entryPath = realpathSync(resolve(sourceInfo.path));
-		const boundary = sourceInfo.baseDir ? realpathSync(resolve(sourceInfo.baseDir)) : undefined;
-		let packageRoot = dirname(entryPath);
-		while (!existsSync(join(packageRoot, "package.json"))) {
-			if (packageRoot === dirname(packageRoot) || (boundary && !isWithin(packageRoot, boundary))) {
-				return false;
-			}
-			packageRoot = dirname(packageRoot);
-		}
-		packageRoot = realpathSync(packageRoot);
-		if (!isWithin(entryPath, packageRoot)) return false;
-		const manifestPath = join(packageRoot, "package.json");
-		const stat = lstatSync(manifestPath);
-		if (!stat.isFile() || stat.isSymbolicLink()) return false;
-		const manifest: unknown = JSON.parse(readFileSync(manifestPath, "utf8"));
-		if (!isRecord(manifest) || manifest.name !== "@mypi/core" || !isRecord(manifest.pi)) return false;
-		const extensions = manifest.pi.extensions;
-		if (!Array.isArray(extensions)) return false;
-		return extensions.some((candidate) => {
-			if (typeof candidate !== "string") return false;
-			try {
-				return realpathSync(resolve(packageRoot, candidate)) === entryPath;
-			} catch {
-				return false;
-			}
-		});
-	} catch {
-		return false;
-	}
+	return hasProductAuthority(tool?.sourceInfo, ["capability"]);
 }
 
 function parseAskUserMetadata(value: unknown): AskUserMetadata | undefined {

@@ -64,7 +64,7 @@ import {
 } from "../session-manager.ts";
 import { addUsageToTotals, createUsageTotals } from "../usage-totals.ts";
 import { createAllToolDefinitions } from "../tools/index.ts";
-import { bindHostedTuiChrome, runHostedResourceCommand } from "../../extensions/mypi/tui-hero/index.ts";
+import { bindHostedTuiChrome, runHostedResourceCommand } from "../../product/tui-hero/index.ts";
 import type { HostedDaemonClient } from "./daemon-client.ts";
 
 const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];

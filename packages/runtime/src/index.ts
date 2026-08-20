@@ -172,7 +172,7 @@ export {
 } from "./core/extensions/index.ts";
 // Footer data provider (git branch + extension statuses - data not otherwise available to extensions)
 export type { ReadonlyFooterDataProvider } from "./core/footer-data-provider.ts";
-// Per-session execution mode (off / sandbox / safe) shared with @mypi/core.
+// Per-session execution mode (off / sandbox / safe) used by compatibility modules.
 export {
 	cycleExecutionMode,
 	type ExecutionMode,
@@ -429,5 +429,15 @@ export { copyToClipboard } from "./utils/clipboard.ts";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";
 export { convertToPng } from "./utils/image-convert.ts";
 export { formatDimensionNote, type ResizedImage, resizeImage } from "./utils/image-resize.ts";
+// Product-owned Chat storage used by the `mypi chat` launcher.
+export {
+	archiveChat,
+	deleteArchivedChat,
+	ensureChatRoots,
+	eraseChatAssets,
+	listChats,
+	resolveChatPaths,
+	restoreChat,
+} from "./product/mypi-chat-storage.ts";
 // Shell utilities
 export { getShellConfig } from "./utils/shell.ts";

@@ -26,12 +26,12 @@ const forbiddenPaths = files.filter((path) => (
   /(^|\/)(AGENTS\.md|CLAUDE\.md|PLAN\.md|ISSUES\.md|PREFLIGHT\.md|SYNC\.md|HANDOFF[^/]*\.md)$/i.test(path)
   || /(^|\/)(\.agents|\.codex|node_modules|coverage|playwright-report|test-results)(\/|$)/i.test(path)
   || /(^|\/)\.env(?:\.|$)/i.test(path)
+  || /^(?:vendor\/pi|extensions\/(?:mypi|gui-control)|resources\/mypi-core-package)(?:\/|$)/i.test(path)
   || /(^|\/)\.npmrc$/i.test(path)
   || /(^|\/)(id_(?:rsa|dsa|ecdsa|ed25519)|credentials?)(?:\.|$)/i.test(path)
   || /\.(?:pem|p12|pfx)$/i.test(path)
   || (
     /(^|\/)(?:package-lock\.json|npm-shrinkwrap\.json)$/.test(path)
-    && path !== "extensions/gui-control/package-lock.json"
     && !path.startsWith("packages/runtime/")
   )
 ));
