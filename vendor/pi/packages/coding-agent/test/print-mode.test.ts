@@ -18,6 +18,7 @@ type FakeSession = {
 	bindExtensions: ReturnType<typeof vi.fn>;
 	subscribe: ReturnType<typeof vi.fn>;
 	prompt: ReturnType<typeof vi.fn>;
+	promptStructured: ReturnType<typeof vi.fn>;
 	reload: ReturnType<typeof vi.fn>;
 };
 
@@ -71,6 +72,13 @@ function createRuntimeHost(assistantMessage: AssistantMessage): FakeRuntimeHost 
 		bindExtensions: vi.fn(async () => {}),
 		subscribe: vi.fn(() => () => {}),
 		prompt: vi.fn(async () => {}),
+		promptStructured: vi.fn(async () => ({
+			value: { answer: "done" },
+			schemaHash: "hash",
+			method: "native" as const,
+			attempts: 1,
+			usage: createAssistantMessage().usage,
+		})),
 		reload: vi.fn(async () => {}),
 	};
 
@@ -121,6 +129,26 @@ describe("runPrintMode", () => {
 		expect(session.prompt).toHaveBeenCalledWith("hello");
 		expect(session.extensionRunner.emit).toHaveBeenCalledTimes(1);
 		expect(session.extensionRunner.emit).toHaveBeenCalledWith({ type: "session_shutdown", reason: "quit" });
+	});
+
+	it("routes structured print runs through the authoritative result API", async () => {
+		const runtimeHost = createRuntimeHost(createAssistantMessage({ text: "ordinary" }));
+		const schema = {
+			type: "object",
+			properties: { answer: { type: "string" } },
+			required: ["answer"],
+			additionalProperties: false,
+		};
+
+		const exitCode = await runPrintMode(runtimeHost as unknown as Parameters<typeof runPrintMode>[0], {
+			mode: "text",
+			initialMessage: "answer",
+			structuredOutput: { schema },
+		});
+
+		expect(exitCode).toBe(0);
+		expect(runtimeHost.session.promptStructured).toHaveBeenCalledWith("answer", { schema }, { images: undefined });
+		expect(runtimeHost.session.prompt).not.toHaveBeenCalled();
 	});
 
 	it("emits session_shutdown and returns non-zero on assistant error", async () => {

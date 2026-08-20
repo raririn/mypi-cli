@@ -924,6 +924,7 @@ export class HostedAgentSession implements InteractiveSessionSurface {
 			message: text,
 			images: options?.images,
 			streamingBehavior: options?.streamingBehavior,
+			structuredOutput: options?.structuredOutput,
 		});
 	}
 

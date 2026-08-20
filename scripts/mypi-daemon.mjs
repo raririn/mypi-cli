@@ -127,7 +127,7 @@ function attachLineReader(stream, onLine) {
 
 const { idleGraceMs } = parseArgs(process.argv.slice(3));
 
-/** @type {Map<string, {child: import('node:child_process').ChildProcess, sessionId: string, sessionFile: string|null, cwd: string, clients: Set<object>, pending: Map<string, {client: object, originalId: string|undefined}>, outstandingUi: Set<string>, turnActive: boolean, exited: boolean, graceTimer: NodeJS.Timeout|null, counter: number, lastErrorNotify: string|null, pendingRelease: object|null}>} */
+/** @type {Map<string, {child: import('node:child_process').ChildProcess, sessionId: string, sessionFile: string|null, cwd: string, clients: Set<object>, pending: Map<string, {client: object, originalId: string|undefined, commandType?: string, structuredOutput?: boolean}>, structuredCorrelations: Map<string, {client: object, originalId: string|undefined}>, outstandingUi: Set<string>, turnActive: boolean, exited: boolean, graceTimer: NodeJS.Timeout|null, counter: number, lastErrorNotify: string|null, pendingRelease: object|null}>} */
 const sessions = new Map();
 /** @type {Map<string, {sessionId: string, sessionFile: string, owner: object, observedAt: number}>} */
 const externalOwners = new Map();
@@ -273,6 +273,7 @@ function startSession({ sessionId, cwd, model, sessionStart }) {
     child: null,
     clients: new Set(),
     pending: new Map(),
+    structuredCorrelations: new Map(),
     abandonedEngineRequestIds: new Set(),
     outstandingUi: new Map(),
     turnActive: false,
@@ -370,6 +371,9 @@ function handleEngineFrame(session, line) {
     const pending = session.pending.get(frame.id);
     if (pending) {
       session.pending.delete(frame.id);
+      if (frame.success && pending.commandType === "prompt" && pending.structuredOutput) {
+        session.structuredCorrelations.set(frame.id, pending);
+      }
       const finishedSurfacePreparation = pending.surfacePreparation === true;
       if (finishedSurfacePreparation) session.preparingSurfaceTarget = false;
       const restored = {
@@ -406,10 +410,30 @@ function handleEngineFrame(session, line) {
     return;
   }
 
+  if (frame?.type === "structured_result" || frame?.type === "structured_result_error") {
+    const engineRequestId = frame.type === "structured_result" ? frame.result?.requestId : frame.error?.requestId;
+    const pending =
+      typeof engineRequestId === "string" ? session.structuredCorrelations.get(engineRequestId) : undefined;
+    if (pending) {
+      session.structuredCorrelations.delete(engineRequestId);
+      for (const client of session.clients) {
+        const restored = { ...frame, sessionId: session.sessionId ?? session.key };
+        const target = frame.type === "structured_result" ? { ...frame.result } : { ...frame.error };
+        if (client === pending.client && pending.originalId !== undefined) target.requestId = pending.originalId;
+        else delete target.requestId;
+        if (frame.type === "structured_result") restored.result = target;
+        else restored.error = target;
+        sendToClient(client, restored);
+      }
+      return;
+    }
+  }
+
   if (frame?.type === "agent_start") session.turnActive = true;
   if (frame?.type === "agent_settled") {
     session.turnActive = false;
     broadcast(session, { ...frame, sessionId: session.sessionId ?? session.key });
+    session.structuredCorrelations.clear();
     // A drain in progress exits as soon as the last turn settles.
     if (draining) maybeFinishDrain();
     if (session.pendingRelease) {
@@ -1122,6 +1146,7 @@ function handleClientFrame(client, frame) {
       client,
       originalId: typeof frame.id === "string" ? frame.id : undefined,
       commandType: frame.type,
+      structuredOutput: frame.type === "prompt" && frame.structuredOutput !== undefined,
     });
     const { sessionId: _ignored, ...engineFrame } = frame;
     sendToEngine(session, { ...engineFrame, id: routedId });

@@ -181,6 +181,7 @@ function getAnthropicCompat(
 		supportsTemperature: model.compat?.supportsTemperature ?? true,
 		allowEmptySignature: model.compat?.allowEmptySignature ?? false,
 		supportsStrictTools: model.compat?.supportsStrictTools ?? false,
+		supportsStructuredOutputs: model.compat?.supportsStructuredOutputs ?? model.provider === "anthropic",
 		supportsToolReferences: model.compat?.supportsToolReferences ?? defaultSupportsToolReferences(model),
 	};
 }
@@ -1059,6 +1060,16 @@ function buildParams(
 		} else {
 			params.tool_choice = options.toolChoice;
 		}
+	}
+
+	if (options?.structuredOutput && (compat.supportsStructuredOutputs ?? model.provider === "anthropic")) {
+		params.output_config = {
+			...params.output_config,
+			format: {
+				type: "json_schema",
+				schema: options.structuredOutput.schema,
+			},
+		};
 	}
 
 	return params;

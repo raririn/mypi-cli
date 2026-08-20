@@ -152,9 +152,24 @@ test("a hosted runtime attaches, mirrors state, and drives a turn through the da
     // A prompt streams events through the same subscribe path as embedded.
     const events = [];
     session.subscribe((event) => events.push(event));
-    await session.prompt("hello");
+    await session.prompt("hello", {
+      structuredOutput: {
+        schema: {
+          type: "object",
+          properties: { echo: { type: "string" } },
+          required: ["echo"],
+          additionalProperties: false,
+        },
+        requestId: "hosted-1",
+      },
+    });
     await waitFor(() => events.some((e) => e.type === "agent_settled"), 5_000, "settled");
     assert.ok(events.some((e) => e.type === "agent_start"));
+    assert.deepEqual(
+      events.find((e) => e.type === "structured_result")?.result.value,
+      { echo: "hello" },
+      "the hosted surface receives the daemon's authoritative structured result",
+    );
     assert.ok(
       events.some(
         (e) => e.type === "message_update" && e.assistantMessageEvent?.delta === "echo:hello",

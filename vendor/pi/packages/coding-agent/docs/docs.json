@@ -103,6 +103,10 @@
           "path": "json.md"
         },
         {
+          "title": "Structured Headless Output",
+          "path": "structured-output.md"
+        },
+        {
           "title": "TUI Components",
           "path": "tui.md"
         }

@@ -70,6 +70,7 @@ function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCo
 		sessionAffinityFormat: model.compat?.sessionAffinityFormat ?? detectSessionAffinityFormat(model),
 		supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
 		supportsStrictMode: model.compat?.supportsStrictMode ?? false,
+		supportsStructuredOutputs: model.compat?.supportsStructuredOutputs ?? model.provider === "openai",
 		supportsOpenAIGrammarTools: model.compat?.supportsOpenAIGrammarTools ?? false,
 		supportsToolSearch: model.compat?.supportsToolSearch ?? false,
 		supportsExplicitPromptCacheMode: model.compat?.supportsExplicitPromptCacheMode ?? false,
@@ -291,6 +292,18 @@ function buildParams(
 
 	if (options?.serviceTier !== undefined) {
 		params.service_tier = options.serviceTier;
+	}
+
+	if (options?.structuredOutput && compat.supportsStructuredOutputs) {
+		params.text = {
+			format: {
+				type: "json_schema",
+				name: options.structuredOutput.name,
+				schema: options.structuredOutput.schema,
+				description: options.structuredOutput.description,
+				strict: options.structuredOutput.strict ?? true,
+			},
+		};
 	}
 
 	if (toolPlacement.immediate.length > 0) {

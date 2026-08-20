@@ -112,6 +112,18 @@ export interface ProviderResponse {
 	headers: Record<string, string>;
 }
 
+/** Provider-native JSON Schema output request. Callers must still validate the returned value locally. */
+export interface StructuredOutputFormat {
+	type: "json_schema";
+	/** Provider-safe format name (letters, digits, underscores, and dashes; at most 64 characters). */
+	name: string;
+	/** Bounded JSON Schema supplied by the caller. */
+	schema: Record<string, unknown>;
+	description?: string;
+	/** Request strict provider-side enforcement where supported. */
+	strict?: boolean;
+}
+
 export interface StreamOptions {
 	temperature?: number;
 	maxTokens?: number;
@@ -176,6 +188,12 @@ export interface StreamOptions {
 	 * Default: 60000 (60 seconds). Set to 0 to disable the cap.
 	 */
 	maxRetryDelayMs?: number;
+	/**
+	 * Request a provider-native structured final response. Providers that do not
+	 * implement this option ignore it; higher layers must select a validated
+	 * fallback and must always validate the returned JSON locally.
+	 */
+	structuredOutput?: StructuredOutputFormat;
 	/**
 	 * Optional metadata to include in API requests.
 	 * Providers extract the fields they understand and ignore the rest.
@@ -549,6 +567,8 @@ export interface OpenAICompletionsCompat {
 	supportsOpenAIGrammarTools?: boolean;
 	/** Whether the provider supports the `strict` field in tool definitions. Default: true. */
 	supportsStrictMode?: boolean;
+	/** Whether the endpoint accepts native JSON-schema response formats. Default: true only for first-party OpenAI. */
+	supportsStructuredOutputs?: boolean;
 	/** Cache control convention for prompt caching. "anthropic" applies Anthropic-style `cache_control` markers to the system prompt, last tool definition, and last user, assistant, or tool-result text content. */
 	cacheControlFormat?: "anthropic";
 	/** Whether to send session-affinity data from `options.sessionId`. Default: false. */
@@ -571,6 +591,8 @@ export interface OpenAIResponsesCompat {
 	supportsLongCacheRetention?: boolean;
 	/** Whether the provider supports strict JSON-schema function tools. Defaults are API-specific; generated OpenAI models enable it explicitly. */
 	supportsStrictMode?: boolean;
+	/** Whether the endpoint accepts native JSON-schema response formats. Default: true only for first-party OpenAI and Azure OpenAI. */
+	supportsStructuredOutputs?: boolean;
 	/** Whether to emit OpenAI custom tools with Lark/regex grammar formats. When false, grammar-constrained tools fall back to normal function tools. Default: false; the generated model catalog enables it for capable models. */
 	supportsOpenAIGrammarTools?: boolean;
 	/** Whether the model supports client-executed tool search for deferred tools. Default: false. */
@@ -637,6 +659,8 @@ export interface AnthropicMessagesCompat {
 	allowEmptySignature?: boolean;
 	/** Whether the provider supports Anthropic strict tool schemas. Default: false; generated Anthropic models enable it explicitly. */
 	supportsStrictTools?: boolean;
+	/** Whether the endpoint accepts Anthropic native structured output via `output_config.format`. Default: true only for first-party Anthropic. */
+	supportsStructuredOutputs?: boolean;
 	/**
 	 * Whether the provider supports deferred tools loaded by `tool_reference`
 	 * blocks in tool results. Default: true for first-party Anthropic models

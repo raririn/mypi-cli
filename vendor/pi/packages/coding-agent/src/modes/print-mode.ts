@@ -8,6 +8,7 @@
 
 import type { AssistantMessage, ImageContent } from "@earendil-works/pi-ai";
 import type { AgentSessionRuntime } from "../core/agent-session-runtime.ts";
+import type { StructuredOutputRequest, StructuredOutputResult } from "../core/structured-output.ts";
 import { flushRawStdout, writeRawStdout } from "../core/output-guard.ts";
 import { killTrackedDetachedChildren } from "../utils/shell.ts";
 
@@ -23,6 +24,8 @@ export interface PrintModeOptions {
 	initialMessage?: string;
 	/** Images to attach to the initial message */
 	initialImages?: ImageContent[];
+	/** Authoritative final-result schema for each prompt in this headless run. */
+	structuredOutput?: StructuredOutputRequest;
 }
 
 /**
@@ -30,8 +33,9 @@ export interface PrintModeOptions {
  * Sends prompts to the agent and outputs the result.
  */
 export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: PrintModeOptions): Promise<number> {
-	const { mode, messages = [], initialMessage, initialImages } = options;
+	const { mode, messages = [], initialMessage, initialImages, structuredOutput } = options;
 	let exitCode = 0;
+	let structuredResult: StructuredOutputResult | undefined;
 	let session = runtimeHost.session;
 	let unsubscribe: (() => void) | undefined;
 	let disposed = false;
@@ -119,14 +123,23 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntime, options: Pr
 		await rebindSession();
 
 		if (initialMessage) {
-			await session.prompt(initialMessage, { images: initialImages });
+			if (structuredOutput) {
+				structuredResult = await session.promptStructured(initialMessage, structuredOutput, { images: initialImages });
+			} else {
+				await session.prompt(initialMessage, { images: initialImages });
+			}
 		}
 
 		for (const message of messages) {
-			await session.prompt(message);
+			if (structuredOutput) structuredResult = await session.promptStructured(message, structuredOutput);
+			else await session.prompt(message);
 		}
 
 		if (mode === "text") {
+			if (structuredResult) {
+				writeRawStdout(`${JSON.stringify(structuredResult.value)}\n`);
+				return exitCode;
+			}
 			const state = session.state;
 			const lastMessage = state.messages[state.messages.length - 1];
 

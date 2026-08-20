@@ -53,6 +53,16 @@ With images:
 {"type": "prompt", "message": "What's in this image?", "images": [{"type": "image", "data": "base64-encoded-data", "mimeType": "image/png"}]}
 ```
 
+With an authoritative structured result:
+
+```json
+{"id":"req-1","type":"prompt","message":"Summarize this project","structuredOutput":{"schema":{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}}}
+```
+
+The immediate response still means accepted. A later `structured_result` or
+`structured_result_error` carries `requestId: "req-1"` and is emitted before
+`agent_settled`. See [Structured Headless Output](structured-output.md).
+
 **During streaming**: If the agent is already streaming, you must specify `streamingBehavior` to queue the message:
 
 ```json

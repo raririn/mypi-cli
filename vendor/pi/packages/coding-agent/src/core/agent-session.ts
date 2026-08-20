@@ -122,6 +122,17 @@ import {
 	type SafetySessionState,
 } from "./safety-mode.ts";
 import { type BuildSystemPromptOptions, buildSystemPrompt } from "./system-prompt.ts";
+import {
+	generateStructuredOutput,
+	prepareStructuredOutputRequest,
+	STRUCTURED_OUTPUT_SESSION_ENTRY,
+	StructuredOutputError,
+	type PreparedStructuredOutputRequest,
+	type StructuredOutputRequest,
+	type StructuredOutputResult,
+	type StructuredOutputSchemaEntry,
+	type StructuredOutputValueEntry,
+} from "./structured-output.ts";
 import { type BashOperations, createLocalBashOperations } from "./tools/bash.ts";
 import {
 	createAllToolDefinitions,
@@ -130,7 +141,7 @@ import {
 	normalizeLegacyToolNames,
 } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
-import { addUsageToTotals, createUsageTotals } from "./usage-totals.ts";
+import { addUsageToTotals, createUsageTotals, getStructuredOutputUsage } from "./usage-totals.ts";
 
 const MYPI_PROACTIVE_CONTINUATION_TEXT =
 	"Continue the unfinished work described by the active compaction summary. Do not repeat completed work. Preserve the current request and all active MyPi policies.";
@@ -259,6 +270,17 @@ export type AgentSessionEvent =
 			willRetry: boolean;
 	  }
 	| { type: "agent_settled"; outcome: AgentSettledOutcome }
+	| { type: "structured_result"; result: StructuredOutputResult }
+	| {
+			type: "structured_result_error";
+			error: {
+				code: StructuredOutputError["code"];
+				message: string;
+				schemaHash?: string;
+				attempts?: number;
+				requestId?: string;
+			};
+	  }
 	| {
 			type: "queue_update";
 			steering: readonly string[];
@@ -375,6 +397,8 @@ export interface PromptOptions {
 	requireStreaming?: boolean;
 	/** MyPi host metadata used to reconcile an accepted queue item by stable ID. */
 	mypiQueuedMessageId?: string;
+	/** Request an authoritative structured final result for this complete run. */
+	structuredOutput?: StructuredOutputRequest;
 }
 
 /** Result from cycleModel() */
@@ -458,6 +482,7 @@ export class AgentSession {
 	private _mypiProactiveContinuationTokens = new Set<string>();
 	private _mypiSettledOutcome: AgentSettledOutcome = { kind: "success" };
 	private _mypiSettlementEpoch = 0;
+	private _structuredOutputAbortController: AbortController | undefined;
 
 	// Branch summarization state
 	private _branchSummaryAbortController: AbortController | undefined = undefined;
@@ -1386,7 +1411,83 @@ export class AgentSession {
 	// Prompting
 	// =========================================================================
 
-	private async _runAgentPrompt(messages: AgentMessage | AgentMessage[]): Promise<void> {
+	private _latestStructuredOutputSchemaEntry(): StructuredOutputSchemaEntry | undefined {
+		const branch = this.sessionManager.getBranch();
+		for (let index = branch.length - 1; index >= 0; index -= 1) {
+			const entry = branch[index];
+			if (entry.type !== "custom" || entry.customType !== STRUCTURED_OUTPUT_SESSION_ENTRY) continue;
+			const data = entry.data as Partial<StructuredOutputSchemaEntry> | undefined;
+			if (data?.version === 1 && data.kind === "schema" && typeof data.schemaHash === "string") {
+				return data as StructuredOutputSchemaEntry;
+			}
+		}
+		return undefined;
+	}
+
+	private _activateStructuredOutputSchema(request: PreparedStructuredOutputRequest): void {
+		const active = this._latestStructuredOutputSchemaEntry();
+		if (active && active.schemaHash !== request.schemaHash) {
+			throw new StructuredOutputError(
+				"schema_conflict",
+				`Structured output schema conflicts with the active session schema (${active.schemaHash}).`,
+				{ schemaHash: request.schemaHash, requestId: request.requestId },
+			);
+		}
+		if (!active) {
+			this.sessionManager.appendCustomEntry(STRUCTURED_OUTPUT_SESSION_ENTRY, {
+				version: 1,
+				kind: "schema",
+				schemaHash: request.schemaHash,
+				schema: request.schema,
+				name: request.name,
+				description: request.description,
+			} satisfies StructuredOutputSchemaEntry);
+		}
+	}
+
+	private async _finalizeStructuredOutput(request: PreparedStructuredOutputRequest): Promise<void> {
+		this._structuredOutputAbortController = new AbortController();
+		try {
+			const result = await generateStructuredOutput(this.agent, request, this._structuredOutputAbortController.signal);
+			this.sessionManager.appendCustomEntry(STRUCTURED_OUTPUT_SESSION_ENTRY, {
+				version: 1,
+				kind: "result",
+				schemaHash: result.schemaHash,
+				method: result.method,
+				attempts: result.attempts,
+				value: result.value,
+				usage: result.usage,
+			} satisfies StructuredOutputValueEntry);
+			this._emit({ type: "structured_result", result });
+		} catch (error) {
+			const structuredError =
+				error instanceof StructuredOutputError
+					? error
+					: new StructuredOutputError(
+							this._structuredOutputAbortController.signal.aborted ? "aborted" : "provider_error",
+							error instanceof Error ? error.message : String(error),
+							{ schemaHash: request.schemaHash, requestId: request.requestId },
+						);
+			this._emit({
+				type: "structured_result_error",
+				error: {
+					code: structuredError.code,
+					message: structuredError.message,
+					schemaHash: structuredError.schemaHash,
+					attempts: structuredError.attempts,
+					requestId: structuredError.requestId,
+				},
+			});
+			throw structuredError;
+		} finally {
+			this._structuredOutputAbortController = undefined;
+		}
+	}
+
+	private async _runAgentPrompt(
+		messages: AgentMessage | AgentMessage[],
+		structuredOutput?: PreparedStructuredOutputRequest,
+	): Promise<void> {
 		this._mypiSettledOutcome = { kind: "success" };
 		this._mypiProactiveContinuationBudget = 1;
 		this._mypiProactiveContinuationTokens.clear();
@@ -1395,6 +1496,9 @@ export class AgentSession {
 			await this.agent.prompt(messages);
 			while (await this._handlePostAgentRun()) {
 				await this.agent.continue();
+			}
+			if (structuredOutput && this._mypiSettledOutcome.kind === "success") {
+				await this._finalizeStructuredOutput(structuredOutput);
 			}
 		} catch (error) {
 			this._mypiSettledOutcome = {
@@ -1467,8 +1571,12 @@ export class AgentSession {
 		const expandPromptTemplates = options?.expandPromptTemplates ?? true;
 		const preflightResult = options?.preflightResult;
 		let messages: AgentMessage[] | undefined;
+		let structuredOutput: PreparedStructuredOutputRequest | undefined;
 
 		try {
+			structuredOutput = options?.structuredOutput
+				? prepareStructuredOutputRequest(options.structuredOutput)
+				: undefined;
 			// Handle extension commands first (execute immediately, even during streaming)
 			// Extension commands manage their own LLM interaction via pi.sendMessage()
 			if (expandPromptTemplates && text.startsWith("/")) {
@@ -1530,6 +1638,13 @@ export class AgentSession {
 
 			// If streaming, queue via steer() or followUp() based on option
 			if (this.isStreaming) {
+				if (structuredOutput) {
+					throw new StructuredOutputError(
+						"schema_conflict",
+						"A queued prompt cannot request a second structured result. Submit it after the active run settles.",
+						{ schemaHash: structuredOutput.schemaHash, requestId: structuredOutput.requestId },
+					);
+				}
 				if (!options?.streamingBehavior) {
 					throw new Error(
 						"Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.",
@@ -1577,6 +1692,9 @@ export class AgentSession {
 			// Freeze a pending safety selection only after input/auth preflight has accepted
 			// this as a new user-submitted run. Provider/tool continuations retain the snapshot.
 			this._commitSafetyAtRunBoundary();
+			if (structuredOutput) {
+				this._activateStructuredOutputSchema(structuredOutput);
+			}
 
 			// Build messages array (custom message if any, then user message)
 			messages = [];
@@ -1644,7 +1762,38 @@ export class AgentSession {
 		}
 
 		preflightResult?.(true);
-		await this._runAgentPrompt(messages);
+		await this._runAgentPrompt(messages, structuredOutput);
+	}
+
+	/** Run one prompt and return its authoritative structured final result. */
+	async promptStructured(
+		text: string,
+		request: StructuredOutputRequest,
+		options?: Omit<PromptOptions, "structuredOutput">,
+	): Promise<StructuredOutputResult> {
+		const prepared = prepareStructuredOutputRequest(request);
+		let result: StructuredOutputResult | undefined;
+		const unsubscribe = this.subscribe((event) => {
+			if (
+				event.type === "structured_result" &&
+				event.result.schemaHash === prepared.schemaHash &&
+				event.result.requestId === prepared.requestId
+			) {
+				result = event.result;
+			}
+		});
+		try {
+			await this.prompt(text, { ...options, structuredOutput: request });
+		} finally {
+			unsubscribe();
+		}
+		if (!result) {
+			throw new StructuredOutputError("provider_error", "Structured output settled without a result.", {
+				schemaHash: prepared.schemaHash,
+				requestId: prepared.requestId,
+			});
+		}
+		return result;
 	}
 
 	/**
@@ -1975,6 +2124,7 @@ export class AgentSession {
 	 */
 	async abort(): Promise<void> {
 		this.abortRetry();
+		this._structuredOutputAbortController?.abort();
 		this.agent.abort();
 		await this.waitForIdle();
 	}
@@ -3674,6 +3824,8 @@ export class AgentSession {
 			if ((entry.type === "branch_summary" || entry.type === "compaction") && entry.usage) {
 				addUsageToTotals(usageTotals, entry.usage);
 			}
+			const structuredUsage = getStructuredOutputUsage(entry);
+			if (structuredUsage) addUsageToTotals(usageTotals, structuredUsage);
 			if (entry.type !== "message") continue;
 			totalMessages++;
 			const message = entry.message;

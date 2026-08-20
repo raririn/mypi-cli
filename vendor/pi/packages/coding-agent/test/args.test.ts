@@ -125,6 +125,12 @@ describe("parseArgs", () => {
 			expect(result.mode).toBe("rpc");
 		});
 
+		test("parses --output-schema", () => {
+			const result = parseArgs(["--output-schema", "result.schema.json", "answer"]);
+			expect(result.outputSchema).toBe("result.schema.json");
+			expect(result.messages).toEqual(["answer"]);
+		});
+
 		test("parses --session", () => {
 			const result = parseArgs(["--session", "/path/to/session.jsonl"]);
 			expect(result.session).toBe("/path/to/session.jsonl");
@@ -154,6 +160,14 @@ describe("parseArgs", () => {
 		test("parses --models as comma-separated list", () => {
 			const result = parseArgs(["--models", "gpt-4o,claude-sonnet,gemini-pro"]);
 			expect(result.models).toEqual(["gpt-4o", "claude-sonnet", "gemini-pro"]);
+		});
+	});
+
+	test("reports a missing --output-schema path", () => {
+		const result = parseArgs(["--output-schema"]);
+		expect(result.diagnostics).toContainEqual({
+			type: "error",
+			message: "--output-schema requires a file path",
 		});
 	});
 

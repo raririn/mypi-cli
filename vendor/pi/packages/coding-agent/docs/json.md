@@ -6,6 +6,11 @@ pi --mode json "Your prompt"
 
 Outputs all session events as JSON lines to stdout. Useful for integrating pi into other tools or custom UIs.
 
+With `--output-schema <file>`, the stream remains JSONL and adds exactly one
+`structured_result` or `structured_result_error` event before final settlement.
+The final value is nested under `structured_result.result.value`; it is never
+written as an unframed JSON object. See [Structured Headless Output](structured-output.md).
+
 ## Event Types
 
 Events are defined in [`AgentSessionEvent`](https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/src/core/agent-session.ts#L102):
@@ -13,6 +18,8 @@ Events are defined in [`AgentSessionEvent`](https://github.com/earendil-works/pi
 ```typescript
 type AgentSessionEvent =
   | AgentEvent
+  | { type: "structured_result"; result: StructuredOutputResult }
+  | { type: "structured_result_error"; error: StructuredOutputFailure }
   | { type: "queue_update"; steering: readonly string[]; followUp: readonly string[] }
   | { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
   | { type: "compaction_end"; reason: "manual" | "threshold" | "overflow"; result: CompactionResult | undefined; aborted: boolean; willRetry: boolean; errorMessage?: string }
@@ -77,6 +84,8 @@ Followed by events as they occur:
 {"type":"message_end","message":{...}}
 {"type":"turn_end","message":{...},"toolResults":[]}
 {"type":"agent_end","messages":[...]}
+{"type":"structured_result","result":{"value":{"summary":"..."},"schemaHash":"...","method":"native","attempts":1}}
+{"type":"agent_settled","outcome":{"kind":"success"}}
 ```
 
 ## Example

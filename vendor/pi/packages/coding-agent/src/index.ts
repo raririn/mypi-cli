@@ -24,6 +24,13 @@ export {
 	type SessionStats,
 } from "./core/agent-session.ts";
 export { readStoredCredential } from "./core/auth-storage.ts";
+export {
+	prepareStructuredOutputRequest,
+	StructuredOutputError,
+	type StructuredOutputErrorCode,
+	type StructuredOutputRequest,
+	type StructuredOutputResult,
+} from "./core/structured-output.ts";
 // Compaction
 export {
 	type BranchPreparation,

@@ -14,6 +14,11 @@ import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.t
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type { RpcCommand, RpcResponse, RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
 import type { SafetyMode } from "../../core/safety-mode.ts";
+import {
+	StructuredOutputError,
+	type StructuredOutputRequest,
+	type StructuredOutputResult,
+} from "../../core/structured-output.ts";
 
 // ============================================================================
 // Types
@@ -197,6 +202,40 @@ export class RpcClient {
 	 */
 	async prompt(message: string, images?: ImageContent[]): Promise<void> {
 		await this.send({ type: "prompt", message, images });
+	}
+
+	/** Send a prompt and wait for its correlated authoritative structured result. */
+	async promptStructured(
+		message: string,
+		request: Omit<StructuredOutputRequest, "requestId">,
+		images?: ImageContent[],
+		timeout = 60_000,
+	): Promise<StructuredOutputResult> {
+		const response = await this.send({ type: "prompt", message, images, structuredOutput: request });
+		const requestId = response.id;
+		return await new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				unsubscribe();
+				reject(new Error(`Timeout waiting for structured result. Stderr: ${this.stderr}`));
+			}, timeout);
+			const unsubscribe = this.onEvent((event) => {
+				if (event.type === "structured_result" && event.result.requestId === requestId) {
+					clearTimeout(timer);
+					unsubscribe();
+					resolve(event.result);
+				} else if (event.type === "structured_result_error" && event.error.requestId === requestId) {
+					clearTimeout(timer);
+					unsubscribe();
+					reject(
+						new StructuredOutputError(event.error.code, event.error.message, {
+							schemaHash: event.error.schemaHash,
+							attempts: event.error.attempts,
+							requestId: event.error.requestId,
+						}),
+					);
+				}
+			});
+		});
 	}
 
 	/**

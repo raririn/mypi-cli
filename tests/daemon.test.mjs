@@ -191,7 +191,20 @@ test("attach spawns a session child, list_sessions reports it, and events fan ou
     assert.equal(first.ofType("response")[0].sessionId, "s1");
 
     // A turn started by one client streams to both.
-    first.send({ id: "p1", type: "prompt", message: "hello", sessionId: "s1" });
+    first.send({
+      id: "p1",
+      type: "prompt",
+      message: "hello",
+      sessionId: "s1",
+      structuredOutput: {
+        schema: {
+          type: "object",
+          properties: { echo: { type: "string" } },
+          required: ["echo"],
+          additionalProperties: false,
+        },
+      },
+    });
     await waitFor(
       () => first.ofType("agent_settled").length === 1 && second.ofType("agent_settled").length === 1,
       5_000,
@@ -199,6 +212,13 @@ test("attach spawns a session child, list_sessions reports it, and events fan ou
     );
     assert.equal(second.frames.filter((f) => f.type === "response" && f.command === "prompt").length, 0,
       "the prompt ack went only to the issuing client");
+    assert.deepEqual(first.ofType("structured_result")[0].result.value, { echo: "hello" });
+    assert.equal(first.ofType("structured_result")[0].result.requestId, "p1");
+    assert.equal(first.ofType("structured_result")[0].sessionId, "s1");
+    assert.deepEqual(second.ofType("structured_result")[0].result.value, { echo: "hello" },
+      "structured settlement fans out to every attached client");
+    assert.equal(second.ofType("structured_result")[0].result.requestId, undefined,
+      "only the issuing surface receives its restored correlation id");
 
     first.socket.destroy();
     second.socket.destroy();

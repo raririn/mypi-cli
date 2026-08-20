@@ -39,6 +39,7 @@ export function buildBaseOptions(
 		websocketConnectTimeoutMs: options?.websocketConnectTimeoutMs,
 		maxRetries: options?.maxRetries,
 		maxRetryDelayMs: options?.maxRetryDelayMs,
+		structuredOutput: options?.structuredOutput,
 		metadata: options?.metadata,
 		env: options?.env,
 	};

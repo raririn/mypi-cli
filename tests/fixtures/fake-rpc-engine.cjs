@@ -121,7 +121,7 @@ const branchTo = (entries, leafId) => {
     });
 };
 
-async function runTurn(promptText) {
+async function runTurn(promptText, structuredOutput, requestId) {
   turnActive = true;
   out({ type: 'agent_start' });
   await sleep(10);
@@ -145,6 +145,26 @@ async function runTurn(promptText) {
     });
   }
   await sleep(Number(process.env.FAKE_ENGINE_TURN_MS || 40));
+  if (structuredOutput) {
+    out({
+      type: 'structured_result',
+      result: {
+        value: { echo: promptText },
+        schemaHash: 'fake-schema-hash',
+        method: 'native',
+        attempts: 1,
+        requestId,
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 0,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+      },
+    });
+  }
   out({ type: 'agent_settled', outcome: { kind: aborted ? 'aborted' : 'success' } });
   turnActive = false;
   aborted = false;
@@ -204,7 +224,7 @@ async function handleCommand(command) {
 		out({ type: 'safety_mode_changed', effective: safetyMode, ...(pendingSafetyMode ? { pending: pendingSafetyMode } : {}) });
 		return;
 	  }
-      void runTurn(command.message);
+      void runTurn(command.message, command.structuredOutput, id);
       return;
     case 'abort':
       aborted = turnActive;

@@ -27,6 +27,29 @@ export function addUsageToTotals(totals: UsageTotals, usage: Usage): void {
 	totals.cost += usage.cost.total;
 }
 
+/** Read program-owned structured-finalizer usage without trusting arbitrary custom entry data. */
+export function getStructuredOutputUsage(entry: SessionEntry): Usage | undefined {
+	if (entry.type !== "custom" || entry.customType !== "mypi-structured-output") return undefined;
+	const data = entry.data;
+	if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;
+	const record = data as Record<string, unknown>;
+	if (record.version !== 1 || record.kind !== "result") return undefined;
+	const usage = record.usage;
+	if (!usage || typeof usage !== "object" || Array.isArray(usage)) return undefined;
+	const candidate = usage as Partial<Usage>;
+	if (
+		![candidate.input, candidate.output, candidate.cacheRead, candidate.cacheWrite].every(
+			(value) => typeof value === "number" && Number.isFinite(value),
+		) ||
+		!candidate.cost ||
+		typeof candidate.cost.total !== "number" ||
+		!Number.isFinite(candidate.cost.total)
+	) {
+		return undefined;
+	}
+	return candidate as Usage;
+}
+
 export interface UsageCostBreakdownEntry {
 	key: string;
 	cost: number;
@@ -40,6 +63,7 @@ export function getUsageCostBreakdown(entries: SessionEntry[]): UsageCostBreakdo
 	for (const entry of entries) {
 		let key: string | undefined;
 		let usage: Usage | undefined;
+		const structuredUsage = getStructuredOutputUsage(entry);
 		if (entry.type === "message" && entry.message.role === "assistant") {
 			key = `${entry.message.provider}/${entry.message.responseModel ?? entry.message.model}`;
 			usage = entry.message.usage;
@@ -49,6 +73,9 @@ export function getUsageCostBreakdown(entries: SessionEntry[]): UsageCostBreakdo
 		} else if ((entry.type === "branch_summary" || entry.type === "compaction") && entry.usage) {
 			key = "Tools/summaries";
 			usage = entry.usage;
+		} else if (structuredUsage) {
+			key = "Structured finalization";
+			usage = structuredUsage;
 		}
 		if (!key || !usage) continue;
 

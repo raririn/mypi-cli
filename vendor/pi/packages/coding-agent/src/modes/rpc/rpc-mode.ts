@@ -563,6 +563,9 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					.prompt(command.message, {
 						images: command.images,
 						streamingBehavior: command.streamingBehavior,
+						structuredOutput: command.structuredOutput
+							? { ...command.structuredOutput, requestId: id }
+							: undefined,
 						source: "rpc",
 						preflightResult: (didSucceed) => {
 							if (didSucceed) {

@@ -714,6 +714,21 @@ function buildParams(
 		params.temperature = options.temperature;
 	}
 
+	if (
+		options?.structuredOutput &&
+		(compat.supportsStructuredOutputs ?? model.provider === "openai")
+	) {
+		params.response_format = {
+			type: "json_schema",
+			json_schema: {
+				name: options.structuredOutput.name,
+				schema: options.structuredOutput.schema,
+				description: options.structuredOutput.description,
+				strict: options.structuredOutput.strict ?? true,
+			},
+		};
+	}
+
 	const deferredToolNames =
 		compat.deferredToolsMode === "kimi" ? getDeferredToolNames(context.messages) : new Set<string>();
 	const activeTools = context.tools?.filter((tool) => !deferredToolNames.has(tool.name));
@@ -1452,6 +1467,7 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		chatTemplateKwargs: {},
 		zaiToolStream: false,
 		supportsStrictMode: !isMoonshot && !isTogether && !isCloudflareAiGateway && !isNvidia,
+		supportsStructuredOutputs: provider === "openai" || baseUrl.includes("api.openai.com"),
 		supportsOpenAIGrammarTools: false,
 		cacheControlFormat,
 		sendSessionAffinityHeaders: false,
@@ -1494,6 +1510,8 @@ function getCompat(model: Model<"openai-completions">): ResolvedOpenAICompletion
 		chatTemplateKwargs: model.compat.chatTemplateKwargs ?? detected.chatTemplateKwargs,
 		zaiToolStream: model.compat.zaiToolStream ?? detected.zaiToolStream,
 		supportsStrictMode: model.compat.supportsStrictMode ?? detected.supportsStrictMode,
+		supportsStructuredOutputs:
+			model.compat.supportsStructuredOutputs ?? detected.supportsStructuredOutputs,
 		supportsOpenAIGrammarTools: model.compat.supportsOpenAIGrammarTools ?? detected.supportsOpenAIGrammarTools,
 		cacheControlFormat: model.compat.cacheControlFormat ?? detected.cacheControlFormat,
 		sendSessionAffinityHeaders: model.compat.sendSessionAffinityHeaders ?? detected.sendSessionAffinityHeaders,

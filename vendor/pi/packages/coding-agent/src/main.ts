@@ -34,6 +34,10 @@ import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/mod
 import type { ModelRuntime } from "./core/model-runtime.ts";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.ts";
 import { type AppMode, ProjectTrustDeclinedError, resolveProjectTrusted } from "./core/project-trust.ts";
+import {
+	prepareStructuredOutputRequest,
+	type StructuredOutputRequest,
+} from "./core/structured-output.ts";
 import type { CreateAgentSessionOptions } from "./core/sdk.ts";
 import {
 	formatMissingSessionCwdPrompt,
@@ -619,6 +623,22 @@ export async function main(args: string[], options?: MainOptions) {
 	}
 
 	let appMode = resolveAppMode(parsed, process.stdin.isTTY, process.stdout.isTTY);
+	let structuredOutput: StructuredOutputRequest | undefined;
+	if (parsed.outputSchema) {
+		if (appMode === "interactive" || appMode === "rpc") {
+			console.error(chalk.red("Error: --output-schema is supported only in print or JSON event mode"));
+			process.exit(1);
+		}
+		try {
+			const schemaPath = resolvePath(parsed.outputSchema, cwd, { trim: true });
+			const schema = JSON.parse(readFileSync(schemaPath, "utf8")) as Record<string, unknown>;
+			const prepared = prepareStructuredOutputRequest({ schema });
+			structuredOutput = { schema: prepared.schema, name: prepared.name };
+		} catch (error) {
+			console.error(chalk.red(`Error: ${error instanceof Error ? error.message : String(error)}`));
+			process.exit(1);
+		}
+	}
 	const shouldTakeOverStdout = appMode !== "interactive" && !isPlainRuntimeMetadataCommand(parsed);
 	if (shouldTakeOverStdout) {
 		takeOverStdout();
@@ -1091,6 +1111,7 @@ export async function main(args: string[], options?: MainOptions) {
 			messages: parsed.messages,
 			initialMessage,
 			initialImages,
+			structuredOutput,
 		});
 		stopThemeWatcher();
 		restoreStdout();

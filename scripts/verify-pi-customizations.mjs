@@ -361,6 +361,41 @@ for (const fragment of ["mypiAskUser", 'method: "dismiss"', "targetId: id", 'cas
 		throw new Error(`Installed Pi ${expectedVersion} is missing trusted ask_user RPC cleanup (${fragment}).`);
 	}
 }
+
+const structuredOutput = await readFile(join(packageRoot, "dist", "core", "structured-output.js"), "utf8");
+for (const fragment of [
+  'STRUCTURED_OUTPUT_SESSION_ENTRY = "mypi-structured-output"',
+  'STRUCTURED_OUTPUT_TOOL_NAME = "mypi_structured_result"',
+  '"validation_exhausted"',
+  "schemaHash",
+  "maxValidationRetries",
+  "modelSupportsNativeStructuredOutput",
+]) {
+  if (!structuredOutput.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing authoritative structured output (${fragment}).`);
+  }
+}
+for (const fragment of ["structured_result", "structured_result_error", "promptStructured", "schema_conflict"]) {
+  if (!agentSession.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing structured settlement behavior (${fragment}).`);
+  }
+}
+for (const fragment of ["structuredOutput", "StructuredOutputRequest"]) {
+  if (!rpcTypes.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing the structured RPC declaration (${fragment}).`);
+  }
+}
+
+const aiStructuredProviders = await Promise.all([
+  readFile(join(aiPackageRoot, "dist", "api", "anthropic-messages.js"), "utf8"),
+  readFile(join(aiPackageRoot, "dist", "api", "openai-responses.js"), "utf8"),
+  readFile(join(aiPackageRoot, "dist", "api", "openai-completions.js"), "utf8"),
+]);
+for (const fragment of ["output_config", "params.text", "response_format"]) {
+  if (!aiStructuredProviders.some((provider) => provider.includes(fragment))) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing a native structured provider adapter (${fragment}).`);
+  }
+}
 const modelRuntime = await readFile(join(packageRoot, "dist", "core", "model-runtime.js"), "utf8");
 for (const fragment of ["reloadPersistedModelState", "allowNetwork: false"]) {
 	if (!modelRuntime.includes(fragment)) {
@@ -474,4 +509,4 @@ for (const relativePath of ["models.js", "compat.js"]) {
   }
 }
 
-console.log(`Verified Pi ${expectedVersion}, bundled docs/examples without built-in skills, runtime-owned Plan/Goal/archive/web/TUI/safety core with model-aware /reasoning and local /shift-tab selection, mode-specific safety footer presentation without change toasts, workspace-confined tools, canonical commentary updates with legacy-name compatibility, the built-in security and evidence baseline plus packaged minimal prompt replacement, source-opening web guidance, isolated fail-closed Anthropic shell sandboxing, non-echoing authentication input, API-key Codex gateway compatibility, offline cross-process provider-state reload, suppressed automatic version-update metadata, one-line MyPi identity, outbound credential redaction, /hotkeys, resource viewers, acknowledged tree navigation, skill labels, typed agent settlement including preflight dispatch rejection, program-owned first-plus-last-three raw-user compaction continuity, post-completion Goal summaries, and Goal-aware proactive compaction continuation.`);
+console.log(`Verified Pi ${expectedVersion}, bundled docs/examples without built-in skills, runtime-owned Plan/Goal/archive/web/TUI/safety core with model-aware /reasoning and local /shift-tab selection, mode-specific safety footer presentation without change toasts, workspace-confined tools, canonical commentary updates with legacy-name compatibility, authoritative structured headless output with native and bounded fallback paths, the built-in security and evidence baseline plus packaged minimal prompt replacement, source-opening web guidance, isolated fail-closed Anthropic shell sandboxing, non-echoing authentication input, API-key Codex gateway compatibility, offline cross-process provider-state reload, suppressed automatic version-update metadata, one-line MyPi identity, outbound credential redaction, /hotkeys, resource viewers, acknowledged tree navigation, skill labels, typed agent settlement including preflight dispatch rejection, program-owned first-plus-last-three raw-user compaction continuity, post-completion Goal summaries, and Goal-aware proactive compaction continuation.`);

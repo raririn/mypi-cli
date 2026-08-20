@@ -289,6 +289,18 @@ function buildParams(
 		params.max_output_tokens = Math.max(options.maxTokens, OPENAI_RESPONSES_MIN_OUTPUT_TOKENS);
 	}
 
+	if (options?.structuredOutput && (model.compat?.supportsStructuredOutputs ?? true)) {
+		params.text = {
+			format: {
+				type: "json_schema",
+				name: options.structuredOutput.name,
+				schema: options.structuredOutput.schema,
+				description: options.structuredOutput.description,
+				strict: options.structuredOutput.strict ?? true,
+			},
+		};
+	}
+
 	if (options?.temperature !== undefined) {
 		params.temperature = options?.temperature;
 	}
