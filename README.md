@@ -29,11 +29,11 @@ source-built [Pi](https://github.com/earendil-works/pi) runtime.
 
 ## Install
 
-The current prerelease requires Node.js 22.19 or newer and supports macOS and
+The stable release requires Node.js 22.19 or newer and supports macOS and
 glibc Linux on x64 or arm64.
 
 ```sh
-npm install --global @raririn/mypi@beta
+npm install --global @raririn/mypi
 mypi --version
 mypi
 ```
@@ -54,8 +54,8 @@ Add the same `export` to the shell profile used by the container if it should
 persist. A PATH-independent one-off invocation is also available:
 
 ```sh
-npm exec --yes --package=@raririn/mypi@beta -- mypi --version
-npm exec --yes --package=@raririn/mypi@beta -- mypi
+npm exec --yes --package=@raririn/mypi -- mypi --version
+npm exec --yes --package=@raririn/mypi -- mypi
 ```
 
 MyPi stores its state under `~/.mypi/agent`, or the directory selected by
