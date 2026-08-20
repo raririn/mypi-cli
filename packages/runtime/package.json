@@ -19,6 +19,10 @@
 		},
 		"./rpc-entry": {
 			"import": "./dist/rpc-entry.js"
+		},
+		"./product-ui": {
+			"types": "./dist/product-ui.d.ts",
+			"import": "./dist/product-ui.js"
 		}
 	},
 	"files": [
