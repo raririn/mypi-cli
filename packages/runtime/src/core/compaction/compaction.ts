@@ -500,7 +500,7 @@ export function findCutPoint(
 // Summarization
 // ============================================================================
 
-const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a durable context checkpoint that another coding agent can use to resume without rediscovery, repeated questions, or accidental scope changes.
+const SUMMARIZATION_PROMPT = `The messages above are a conversation to summarize. Create a durable context checkpoint that another agent can use to resume without rediscovery, repeated questions, or accidental scope changes.
 
 Use this EXACT format:
 
