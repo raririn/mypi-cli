@@ -433,11 +433,20 @@ export { formatDimensionNote, type ResizedImage, resizeImage } from "./utils/ima
 export {
 	archiveChat,
 	deleteArchivedChat,
+	discardUntouchedChat,
 	ensureChatRoots,
 	eraseChatAssets,
+	importChatAttachment,
+	importChatAttachmentBytes,
 	listChats,
 	resolveChatPaths,
 	restoreChat,
 } from "./product/mypi-chat-storage.ts";
+export { CHAT_TOOL_NAMES } from "./product/mypi-chat.ts";
+export { REDPANDA_PROVIDER_CONFIG, REDPANDA_PROVIDER_ID } from "./product/redpanda-provider-core.ts";
+export { pickNewThreadGreeting } from "./product/tui-hero/greetings.ts";
+export * from "./product/gui-control/presence.ts";
+export * from "./product/gui-control/protocol.ts";
 // Shell utilities
 export { getShellConfig } from "./utils/shell.ts";
+export type { ProductProfile } from "./product/index.ts";
