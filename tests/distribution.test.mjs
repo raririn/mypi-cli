@@ -8,10 +8,14 @@ import { readMyPiRepositoryVersionContract } from "../scripts/mypi-version-contr
 
 const root = resolve(import.meta.dirname, "..");
 
-test("CLI SemVer major matches the GUI-control protocol", () => {
+test("CLI SemVer major matches the MyPi protocol generation and stable chronicle", () => {
   const contract = readMyPiRepositoryVersionContract(root);
-  assert.equal(Number(contract.productVersion.split(".", 1)[0]), contract.bridgeProtocol);
-  assert.equal(contract.bridgeProtocol, 5);
+  assert.equal(Number(contract.productVersion.split(".", 1)[0]), contract.protocolGeneration);
+  assert.equal(contract.productVersion, "1.6.0");
+  assert.equal(contract.protocolGeneration, 1);
+  assert.equal(contract.releaseName, "Roma");
+  assert.equal(contract.releaseChronicle, 1);
+  assert.equal(contract.displayVersion, "1.6.0 (Roma; pi-core 0.82.1)");
 });
 
 test("public npm documentation uses the scoped package and isolated profile", () => {
@@ -44,6 +48,8 @@ test("remote host metadata advertises the workspace index implemented by the hel
   assert.equal(result.status, 0, result.stderr);
   const info = JSON.parse(result.stdout);
   assert.equal(info.application, "mypi-remote-host");
+  assert.equal(info.bridgeProtocol, 1);
+  assert.equal(info.releaseName, "Roma");
   assert.equal(info.workspaceProtocol, 2);
   assert.ok(info.workspaceCapabilities.includes("workspace-index"));
 });

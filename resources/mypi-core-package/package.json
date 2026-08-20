@@ -1,7 +1,7 @@
 {
   "name": "@mypi/core",
-  "version": "5.5.0",
-  "description": "MyPi's profile-specific policy and desktop integration extensions",
+  "version": "1.6.0",
+  "description": "MyPi's profile-specific policy and control-surface extensions",
   "license": "MIT",
   "keywords": [
     "pi-package"

@@ -14,6 +14,8 @@ const report = readJson(reportPath);
 const artifact = join(root, "dist", "npm", report.filename);
 assert(existsSync(artifact), `npm artifact is missing: ${report.filename}`);
 assert(report.version === rootManifest.version, "npm report has product-version drift");
+assert(report.releaseName === rootManifest.mypiRelease?.name, "npm report has release-name drift");
+assert(report.releaseChronicle === rootManifest.mypiRelease?.chronicle, "npm report has release-chronicle drift");
 assert(report.piCoreVersion === "0.82.1", "npm report has Pi-version drift");
 assert(statSync(artifact).size === report.packageSize, "npm report has artifact-size drift");
 assert(sha256(artifact) === report.sha256, "npm report has artifact-digest drift");
@@ -28,6 +30,8 @@ const packageJson = JSON.parse(execFileSync(
 assert(packageJson.name === "@raririn/mypi", "publishable package has unexpected npm identity");
 assert(packageJson.author === "raririn", "publishable package has unexpected author");
 assert(packageJson.version === rootManifest.version, "publishable package has version drift");
+assert(JSON.stringify(packageJson.mypiRelease) === JSON.stringify(rootManifest.mypiRelease),
+  "publishable package has release metadata drift");
 assert(packageJson.license === "MIT", "publishable package must declare MIT");
 assert(
   packageJson.scripts?.preinstall === "node lib/check-node-version.mjs",

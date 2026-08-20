@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { readMyPiRuntimeVersion } from "./mypi-version-contract.mjs";
+import { readMyPiRepositoryVersionContract } from "./mypi-version-contract.mjs";
 
 // MyPi uses its own state namespace. MYPI_AGENT_DIR is the only
 // product-facing override; the vendored upstream package derives and reads the
@@ -16,10 +16,10 @@ process.env.MYPI_CODING_AGENT_DIR = agentDir;
 delete process.env.PI_CODING_AGENT_DIR;
 delete process.env.MYPI_RUNTIME_PROFILE;
 
-const { productVersion, piCoreVersion, displayVersion } = readMyPiRuntimeVersion();
+const { productVersion, releaseName, piCoreVersion, displayVersion, protocolGeneration } = readMyPiRepositoryVersionContract();
 process.env.MYPI_RUNTIME_DISPLAY_VERSION = displayVersion;
 
-// Private, protocol-versioned entry points used by MyPi Desktop over SSH.
+// Private, protocol-versioned entry points used by MyPi control clients over SSH.
 // They deliberately run inside this launcher's Node runtime so a remote login
 // shell only needs a compatible `mypi` binary; `node` itself need not be on
 // the non-interactive PATH.
@@ -35,10 +35,11 @@ if (internalCommand === "__remote-info") {
   process.stdout.write(`${JSON.stringify({
     application: "mypi-remote-host",
     protocol: 1,
-    bridgeProtocol: 5,
+    bridgeProtocol: protocolGeneration,
     workspaceProtocol: 2,
     workspaceCapabilities: ["files", "changes", "worktrees", "attachments", "session-lifecycle", "project-resources", "workspace-index"],
     version: productVersion,
+    releaseName,
     piVersion: piCoreVersion,
     nodeMajor: Number(process.versions.node.split(".")[0]),
     agentDir,

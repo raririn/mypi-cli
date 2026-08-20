@@ -28,6 +28,8 @@ const provenance = JSON.parse(
 assert(provenance.sourceCommit === head, "release artifact does not identify current HEAD");
 assert(provenance.sourceDirty === false, "release artifact provenance records dirty source");
 assert(provenance.npmPackage === "@raririn/mypi", "release artifact has unexpected npm identity");
+assert(provenance.releaseName === "Roma" && provenance.releaseChronicle === 1,
+  "release artifact has unexpected release chronicle metadata");
 
 console.log(`Release-ready from ${head}: ${report.filename} (${report.sha256}).`);
 

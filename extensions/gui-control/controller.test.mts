@@ -6,7 +6,7 @@ import test from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import { build } from 'esbuild'
 import type { ControllerCallbacks } from './controller.ts'
-import { GUI_CONTROL_PROTOCOL, type ClientFrame, type ServerFrame } from './protocol.ts'
+import { MYPI_CONTROL_PROTOCOL, type ClientFrame, type ServerFrame } from './protocol.ts'
 import type { SocketTransport, SocketTransportCallbacks } from './transport.ts'
 
 const controllerBuild = await build({
@@ -38,7 +38,7 @@ class FakeTransport {
     if (this.acknowledge && frame.type === 'hello') {
       queueMicrotask(() => this.push({
         type: 'hello_ack',
-        protocol: GUI_CONTROL_PROTOCOL,
+        protocol: MYPI_CONTROL_PROTOCOL,
         guiInstanceId: 'test-gui',
         heartbeatMs: 15_000,
       }))
@@ -86,7 +86,7 @@ test('reconnects when a previously acknowledged GUI socket stops heartbeating', 
     await mkdir(join(agentDir, 'gui-control'))
     await writeFile(join(agentDir, 'gui-control', 'endpoint.json'), `${JSON.stringify({
       application: 'mypi-gui-control',
-      protocol: GUI_CONTROL_PROTOCOL,
+      protocol: MYPI_CONTROL_PROTOCOL,
       guiInstanceId: 'test-gui',
       pid: process.pid,
       socketPath: join(agentDir, 'gui-control.sock'),
@@ -123,7 +123,7 @@ test('ignores a late close from a retired transport after replacement', async ()
     await mkdir(join(agentDir, 'gui-control'))
     await writeFile(join(agentDir, 'gui-control', 'endpoint.json'), `${JSON.stringify({
       application: 'mypi-gui-control',
-      protocol: GUI_CONTROL_PROTOCOL,
+      protocol: MYPI_CONTROL_PROTOCOL,
       guiInstanceId: 'test-gui',
       pid: process.pid,
       socketPath: join(agentDir, 'gui-control.sock'),

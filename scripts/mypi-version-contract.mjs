@@ -22,13 +22,29 @@ function assertSemanticVersion(value, label) {
   return exactValue;
 }
 
-export function formatMyPiVersion(productVersion, piCoreVersion) {
-  return `${productVersion} (pi-core ${piCoreVersion})`;
+function assertReleaseName(value) {
+  if (typeof value !== "string" || !/^[A-Z][A-Za-z]{1,31}$/.test(value)) {
+    throw new Error(`MyPi release name must be a bounded Roman-city identifier; found ${JSON.stringify(value)}.`);
+  }
+  return value;
+}
+
+function assertReleaseChronicle(value) {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`MyPi release chronicle must be a positive integer; found ${JSON.stringify(value)}.`);
+  }
+  return value;
+}
+
+export function formatMyPiVersion(productVersion, releaseName, piCoreVersion) {
+  return `${productVersion} (${releaseName}; pi-core ${piCoreVersion})`;
 }
 
 export function readMyPiRuntimeVersion(root = defaultRoot) {
   const manifest = readManifest(join(root, "package.json"));
   const productVersion = assertSemanticVersion(manifest.version, "MyPi package.json version");
+  const releaseName = assertReleaseName(manifest.mypiRelease?.name);
+  const releaseChronicle = assertReleaseChronicle(manifest.mypiRelease?.chronicle);
   const dependencies = { ...manifest.dependencies, ...manifest.devDependencies };
   const piCoreVersion = assertSemanticVersion(
     dependencies["@earendil-works/pi-coding-agent"],
@@ -37,23 +53,25 @@ export function readMyPiRuntimeVersion(root = defaultRoot) {
 
   return {
     productVersion,
+    releaseName,
+    releaseChronicle,
     piCoreVersion,
-    displayVersion: formatMyPiVersion(productVersion, piCoreVersion),
+    displayVersion: formatMyPiVersion(productVersion, releaseName, piCoreVersion),
   };
 }
 
 export function readMyPiRepositoryVersionContract(root = defaultRoot) {
   const contract = readMyPiRuntimeVersion(root);
   const protocolSource = readFileSync(join(root, "extensions/gui-control/protocol.ts"), "utf8");
-  const protocolMatch = protocolSource.match(/^export const GUI_CONTROL_PROTOCOL = ([1-9]\d*)$/m);
+  const protocolMatch = protocolSource.match(/^export const MYPI_CONTROL_PROTOCOL = ([1-9]\d*)$/m);
   if (!protocolMatch) {
-    throw new Error("extensions/gui-control/protocol.ts must declare a positive integer GUI_CONTROL_PROTOCOL.");
+    throw new Error("extensions/gui-control/protocol.ts must declare a positive integer MYPI_CONTROL_PROTOCOL.");
   }
-  const bridgeProtocol = Number(protocolMatch[1]);
+  const protocolGeneration = Number(protocolMatch[1]);
   const productMajor = Number(contract.productVersion.split(".", 1)[0]);
-  if (productMajor !== bridgeProtocol) {
+  if (productMajor !== protocolGeneration) {
     throw new Error(
-      `MyPi CLI major version ${productMajor} must equal GUI-control protocol ${bridgeProtocol}.`,
+      `MyPi CLI major version ${productMajor} must equal MyPi protocol generation ${protocolGeneration}.`,
     );
   }
   for (const relativePath of ["resources/mypi-core-package/package.json"]) {
@@ -64,7 +82,7 @@ export function readMyPiRepositoryVersionContract(root = defaultRoot) {
       );
     }
   }
-  return { ...contract, bridgeProtocol };
+  return { ...contract, protocolGeneration };
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : undefined;
@@ -74,7 +92,7 @@ if (invokedPath === fileURLToPath(import.meta.url)) {
   if (field === "--display") console.log(contract.displayVersion);
   else if (field === "--product") console.log(contract.productVersion);
   else if (field === "--pi") console.log(contract.piCoreVersion);
-  else if (field === "--protocol") console.log(contract.bridgeProtocol);
+  else if (field === "--protocol") console.log(contract.protocolGeneration);
   else if (field === "--json") console.log(JSON.stringify(contract));
   else throw new Error(`Unknown version-contract field: ${field}`);
 }

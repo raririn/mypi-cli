@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { GUI_CONTROL_PROTOCOL, parseClientFrame, parseServerFrame } from "./protocol.ts";
+import { MYPI_CONTROL_PROTOCOL, parseClientFrame, parseServerFrame } from "./protocol.ts";
 
 test("managed attachment frames are bounded and advertise explicit local capability", () => {
   const hello = parseClientFrame({
     type: "hello",
-    protocol: GUI_CONTROL_PROTOCOL,
+    protocol: MYPI_CONTROL_PROTOCOL,
     token: "token",
     connectionId: "connection",
     mode: "tui",
@@ -50,7 +50,7 @@ test("managed attachment parsing rejects unbounded, malformed, and empty frames"
   }), /sizeBytes is invalid/);
   assert.throws(() => parseClientFrame({
     type: "hello",
-    protocol: GUI_CONTROL_PROTOCOL,
+    protocol: MYPI_CONTROL_PROTOCOL,
     token: "token",
     connectionId: "connection",
     mode: "tui",

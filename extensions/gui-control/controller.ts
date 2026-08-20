@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { GUI_CONTROL_PROTOCOL, parseEndpointManifest, type ClientFrame, type ServerFrame, type TuiHello } from './protocol.js'
+import { MYPI_CONTROL_PROTOCOL, parseEndpointManifest, type ClientFrame, type ServerFrame, type TuiHello } from './protocol.js'
 import { SocketTransport } from './transport.js'
 
 export type ControllerState = 'disabled' | 'discovering' | 'connecting' | 'handshaking' | 'connected' | 'backoff' | 'closing'
@@ -71,7 +71,7 @@ export class GuiControlController {
       const stat = lstatSync(endpointPath)
       if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('GUI endpoint manifest is unsafe')
       const endpoint = parseEndpointManifest(JSON.parse(readFileSync(endpointPath, 'utf8')))
-      if (endpoint.protocol !== GUI_CONTROL_PROTOCOL) throw new Error(`GUI protocol ${endpoint.protocol} is incompatible`)
+      if (endpoint.protocol !== MYPI_CONTROL_PROTOCOL) throw new Error(`MyPi control protocol ${endpoint.protocol} is incompatible`)
       if (!this.current(generation)) return
       this.setState('connecting')
       const transportFactory = this.options.transportFactory ?? ((callbacks) => new SocketTransport(callbacks))
@@ -84,7 +84,7 @@ export class GuiControlController {
       if (!this.current(generation) || this.transport !== transport) { transport.close(); return }
       this.setState('handshaking')
       const hello = this.options.callbacks.createHello()
-      if (!transport.send({ type: 'hello', protocol: GUI_CONTROL_PROTOCOL, token: endpoint.token, ...hello })) throw new Error('Failed to write GUI-control hello')
+      if (!transport.send({ type: 'hello', protocol: MYPI_CONTROL_PROTOCOL, token: endpoint.token, ...hello })) throw new Error('Failed to write MyPi control hello')
       this.handshakeTimer = setTimeout(() => {
         if (this.current(generation) && this.state === 'handshaking') {
           this.failTransport(generation, transport!, 'GUI-control handshake timed out')
@@ -103,8 +103,8 @@ export class GuiControlController {
   private handleFrame(generation: number, transport: SocketTransport, frame: ServerFrame): void {
     if (!this.current(generation) || this.transport !== transport) return
     if (frame.type === 'hello_ack') {
-      if (frame.protocol !== GUI_CONTROL_PROTOCOL) {
-        this.failTransport(generation, transport, 'GUI-control protocol changed during handshake')
+      if (frame.protocol !== MYPI_CONTROL_PROTOCOL) {
+        this.failTransport(generation, transport, 'MyPi control protocol changed during handshake')
         return
       }
       if (this.handshakeTimer) clearTimeout(this.handshakeTimer)

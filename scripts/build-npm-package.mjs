@@ -37,9 +37,12 @@ const productManifest = readJson(join(productRoot, "package.json"));
 const coreManifest = readJson(join(productRoot, "resources", "mypi-core-package", "package.json"));
 const provenance = readJson(join(productRoot, "vendor", "pi", "MYPI_PROVENANCE.json"));
 const version = productManifest.version;
+const release = productManifest.mypiRelease;
 const versionContract = readMyPiRepositoryVersionContract(productRoot);
 
 assert(version === versionContract.productVersion, "MyPi version contract does not match the CLI");
+assert(release?.name === versionContract.releaseName, "MyPi release name contract does not match the CLI");
+assert(release?.chronicle === versionContract.releaseChronicle, "MyPi release chronicle contract does not match the CLI");
 assert(version === coreManifest.version, "@mypi/core version does not match the CLI");
 assert(
   normalizeVersion(productManifest.devDependencies?.["@earendil-works/pi-coding-agent"])
@@ -85,6 +88,7 @@ for (const [name, packageVersion] of customVersions) requiredDependencies.set(na
 const finalManifest = {
   name: "@raririn/mypi",
   version,
+  mypiRelease: release,
   description: "MyPi agentic coding CLI with an isolated, customized Pi runtime",
   license: "MIT",
   author: "raririn",
@@ -155,6 +159,8 @@ writeJson(join(stageRoot, "MYPI_PROVENANCE.json"), {
   schemaVersion: 1,
   product: "MyPi",
   productVersion: version,
+  releaseName: release.name,
+  releaseChronicle: release.chronicle,
   piCoreVersion: provenance.upstreamVersion,
   piSource: provenance,
   sourceCommit,
@@ -180,6 +186,8 @@ const result = {
   artifact: report[0].filename,
   filename: report[0].filename,
   version,
+  releaseName: release.name,
+  releaseChronicle: release.chronicle,
   piCoreVersion: provenance.upstreamVersion,
   packageSize: statSync(artifact).size,
   unpackedSize: report[0].unpackedSize,

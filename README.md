@@ -3,6 +3,9 @@
 MyPi is an agentic coding CLI with a customized,
 source-built [Pi](https://github.com/earendil-works/pi) runtime.
 
+The first stable release is **MyPi 1.6.0 (Roma)**. Stable MyPi releases follow
+a chronological Roman-city naming series, beginning with Roma.
+
 ## Features
 
 - Comprehensive default system prompt with tool-use, autonomy, destructive-action,
@@ -21,7 +24,7 @@ source-built [Pi](https://github.com/earendil-works/pi) runtime.
 - Native CLIProxyAPI provider support with secure `/login cliproxyapi`, bounded
   model discovery, and session-owned `/fast on|off|status`
 - Web search/fetch with Brave search API or curl
-- Atomic lifecycle and session lease (required by MyPi GUI)
+- Atomic lifecycle and session leases for daemon-hosted and external control surfaces
 - Read-only mode and deprecated safe-mode compatibility
 - Chat mode
 - Agent-led session archiving and deletion
