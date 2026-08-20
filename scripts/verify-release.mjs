@@ -30,6 +30,7 @@ assert(provenance.sourceDirty === false, "release artifact provenance records di
 assert(provenance.npmPackage === "@raririn/mypi", "release artifact has unexpected npm identity");
 assert(provenance.releaseName === "Roma" && provenance.releaseChronicle === 1,
   "release artifact has unexpected release chronicle metadata");
+assert(provenance.protocolGeneration === 1, "release artifact has unexpected protocol generation");
 
 console.log(`Release-ready from ${head}: ${report.filename} (${report.sha256}).`);
 

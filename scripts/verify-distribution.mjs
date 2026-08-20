@@ -16,6 +16,7 @@ assert(existsSync(artifact), `npm artifact is missing: ${report.filename}`);
 assert(report.version === rootManifest.version, "npm report has product-version drift");
 assert(report.releaseName === rootManifest.mypiRelease?.name, "npm report has release-name drift");
 assert(report.releaseChronicle === rootManifest.mypiRelease?.chronicle, "npm report has release-chronicle drift");
+assert(report.protocolGeneration === rootManifest.mypiRelease?.protocol, "npm report has protocol-generation drift");
 assert(report.piCoreVersion === "0.82.1", "npm report has Pi-version drift");
 assert(statSync(artifact).size === report.packageSize, "npm report has artifact-size drift");
 assert(sha256(artifact) === report.sha256, "npm report has artifact-digest drift");

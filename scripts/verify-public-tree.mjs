@@ -71,6 +71,7 @@ assert(manifest.name === "@raririn/mypi-source", "repository root has unexpected
 assert(manifest.version === "1.6.0", "repository root has unexpected version");
 assert(manifest.mypiRelease?.name === "Roma", "repository root has unexpected release name");
 assert(manifest.mypiRelease?.chronicle === 1, "repository root has unexpected release chronicle");
+assert(manifest.mypiRelease?.protocol === 1, "repository root has unexpected protocol generation");
 
 const sourceProvenance = readJson("SOURCE_PROVENANCE.json");
 const piProvenance = readJson("vendor/pi/MYPI_PROVENANCE.json");
@@ -78,6 +79,8 @@ assert(sourceProvenance.version === manifest.version, "source provenance has pro
 assert(sourceProvenance.releaseName === manifest.mypiRelease.name, "source provenance has release-name drift");
 assert(sourceProvenance.releaseChronicle === manifest.mypiRelease.chronicle,
   "source provenance has release-chronicle drift");
+assert(sourceProvenance.protocolGeneration === manifest.mypiRelease.protocol,
+  "source provenance has protocol-generation drift");
 assert(
   sourceProvenance.includedUpstreams?.[0]?.commit === piProvenance.upstreamCommit,
   "source provenance has Pi commit drift",

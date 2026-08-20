@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import { readMyPiRepositoryVersionContract } from "./mypi-version-contract.mjs";
+import { readMyPiRuntimeVersion } from "./mypi-version-contract.mjs";
 
 // MyPi uses its own state namespace. MYPI_AGENT_DIR is the only
 // product-facing override; the vendored upstream package derives and reads the
@@ -16,7 +16,7 @@ process.env.MYPI_CODING_AGENT_DIR = agentDir;
 delete process.env.PI_CODING_AGENT_DIR;
 delete process.env.MYPI_RUNTIME_PROFILE;
 
-const { productVersion, releaseName, piCoreVersion, displayVersion, protocolGeneration } = readMyPiRepositoryVersionContract();
+const { productVersion, releaseName, piCoreVersion, displayVersion, protocolGeneration } = readMyPiRuntimeVersion();
 process.env.MYPI_RUNTIME_DISPLAY_VERSION = displayVersion;
 
 // Private, protocol-versioned entry points used by MyPi control clients over SSH.

@@ -4,7 +4,8 @@
   "version": "1.6.0",
   "mypiRelease": {
     "name": "Roma",
-    "chronicle": 1
+    "chronicle": 1,
+    "protocol": 1
   },
   "description": "Source and release tooling for the MyPi CLI",
   "license": "MIT",

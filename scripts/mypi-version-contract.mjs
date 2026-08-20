@@ -36,6 +36,13 @@ function assertReleaseChronicle(value) {
   return value;
 }
 
+function assertProtocolGeneration(value) {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`MyPi protocol generation must be a positive integer; found ${JSON.stringify(value)}.`);
+  }
+  return value;
+}
+
 export function formatMyPiVersion(productVersion, releaseName, piCoreVersion) {
   return `${productVersion} (${releaseName}; pi-core ${piCoreVersion})`;
 }
@@ -45,6 +52,7 @@ export function readMyPiRuntimeVersion(root = defaultRoot) {
   const productVersion = assertSemanticVersion(manifest.version, "MyPi package.json version");
   const releaseName = assertReleaseName(manifest.mypiRelease?.name);
   const releaseChronicle = assertReleaseChronicle(manifest.mypiRelease?.chronicle);
+  const protocolGeneration = assertProtocolGeneration(manifest.mypiRelease?.protocol);
   const dependencies = { ...manifest.dependencies, ...manifest.devDependencies };
   const piCoreVersion = assertSemanticVersion(
     dependencies["@earendil-works/pi-coding-agent"],
@@ -55,6 +63,7 @@ export function readMyPiRuntimeVersion(root = defaultRoot) {
     productVersion,
     releaseName,
     releaseChronicle,
+    protocolGeneration,
     piCoreVersion,
     displayVersion: formatMyPiVersion(productVersion, releaseName, piCoreVersion),
   };
@@ -67,11 +76,16 @@ export function readMyPiRepositoryVersionContract(root = defaultRoot) {
   if (!protocolMatch) {
     throw new Error("extensions/gui-control/protocol.ts must declare a positive integer MYPI_CONTROL_PROTOCOL.");
   }
-  const protocolGeneration = Number(protocolMatch[1]);
-  const productMajor = Number(contract.productVersion.split(".", 1)[0]);
-  if (productMajor !== protocolGeneration) {
+  const sourceProtocolGeneration = Number(protocolMatch[1]);
+  if (sourceProtocolGeneration !== contract.protocolGeneration) {
     throw new Error(
-      `MyPi CLI major version ${productMajor} must equal MyPi protocol generation ${protocolGeneration}.`,
+      `MyPi package protocol generation ${contract.protocolGeneration} does not match source protocol ${sourceProtocolGeneration}.`,
+    );
+  }
+  const productMajor = Number(contract.productVersion.split(".", 1)[0]);
+  if (productMajor !== contract.protocolGeneration) {
+    throw new Error(
+      `MyPi CLI major version ${productMajor} must equal MyPi protocol generation ${contract.protocolGeneration}.`,
     );
   }
   for (const relativePath of ["resources/mypi-core-package/package.json"]) {
@@ -82,7 +96,7 @@ export function readMyPiRepositoryVersionContract(root = defaultRoot) {
       );
     }
   }
-  return { ...contract, protocolGeneration };
+  return contract;
 }
 
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : undefined;

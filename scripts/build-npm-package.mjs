@@ -43,6 +43,7 @@ const versionContract = readMyPiRepositoryVersionContract(productRoot);
 assert(version === versionContract.productVersion, "MyPi version contract does not match the CLI");
 assert(release?.name === versionContract.releaseName, "MyPi release name contract does not match the CLI");
 assert(release?.chronicle === versionContract.releaseChronicle, "MyPi release chronicle contract does not match the CLI");
+assert(release?.protocol === versionContract.protocolGeneration, "MyPi protocol generation contract does not match the CLI");
 assert(version === coreManifest.version, "@mypi/core version does not match the CLI");
 assert(
   normalizeVersion(productManifest.devDependencies?.["@earendil-works/pi-coding-agent"])
@@ -161,6 +162,7 @@ writeJson(join(stageRoot, "MYPI_PROVENANCE.json"), {
   productVersion: version,
   releaseName: release.name,
   releaseChronicle: release.chronicle,
+  protocolGeneration: release.protocol,
   piCoreVersion: provenance.upstreamVersion,
   piSource: provenance,
   sourceCommit,
@@ -188,6 +190,7 @@ const result = {
   version,
   releaseName: release.name,
   releaseChronicle: release.chronicle,
+  protocolGeneration: release.protocol,
   piCoreVersion: provenance.upstreamVersion,
   packageSize: statSync(artifact).size,
   unpackedSize: report[0].unpackedSize,

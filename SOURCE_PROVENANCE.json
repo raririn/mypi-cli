@@ -4,6 +4,7 @@
   "version": "1.6.0",
   "releaseName": "Roma",
   "releaseChronicle": 1,
+  "protocolGeneration": 1,
   "sourceRepository": "https://github.com/raririn/mypi-cli",
   "includedUpstreams": [
     {
