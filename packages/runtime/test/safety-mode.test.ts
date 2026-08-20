@@ -50,4 +50,12 @@ describe("safety modes", () => {
 			expect(isTrustedSafetyTool(name, { ...builtin, path: "/tmp/spoof.ts", source: "extension" }), name).toBe(false);
 		}
 	});
+
+	it("keeps subagent lifecycle tools only for sealed capability provenance", () => {
+		const source = { path: "<product:capability:subagents>", source: "product", scope: "temporary", origin: "top-level", productClass: "capability" } as const;
+		for (const name of ["subagent_start", "subagent_followup", "subagent_cancel", "subagent_status"]) {
+			expect(isTrustedSafetyTool(name, source), name).toBe(true);
+			expect(isTrustedSafetyTool(name, { ...source, path: "/tmp/spoof.ts", source: "extension" }), name).toBe(false);
+		}
+	});
 });

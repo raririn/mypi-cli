@@ -268,6 +268,7 @@ export default async function readonlyExtension(pi: ExtensionAPI): Promise<void>
             ? "READ ONLY"
             : undefined;
     ctx.ui.setStatus("readonly", status);
+	pi.events?.emit?.("mypi:subagent-access-mode", { mode: active });
   }
 
   function clearOnePrompt(ctx: Pick<ExtensionContext, "ui">): void {

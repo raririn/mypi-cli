@@ -7,6 +7,7 @@ import lockfile from "@bybrave/proper-lockfile2";
 import { getAgentDir } from "../config.ts";
 import { createAgentSessionServices, type AgentSessionServices } from "../core/agent-session-services.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
+import { removeSubagentParentStorage } from "../core/subagents/storage.ts";
 import type { SourceInfo } from "../core/source-info.ts";
 import { ProjectTrustStore } from "../core/trust-manager.ts";
 import { loadGlobalConfig, type GlobalConfigDiagnostic, type HistoryConfig } from "./global-config.ts";
@@ -355,6 +356,7 @@ export async function cleanupArchivedSessions(
 				await assertNoLegacyLease(session.sessionFile);
 				const handle = await openSafeSessionFile(session.sessionFile, roots.archiveRoot);
 				await handle.close();
+				await removeSubagentParentStorage(agentDir, session.id);
 				await rm(session.sessionFile);
 			});
 			deleted.push(session.id);

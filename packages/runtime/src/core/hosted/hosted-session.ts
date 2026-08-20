@@ -965,8 +965,13 @@ export class HostedAgentSession implements InteractiveSessionSurface {
 
 	/* ------- model / thinking ------- */
 
-	async setModel(model: Model<any>): Promise<void> {
-		await this.client.request({ type: "set_model", provider: model.provider, modelId: model.id });
+	async setModel(model: Model<any>, options: { persistGlobal?: boolean } = {}): Promise<void> {
+		await this.client.request({
+			type: "set_model",
+			provider: model.provider,
+			modelId: model.id,
+			...(options.persistGlobal ? { global: true } : {}),
+		});
 		this.mirror.model = model;
 	}
 

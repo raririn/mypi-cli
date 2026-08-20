@@ -121,6 +121,10 @@ const TRUSTED_PRODUCT_TOOLS = new Set([
 	"set_goal_plan",
 	"update_goal_plan",
 	"update_goal",
+	"subagent_start",
+	"subagent_followup",
+	"subagent_cancel",
+	"subagent_status",
 ]);
 const TRUSTED_PASSIVE_BUILTIN_TOOLS = new Set(["commentary"]);
 

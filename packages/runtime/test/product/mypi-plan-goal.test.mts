@@ -45,7 +45,7 @@ function createHarness(cwd: string, initialEntries: any[] = []) {
     appendEntry: (customType: string, data: unknown) => persisted.push({ customType, data }),
     events: { emit: () => undefined },
     getActiveTools: () => [...activeTools],
-    getAllTools: () => ["read", "write", "edit", "bash", "web_search", "web_fetch", ...tools.keys()].map((name) => ({ name })),
+    getAllTools: () => ["read", "write", "edit", "bash", "web_search", "web_fetch", "subagent_start", "subagent_followup", "subagent_cancel", "subagent_status", ...tools.keys()].map((name) => ({ name })),
     setActiveTools: (next: string[]) => { activeTools = [...next]; },
     sendUserMessage: (message: string) => { sent.push(message); },
     sendMessage: (message: any, options: any) => { customMessages.push({ message, options }); },
@@ -117,6 +117,8 @@ test("/plan creates a branch-local structured plan, stops, and /goal executes it
 	assert.equal(latestState(harness).autoStart, false);
 	assert.equal(harness.activeTools.includes("web_search"), true);
 	assert.equal(harness.activeTools.includes("web_fetch"), true);
+	assert.equal(harness.activeTools.includes("subagent_start"), true);
+	assert.equal(harness.activeTools.includes("subagent_followup"), true);
 	assert.equal(harness.activeTools.includes("bash"), false);
 	const before = await harness.emit("before_agent_start", { prompt: "plan", systemPrompt: "base" });
 	assert.match(before.systemPrompt, /complete dependency-ordered structured plan/);

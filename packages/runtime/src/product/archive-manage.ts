@@ -6,6 +6,7 @@ import lockfile from "@bybrave/proper-lockfile2";
 import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "../core/extensions/types.ts";
 import { type SessionInfo, SessionManager } from "../core/session-manager.ts";
+import { removeSubagentParentStorage } from "../core/subagents/storage.ts";
 
 const TOOL_NAMES = [
 	"session_archive_stats",
@@ -391,6 +392,7 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 			);
 			assertContained(session.path, paths.archiveRoot, "archive");
 			return withSessionWriterLock(session.path, async () => {
+				await removeSubagentParentStorage(dirname(paths.sessionsRoot), session.id);
 				await rm(session.path);
 				await removeEmptyParent(session.path, paths.archiveRoot);
 				return textResult(`Permanently deleted archived session ${session.id}.`, { sessionId: session.id });
@@ -424,6 +426,7 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 				try {
 					assertContained(session.path, paths.archiveRoot, "archive");
 					await withSessionWriterLock(session.path, async () => {
+						await removeSubagentParentStorage(dirname(paths.sessionsRoot), session.id);
 						await rm(session.path);
 						await removeEmptyParent(session.path, paths.archiveRoot);
 						deleted++;

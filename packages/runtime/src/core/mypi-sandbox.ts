@@ -240,6 +240,9 @@ export function buildMyPiSandboxRuntimeConfig(
 	const tempDir = options.tempDir ? canonicalPathIfPresent(options.tempDir) : undefined;
 	const protectedDirectories = uniquePaths([
 		agentDir,
+		...(process.env.MYPI_SUBAGENT_CHILD === "work"
+			? [join(workspace, ".git"), join(workspace, ".mypi")]
+			: []),
 		join(homeDir, ".ssh"),
 		join(homeDir, ".aws"),
 		join(homeDir, ".azure"),

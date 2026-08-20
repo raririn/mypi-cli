@@ -219,6 +219,7 @@ export async function createTestExtensionsResult(
 		extensions,
 		errors: [],
 		runtime,
+		eventBus,
 	};
 }
 
@@ -243,6 +244,7 @@ export function createTestResourceLoader(options: CreateTestResourceLoaderOption
 		getAppendSystemPrompt: () => [],
 		extendResources: () => {},
 		reload: async () => {},
+		emitRuntimeEvent: (channel, data) => extensionsResult.eventBus?.emit(channel, data),
 	};
 }
 

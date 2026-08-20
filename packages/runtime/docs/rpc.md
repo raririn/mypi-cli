@@ -235,10 +235,15 @@ Messages are `AgentMessage` objects (see [Message Types](#message-types)).
 
 #### set_model
 
-Switch to a specific model.
+Switch this session to a specific model. Add `"global": true` to also update
+the global model preset used by subsequently created sessions.
 
 ```json
 {"type": "set_model", "provider": "anthropic", "modelId": "claude-sonnet-4-20250514"}
+```
+
+```json
+{"type": "set_model", "provider": "anthropic", "modelId": "claude-sonnet-4-20250514", "global": true}
 ```
 
 Response contains the full [Model](#model) object:

@@ -33,6 +33,7 @@ export type RpcCommand =
 	| { id?: string; type: "steer"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "follow_up"; message: string; images?: ImageContent[] }
 	| { id?: string; type: "abort" }
+	| { id?: string; type: "notify_parent_detached" }
 	| { id?: string; type: "new_session"; parentSession?: string }
 	| { id?: string; type: "prepare_new_session"; parentSession?: string; materialize?: boolean }
 
@@ -42,7 +43,7 @@ export type RpcCommand =
 	| { id?: string; type: "set_global_safety_mode"; mode: SafetyMode }
 
 	// Model
-	| { id?: string; type: "set_model"; provider: string; modelId: string }
+	| { id?: string; type: "set_model"; provider: string; modelId: string; global?: boolean }
 	| { id?: string; type: "cycle_model" }
 	| { id?: string; type: "get_available_models" }
 

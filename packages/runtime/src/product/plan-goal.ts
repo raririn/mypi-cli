@@ -39,7 +39,12 @@ import {
 
 const MAX_PLAN_AGENT_ENDS = 2;
 const MAX_PLAN_PAGE_SIZE = 50;
-const GOAL_PLANNING_TOOLS = new Set(["read", "grep", "find", "ls", "read_workspace", "web_search", "web_fetch", "ask_user", "ask_question", "questionnaire", "question", "get_goal", "get_goal_plan", "set_goal_plan"]);
+const GOAL_PLANNING_TOOLS = new Set([
+	"read", "grep", "find", "ls", "read_workspace", "web_search", "web_fetch",
+	"ask_user", "ask_question", "questionnaire", "question",
+	"subagent_start", "subagent_followup", "subagent_cancel", "subagent_status",
+	"get_goal", "get_goal_plan", "set_goal_plan",
+]);
 const GOAL_SNAPSHOT_STATUS_KEY = "mypi-goal-snapshot";
 
 const PLAN_HELP = `# /plan

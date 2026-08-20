@@ -12,6 +12,7 @@ import {
   DEFAULT_GLOBAL_CONFIG,
   loadGlobalConfig,
   resetGlobalConfig,
+	updateAdvisorModel,
   updateHistoryConfig,
 } from "../../src/product/global-config.ts";
 
@@ -31,6 +32,10 @@ test("global YAML config defaults without creating a file and preserves unrelate
     assert.deepEqual(source.future, { enabled: true });
     assert.equal(source.history.maxActive, 17);
     assert.equal(source.history.maxArchived, 23);
+	await updateAdvisorModel("anthropic/claude-haiku-4-5", path);
+	const advisor = await loadGlobalConfig(path);
+	assert.equal(advisor.config.subagents.advisorModel, "anthropic/claude-haiku-4-5");
+	assert.deepEqual(parse(await readFile(path, "utf8")).future, { enabled: true });
     if (process.platform !== "win32") assert.equal((await lstat(path)).mode & 0o777, 0o600);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -45,6 +50,7 @@ test("malformed, unsupported, and partially invalid YAML use complete defaults a
       "version: 1\nhistory: [\n",
       "version: 99\nhistory:\n  maxActive: 42\n",
       "version: 1\nhistory:\n  maxActive: 42\n  maxArchived: zero\n",
+	  "version: 1\nhistory:\n  maxActive: 42\nsubagents:\n  advisorModel: invalid\n",
       `version: 1\nfuture: ${"x".repeat(1024 * 1024)}\n`,
     ]) {
       await writeFile(path, content, { mode: 0o600 });

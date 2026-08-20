@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { describe } from "node:test";
@@ -548,8 +548,11 @@ test("single-session tools move, restore, and permanently delete JSONL history w
   try {
     const workspace = join(agentDir, "workspace");
     const current = createPersistedSession(workspace, "current", Date.now());
-    const target = createPersistedSession(workspace, "archive me", Date.now());
-    const targetFile = target.getSessionFile()!;
+		const target = createPersistedSession(workspace, "archive me", Date.now());
+		const targetFile = target.getSessionFile()!;
+		const childRoot = join(agentDir, "subagents", "by-parent", target.getSessionId());
+		await mkdir(join(childRoot, "children", "manual-child"), { recursive: true, mode: 0o700 });
+		await writeFile(join(childRoot, "manifest.json"), "{}\n", { mode: 0o600 });
     target.appendCustomEntry("mypi-goal", {
       schemaVersion: 3,
       workflow: "goal",
@@ -574,6 +577,7 @@ test("single-session tools move, restore, and permanently delete JSONL history w
     const archivedFile = archiveResult.details.to;
     assert.match(await readFile(archivedFile, "utf8"), /"customType":"mypi-goal"/);
     assert.match(await readFile(archivedFile, "utf8"), /"goalId":"archived-goal"/);
+	assert.equal(await exists(childRoot), true, "archive retains inspectable child history with its parent identity");
 
     const listResult = await harness.tools.get("list_session_archives").execute("list", { state: "archived" }, undefined, undefined, context);
     assert.match(listResult.content[0].text, new RegExp(target.getSessionId()));
@@ -592,6 +596,7 @@ test("single-session tools move, restore, and permanently delete JSONL history w
     );
     assert.equal(await exists(targetFile), false);
     assert.equal(await exists(archivedFile), false);
+	assert.equal(await exists(childRoot), false, "permanent parent deletion removes its child subtree");
     const finalList = await harness.tools.get("list_session_archives").execute("final-list", { state: "archived" }, undefined, undefined, context);
     assert.equal(finalList.content[0].text, "No matching sessions found.");
   } finally {

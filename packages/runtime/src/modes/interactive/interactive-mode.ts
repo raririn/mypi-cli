@@ -87,6 +87,7 @@ import {
 	resolveModelScope,
 	resolveModelScopeWithDiagnostics,
 } from "../../core/model-resolver.ts";
+import { parseModelCommandArguments } from "../../core/model-command.ts";
 import { DefaultPackageManager } from "../../core/package-manager.ts";
 import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
@@ -600,11 +601,29 @@ export class InteractiveMode {
 					label: `${m.provider}/${m.id}`,
 				}));
 
-				return createFuzzyAutocompleteItems(items, prefix, getModelSearchText, (item) => ({
-					value: item.label,
+				const trimmed = prefix.trim();
+				const leadingGlobal = trimmed === "--global" || trimmed.startsWith("--global ");
+				const trailingGlobal = !leadingGlobal && /\s--global$/u.test(trimmed);
+				const search = leadingGlobal
+					? trimmed.slice("--global".length).trim()
+					: trailingGlobal
+						? trimmed.slice(0, -"--global".length).trim()
+						: prefix;
+				const matches = createFuzzyAutocompleteItems(items, search, getModelSearchText, (item) => ({
+					value: leadingGlobal ? `--global ${item.label}` : trailingGlobal ? `${item.label} --global` : item.label,
 					label: item.id,
-					description: item.provider,
-				}));
+					description: `${item.provider}${leadingGlobal || trailingGlobal ? " · persist globally" : " · this session"}`,
+				})) ?? [];
+				if (!trimmed) matches.unshift({ value: "--global ", label: "--global", description: "Persist the selected model as the global preset" });
+				const exact = items.find((item) => item.label === trimmed);
+				if (exact && !leadingGlobal && !trailingGlobal) {
+					matches.unshift({
+						value: `${exact.label} --global`,
+						label: "--global",
+						description: "Also persist this model as the global preset",
+					});
+				}
+				return matches;
 			};
 		}
 
@@ -2823,9 +2842,9 @@ export class InteractiveMode {
 				return;
 			}
 			if (text === "/model" || text.startsWith("/model ")) {
-				const searchTerm = text.startsWith("/model ") ? text.slice(7).trim() : undefined;
+				const commandArgs = text.startsWith("/model ") ? text.slice(7).trim() : "";
 				this.editor.setText("");
-				await this.handleModelCommand(searchTerm);
+				await this.handleModelCommand(commandArgs);
 				return;
 			}
 			if (text === "/reasoning" || text.startsWith("/reasoning ")) {
@@ -4585,19 +4604,26 @@ export class InteractiveMode {
 		});
 	}
 
-	private async handleModelCommand(searchTerm?: string): Promise<void> {
+	private async handleModelCommand(args = ""): Promise<void> {
+		const request = parseModelCommandArguments(args);
+		if ("error" in request) {
+			this.showError(request.error);
+			return;
+		}
+		const persistGlobal = request.persistGlobal;
+		const searchTerm = request.modelReference;
 		if (!searchTerm) {
-			this.showModelSelector();
+			this.showModelSelector(undefined, persistGlobal);
 			return;
 		}
 
 		const model = await this.findExactModelMatch(searchTerm);
 		if (model) {
 			try {
-				await this.session.setModel(model);
+				await this.session.setModel(model, { persistGlobal });
 				this.footer.invalidate();
 				this.updateEditorBorderColor();
-				this.showStatus(`Model: ${model.id}`);
+				this.showStatus(`Model: ${model.id}${persistGlobal ? " (global preset updated)" : " (this session)"}`);
 				void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
 				this.checkDaxnutsEasterEgg(model);
 			} catch (error) {
@@ -4606,7 +4632,7 @@ export class InteractiveMode {
 			return;
 		}
 
-		this.showModelSelector(searchTerm);
+		this.showModelSelector(searchTerm, persistGlobal);
 	}
 
 	private async findExactModelMatch(searchTerm: string): Promise<Model<any> | undefined> {
@@ -4692,7 +4718,7 @@ export class InteractiveMode {
 		});
 	}
 
-	private showModelSelector(initialSearchInput?: string): void {
+	private showModelSelector(initialSearchInput?: string, persistGlobal = false): void {
 		this.showSelector((done) => {
 			const selector = new ModelSelectorComponent(
 				this.ui,
@@ -4702,11 +4728,11 @@ export class InteractiveMode {
 				this.session.scopedModels,
 				async (model) => {
 					try {
-						await this.session.setModel(model);
+						await this.session.setModel(model, { persistGlobal });
 						this.footer.invalidate();
 						this.updateEditorBorderColor();
 						done();
-						this.showStatus(`Model: ${model.id}`);
+						this.showStatus(`Model: ${model.id}${persistGlobal ? " (global preset updated)" : " (this session)"}`);
 						void this.maybeWarnAboutAnthropicSubscriptionAuth(model);
 						this.checkDaxnutsEasterEgg(model);
 					} catch (error) {

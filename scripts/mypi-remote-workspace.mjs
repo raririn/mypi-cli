@@ -719,6 +719,7 @@ async function deleteArchivedSession(sessionFileValue, sessionIdValue, confirmed
   const release = await acquireSessionMutationLock(source.path);
   try {
     await assertNoBlockingWriterLease(source.path, true);
+    await removeRemoteSubagentChildren(sessionId);
     await rm(source.path);
   } finally {
     await release();
@@ -726,6 +727,21 @@ async function deleteArchivedSession(sessionFileValue, sessionIdValue, confirmed
   await removeSessionAttachments(sessionId);
   await removeEmptySessionParent(source.path, source.root);
   return { deleted: true };
+}
+
+async function removeRemoteSubagentChildren(sessionId) {
+  const agentDir = process.env.MYPI_AGENT_DIR || process.env.MYPI_CODING_AGENT_DIR;
+  if (!agentDir || !isAbsolute(agentDir)) throw new Error("MyPi agent directory is unavailable.");
+  const root = resolve(agentDir, "subagents", "by-parent");
+  const target = resolve(root, requireSafeId(sessionId, "Remote session identity"));
+  assertPathBelow(target, root, "Remote subagent parent storage");
+  try {
+    const info = await lstat(target);
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("Remote subagent parent storage is unsafe.");
+    await rm(target, { recursive: true, force: false });
+  } catch (error) {
+    if (!error || typeof error !== "object" || error.code !== "ENOENT") throw error;
+  }
 }
 
 async function forkSession(sessionFileValue, targetRootValue, targetLeafIdValue) {

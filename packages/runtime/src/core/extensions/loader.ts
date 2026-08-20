@@ -563,6 +563,7 @@ async function loadExtensionsInternal(
 		extensions,
 		errors,
 		runtime: resolvedRuntime,
+		eventBus: resolvedEventBus,
 	};
 }
 

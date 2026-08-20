@@ -2229,8 +2229,14 @@ export class AgentSession {
 	async abort(): Promise<void> {
 		this.abortRetry();
 		this._structuredOutputAbortController?.abort();
+		this._resourceLoader.emitRuntimeEvent?.("mypi:subagent-parent-abort", { reason: "parent_interrupted" });
 		this.agent.abort();
 		await this.waitForIdle();
+	}
+
+	/** Hosted-daemon lifecycle signal: the exact parent session has no attached clients. */
+	notifyParentDetached(): void {
+		this._resourceLoader.emitRuntimeEvent?.("mypi:subagent-parent-detached", { reason: "parent_detached" });
 	}
 
 	async waitForIdle(): Promise<void> {
@@ -2264,7 +2270,7 @@ export class AgentSession {
 	 * Validates that auth is configured, saves to session and settings.
 	 * @throws Error if no auth is configured for the model
 	 */
-	async setModel(model: Model<any>): Promise<void> {
+	async setModel(model: Model<any>, options?: { persistGlobal?: boolean }): Promise<void> {
 		if (!(await this._modelRuntime.checkAuth(model.provider))) {
 			throw new Error(`No API key for ${model.provider}/${model.id}`);
 		}
@@ -2273,7 +2279,9 @@ export class AgentSession {
 		const thinkingLevel = this._getThinkingLevelForModelSwitch();
 		this.agent.state.model = model;
 		this.sessionManager.appendModelChange(model.provider, model.id);
-		this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+		if (options?.persistGlobal === true) {
+			this.settingsManager.setDefaultModelAndProvider(model.provider, model.id);
+		}
 
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);
@@ -2316,7 +2324,6 @@ export class AgentSession {
 		// Apply model
 		this.agent.state.model = next.model;
 		this.sessionManager.appendModelChange(next.model.provider, next.model.id);
-		this.settingsManager.setDefaultModelAndProvider(next.model.provider, next.model.id);
 
 		// Apply thinking level.
 		// - Explicit scoped model thinking level overrides current session level
@@ -2344,7 +2351,6 @@ export class AgentSession {
 		const thinkingLevel = this._getThinkingLevelForModelSwitch();
 		this.agent.state.model = nextModel;
 		this.sessionManager.appendModelChange(nextModel.provider, nextModel.id);
-		this.settingsManager.setDefaultModelAndProvider(nextModel.provider, nextModel.id);
 
 		// Re-clamp thinking level for new model's capabilities
 		this.setThinkingLevel(thinkingLevel);

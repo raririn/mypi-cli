@@ -819,7 +819,10 @@ test("ask_user fans out, the first answer wins, and late joiners learn a prompt 
 
 test("a session closes after its last client leaves, but an active turn defers it", async (t) => {
   const previousTurnMs = process.env.FAKE_ENGINE_TURN_MS;
+  const previousDetachMarker = process.env.FAKE_ENGINE_DETACH_MARKER;
+  const detachMarker = join(tmpdir(), `mypi-subagent-detach-${process.pid}-${Date.now()}`);
   process.env.FAKE_ENGINE_TURN_MS = "600";
+  process.env.FAKE_ENGINE_DETACH_MARKER = detachMarker;
   const daemon = await startDaemon({ idleGraceMs: 60 });
   try {
     const client = connect(daemon.socketPath);
@@ -831,6 +834,7 @@ test("a session closes after its last client leaves, but an active turn defers i
     client.send({ id: "p1", type: "prompt", message: "long", sessionId: "s1" });
     await waitFor(() => client.ofType("agent_start").length === 1, 5_000, "turn started");
     client.socket.destroy();
+    await waitFor(() => existsSync(detachMarker), 3_000, "last-client detach reached engine");
 
     // Well past the grace window, mid-turn: the daemon must still be serving
     // the session rather than killing the engine.
@@ -857,6 +861,9 @@ test("a session closes after its last client leaves, but an active turn defers i
   } finally {
     if (previousTurnMs === undefined) delete process.env.FAKE_ENGINE_TURN_MS;
     else process.env.FAKE_ENGINE_TURN_MS = previousTurnMs;
+    if (previousDetachMarker === undefined) delete process.env.FAKE_ENGINE_DETACH_MARKER;
+    else process.env.FAKE_ENGINE_DETACH_MARKER = previousDetachMarker;
+    await rm(detachMarker, { force: true });
     await daemon.cleanup();
   }
 });

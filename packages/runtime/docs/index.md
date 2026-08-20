@@ -65,6 +65,7 @@ For the full first-run flow, see [Quickstart](quickstart.md).
 - [RPC mode](rpc.md) - integrate over stdin/stdout JSONL.
 - [JSON event stream mode](json.md) - print mode with structured events.
 - [Structured headless output](structured-output.md) - validated JSON Schema results across print, JSON, RPC, SDK, and daemon clients.
+- [Asynchronous subagents](subagents.md) - isolated explore, work, advisor, and review child sessions.
 - [TUI components](tui.md) - build custom terminal UI for extensions.
 
 ## Reference

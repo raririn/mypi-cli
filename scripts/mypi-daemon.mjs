@@ -524,7 +524,7 @@ function handleEngineFrame(session, line) {
       }
       return;
     }
-    if (frame.id === "__daemon_release_abort") return;
+    if (frame.id === "__daemon_release_abort" || frame.id === "__daemon_subagent_detached") return;
     if (session.abandonedEngineRequestIds.delete(frame.id)) return;
     const pending = session.pending.get(frame.id);
     if (pending) {
@@ -772,7 +772,10 @@ function detachClientFromSession(client, session) {
     }
   }
   if (cancelledSurfacePreparation && draining) maybeFinishDrain();
-  if (session.clients.size === 0) scheduleSessionGrace(session);
+  if (session.clients.size === 0) {
+    sendToEngine(session, { id: "__daemon_subagent_detached", type: "notify_parent_detached" });
+    scheduleSessionGrace(session);
+  }
 }
 
 function readLease(sessionFile) {

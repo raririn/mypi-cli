@@ -79,3 +79,16 @@ test("trusts sealed compaction recall only as a required product session read", 
   }];
   assert.equal(isTrustedReadOnlyTool(pi, "recall_compacted_history"), false);
 });
+
+test("trusts sealed subagent admission in readonly and only lifecycle controls in no-read", () => {
+	const sourceInfo = productSource("capability", "subagents");
+	for (const name of ["subagent_start", "subagent_followup", "subagent_cancel", "subagent_status"]) {
+		const pi = toolHarness(name, sourceInfo);
+		assert.equal(isTrustedReadOnlyTool(pi, name), true);
+		assert.equal(isTrustedUserInteractionTool(pi, name), name === "subagent_cancel" || name === "subagent_status");
+	}
+	const spoofed = toolHarness("subagent_start", {
+		path: "<inline:subagent_start>", source: "inline", scope: "temporary", origin: "top-level",
+	});
+	assert.equal(isTrustedReadOnlyTool(spoofed, "subagent_start"), false);
+});

@@ -69,6 +69,8 @@ export interface ResourceLoader {
 	getAppendSystemPrompt(): string[];
 	extendResources(paths: ResourceExtensionPaths): void;
 	reload(options?: ResourceLoaderReloadOptions): Promise<void>;
+	/** Emit a runtime-owned session event to sealed and external extensions. */
+	emitRuntimeEvent?(channel: string, data: unknown): void;
 }
 
 function resolvePromptInput(input: string | undefined, description: string): string | undefined {
@@ -287,6 +289,11 @@ export class DefaultResourceLoader implements ResourceLoader {
 		this.lastPromptPaths = [];
 		this.lastThemePaths = [];
 		this.loaded = false;
+	}
+
+	/** Emit one runtime-owned event to sealed product modules in this session. */
+	emitRuntimeEvent(channel: string, data: unknown): void {
+		this.eventBus.emit(channel, data);
 	}
 
 	getExtensions(): LoadExtensionsResult {

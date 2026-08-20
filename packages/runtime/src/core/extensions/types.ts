@@ -1728,6 +1728,8 @@ export interface LoadExtensionsResult {
 	errors: Array<{ path: string; error: string }>;
 	/** Shared runtime - actions are throwing stubs until runner.initialize() */
 	runtime: ExtensionRuntime;
+	/** Shared session-local event bus used by sealed runtime owners and extensions. */
+	eventBus?: EventBus;
 }
 
 // ============================================================================

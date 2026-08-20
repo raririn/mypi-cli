@@ -43,6 +43,10 @@ export interface RpcClientOptions {
 	model?: string;
 	/** Additional CLI arguments */
 	args?: string[];
+	/** Create a dedicated process group so cancellation can stop child tool processes. */
+	processGroup?: boolean;
+	/** Forward child stderr to this callback instead of the parent stderr. */
+	onStderr?: (text: string) => void;
 }
 
 export interface ModelInfo {
@@ -62,6 +66,7 @@ export class RpcClient {
 	private process: ChildProcess | null = null;
 	private stopReadingStdout: (() => void) | null = null;
 	private eventListeners: RpcEventListener[] = [];
+	private exitListeners: Array<(error: Error) => void> = [];
 	private pendingRequests: Map<string, { resolve: (response: RpcResponse) => void; reject: (error: Error) => void }> =
 		new Map();
 	private requestId = 0;
@@ -96,17 +101,20 @@ export class RpcClient {
 			args.push(...this.options.args);
 		}
 
-		const childProcess = spawn("node", [cliPath, ...args], {
+		const childProcess = spawn(process.execPath, [cliPath, ...args], {
 			cwd: this.options.cwd,
 			env: { ...process.env, ...this.options.env },
 			stdio: ["pipe", "pipe", "pipe"],
+			detached: this.options.processGroup === true && process.platform !== "win32",
 		});
 		this.process = childProcess;
 
 		// Collect stderr for debugging
 		childProcess.stderr?.on("data", (data) => {
-			this.stderr += data.toString();
-			process.stderr.write(data);
+			const text = data.toString();
+			this.stderr = `${this.stderr}${text}`.slice(-65_536);
+			if (this.options.onStderr) this.options.onStderr(text);
+			else process.stderr.write(data);
 		});
 
 		childProcess.once("exit", (code, signal) => {
@@ -114,12 +122,14 @@ export class RpcClient {
 			const error = this.createProcessExitError(code, signal);
 			this.exitError = error;
 			this.rejectPendingRequests(error);
+			for (const listener of this.exitListeners.splice(0)) listener(error);
 		});
 		childProcess.once("error", (error) => {
 			if (this.process !== childProcess) return;
 			const processError = new Error(`Agent process error: ${error.message}. Stderr: ${this.stderr}`);
 			this.exitError = processError;
 			this.rejectPendingRequests(processError);
+			for (const listener of this.exitListeners.splice(0)) listener(processError);
 		});
 		childProcess.stdin?.on("error", (error) => {
 			if (this.process !== childProcess) return;
@@ -152,12 +162,12 @@ export class RpcClient {
 
 		this.stopReadingStdout?.();
 		this.stopReadingStdout = null;
-		this.process.kill("SIGTERM");
+		this.killProcess("SIGTERM");
 
 		// Wait for process to exit
 		await new Promise<void>((resolve) => {
 			const timeout = setTimeout(() => {
-				this.process?.kill("SIGKILL");
+				this.killProcess("SIGKILL");
 				resolve();
 			}, 1000);
 
@@ -171,6 +181,28 @@ export class RpcClient {
 		this.pendingRequests.clear();
 	}
 
+	private killProcess(signal: NodeJS.Signals): void {
+		const child = this.process;
+		if (!child) return;
+		if (this.options.processGroup === true && process.platform !== "win32" && child.pid) {
+			try {
+				process.kill(-child.pid, signal);
+				return;
+			} catch {
+				// The leader may already have exited; fall through to the direct handle.
+			}
+		}
+		try {
+			child.kill(signal);
+		} catch {
+			// Cancellation and cleanup are idempotent.
+		}
+	}
+
+	getPid(): number | undefined {
+		return this.process?.pid;
+	}
+
 	/**
 	 * Subscribe to agent events.
 	 */
@@ -181,6 +213,14 @@ export class RpcClient {
 			if (index !== -1) {
 				this.eventListeners.splice(index, 1);
 			}
+		};
+	}
+
+	onExit(listener: (error: Error) => void): () => void {
+		this.exitListeners.push(listener);
+		return () => {
+			const index = this.exitListeners.indexOf(listener);
+			if (index >= 0) this.exitListeners.splice(index, 1);
 		};
 	}
 
@@ -306,8 +346,8 @@ export class RpcClient {
 	/**
 	 * Set model by provider and ID.
 	 */
-	async setModel(provider: string, modelId: string): Promise<{ provider: string; id: string }> {
-		const response = await this.send({ type: "set_model", provider, modelId });
+	async setModel(provider: string, modelId: string, options: { global?: boolean } = {}): Promise<{ provider: string; id: string }> {
+		const response = await this.send({ type: "set_model", provider, modelId, ...(options.global ? { global: true } : {}) });
 		return this.getData(response);
 	}
 

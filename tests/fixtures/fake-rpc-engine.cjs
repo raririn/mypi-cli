@@ -270,6 +270,10 @@ async function handleCommand(command) {
       aborted = turnActive;
       out({ id, type: 'response', command: 'abort', success: true });
       return;
+    case 'notify_parent_detached':
+      if (process.env.FAKE_ENGINE_DETACH_MARKER) writeFileSync(process.env.FAKE_ENGINE_DETACH_MARKER, `${Date.now()}\n`);
+      out({ id, type: 'response', command: 'notify_parent_detached', success: true });
+      return;
     case 'extension_ui_response':
       out({ type: '__fake_ui_response_received', id: command.id, value: command.value });
       return;

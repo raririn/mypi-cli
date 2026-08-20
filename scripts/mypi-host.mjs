@@ -222,7 +222,7 @@ function handleEngineFrame(line) {
   }
 
   if (frame?.type === "response" && typeof frame.id === "string") {
-    if (frame.id === "__host_release_abort") {
+    if (frame.id === "__host_release_abort" || frame.id === "__host_subagent_detached") {
       // Internal abort issued for a forced release; settlement completes it.
       return;
     }
@@ -275,7 +275,10 @@ function handleEngineFrame(line) {
       completeRelease();
       return;
     }
-    if (clients.size === 0) scheduleGraceCheck();
+    if (clients.size === 0) {
+      sendToEngine({ id: "__host_subagent_detached", type: "notify_parent_detached" });
+      scheduleGraceCheck();
+    }
   }
   if (frame?.type === "agent_end" && frame.willRetry !== true) turnActive = false;
 
@@ -417,7 +420,10 @@ const server = net.createServer((client) => {
     for (const [id, pending] of pendingCommands) {
       if (pending.client === client) pendingCommands.delete(id);
     }
-    if (clients.size === 0) scheduleGraceCheck();
+    if (clients.size === 0) {
+      sendToEngine({ id: "__host_subagent_detached", type: "notify_parent_detached" });
+      scheduleGraceCheck();
+    }
   };
   client.on("close", drop);
   client.on("error", drop);

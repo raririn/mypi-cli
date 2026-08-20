@@ -71,6 +71,11 @@ for (const fragment of ["checkForNewPiVersion", "showNewVersionNotification", "s
     throw new Error(`Installed Pi ${expectedVersion} still exposes automatic CLI version-update metadata (${fragment}).`);
   }
 }
+for (const fragment of ["parseModelCommandArguments", "persistGlobal", "global preset updated"]) {
+  if (!interactiveMode.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing session-local /model with explicit --global persistence (${fragment}).`);
+  }
+}
 
 const productComposition = await readFile(join(packageRoot, "dist", "product", "index.js"), "utf8");
 for (const fragment of [
@@ -79,6 +84,7 @@ for (const fragment of [
   'defineProductModule("goal", "required"',
   'defineProductModule("global-config", "required"',
   'defineProductModule("session-maintenance", "required"',
+  'defineProductModule("subagents", "capability"',
   'defineProductModule("cliproxy", "provider"',
   'defineProductModule("gui-control", "surface"',
   "webSearchExtension",
@@ -90,7 +96,7 @@ for (const fragment of [
   }
 }
 const globalConfig = await readFile(join(packageRoot, "dist", "product", "global-config.js"), "utf8");
-for (const fragment of ["config.yaml", "shortTestMaxWords: 10", "maxActive: 10", "maxArchived: 10", "defaults are active", 'registerCommand("config"']) {
+for (const fragment of ["config.yaml", "shortTestMaxWords: 10", "maxActive: 10", "maxArchived: 10", 'advisorModel: "inherit"', "defaults are active", 'registerCommand("config"']) {
   if (!globalConfig.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing global YAML configuration behavior (${fragment}).`);
   }
@@ -102,6 +108,22 @@ const sessionMaintenance = await readFile(join(packageRoot, "dist", "product", "
 for (const fragment of ['registerCommand("archive-cleanup"', "previewArchiveCleanup", "runNewSessionMaintenance", "--confirm"]) {
   if (!sessionMaintenance.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing session maintenance behavior (${fragment}).`);
+  }
+}
+const subagents = await readFile(join(packageRoot, "dist", "product", "subagents.js"), "utf8");
+for (const fragment of [
+  "subagent_start",
+  "subagent_followup",
+  "subagent_cancel",
+  "subagent_status",
+  "Mixed job roles are prohibited",
+  "blocks your edit, write, and Bash",
+  "MYPI_SUBAGENT_CHILD",
+  "mypi-subagent-results",
+  'registerCommand("advisor-model"',
+]) {
+  if (!subagents.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing async subagent behavior (${fragment}).`);
   }
 }
 if (sessionMaintenance.includes('pi.on("input"')) {

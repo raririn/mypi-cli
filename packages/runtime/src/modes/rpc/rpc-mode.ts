@@ -651,6 +651,11 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "request_safety_mode");
 			}
 
+			case "notify_parent_detached": {
+				session.notifyParentDetached();
+				return success(id, "notify_parent_detached");
+			}
+
 			case "set_global_safety_mode": {
 				session.setGlobalSafetyMode(command.mode);
 				return success(id, "set_global_safety_mode");
@@ -666,7 +671,8 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				if (!model) {
 					return error(id, "set_model", `Model not found: ${command.provider}/${command.modelId}`);
 				}
-				await session.setModel(model);
+				if (command.global === true) await session.setModel(model, { persistGlobal: true });
+				else await session.setModel(model);
 				return success(id, "set_model", model);
 			}
 

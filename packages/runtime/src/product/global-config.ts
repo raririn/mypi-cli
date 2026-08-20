@@ -18,9 +18,14 @@ export interface HistoryConfig {
 	readonly maxArchived: number;
 }
 
+export interface SubagentsConfig {
+	readonly advisorModel: "inherit" | string;
+}
+
 export interface GlobalConfig {
 	readonly version: 1;
 	readonly history: HistoryConfig;
+	readonly subagents: SubagentsConfig;
 }
 
 export interface GlobalConfigDiagnostic {
@@ -42,6 +47,7 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfig = Object.freeze({
 		maxActive: 10,
 		maxArchived: 10,
 	}),
+	subagents: Object.freeze({ advisorModel: "inherit" }),
 });
 
 type ConfigRecord = Record<string, unknown>;
@@ -58,6 +64,8 @@ const HELP = `# /config — inspect or update global MyPi configuration
 /config history max-active <1..1000>
 /config history max-archived <1..1000>
 /config reset --confirm
+
+Use /advisor-model to inspect or change the global advisor/reviewer model.
 
 Configuration is stored in $MYPI_AGENT_DIR/config.yaml. Changes are global to
 that MyPi profile and affect the next new-session maintenance pass. Malformed or
@@ -106,6 +114,23 @@ export async function updateHistoryConfig(
 	});
 }
 
+export async function updateAdvisorModel(
+	advisorModel: "inherit" | string,
+	path = resolveGlobalConfigPath(),
+): Promise<GlobalConfig> {
+	if (!isAdvisorModel(advisorModel)) throw new Error("Advisor model must be inherit or provider/model.");
+	return withConfigLock(path, async () => {
+		const source = await readConfigSourceForMutation(path);
+		const subagents = isRecord(source.subagents) ? { ...source.subagents } : {};
+		subagents.advisorModel = advisorModel;
+		const next = { ...source, version: GLOBAL_CONFIG_VERSION, subagents };
+		const parsed = parseConfigRecord(stringify(next), path);
+		if ("diagnostic" in parsed) throw new Error(parsed.diagnostic.message);
+		await atomicWriteConfig(path, stringify(next, { lineWidth: 0 }));
+		return parsed.config;
+	});
+}
+
 export async function resetGlobalConfig(path = resolveGlobalConfigPath()): Promise<GlobalConfig> {
 	return withConfigLock(path, async () => {
 		await assertResetTargetSafe(path);
@@ -120,7 +145,7 @@ export default function globalConfigExtension(pi: ExtensionAPI): void {
 	const show = async (ctx: ExtensionContext) => {
 		const loaded = await loadGlobalConfig();
 		if (loaded.diagnostic) ctx.ui.notify(loaded.diagnostic.message, "warning");
-		ctx.ui.notify(formatHistoryConfig(loaded.config.history), "info");
+		ctx.ui.notify(`${formatHistoryConfig(loaded.config.history)} ${formatSubagentsConfig(loaded.config.subagents)}`, "info");
 	};
 	const handle = async (args: string, ctx: ExtensionContext) => {
 		const tokens = args.trim().split(/\s+/u).filter(Boolean);
@@ -139,7 +164,7 @@ export default function globalConfigExtension(pi: ExtensionAPI): void {
 			}
 			try {
 				const config = await resetGlobalConfig();
-				ctx.ui.notify(`Reset MyPi global configuration. ${formatHistoryConfig(config.history)}`, "info");
+				ctx.ui.notify(`Reset MyPi global configuration. ${formatHistoryConfig(config.history)} ${formatSubagentsConfig(config.subagents)}`, "info");
 			} catch (error) {
 				ctx.ui.notify(errorMessage(error), "error");
 			}
@@ -203,6 +228,8 @@ function parseConfigRecord(
 		}
 		const history = source.history === undefined ? {} : source.history;
 		if (!isRecord(history)) return { diagnostic: invalidOwnedConfig(path) };
+		const subagents = source.subagents === undefined ? {} : source.subagents;
+		if (!isRecord(subagents)) return { diagnostic: invalidOwnedConfig(path) };
 		const config: GlobalConfig = {
 			version: GLOBAL_CONFIG_VERSION,
 			history: {
@@ -211,12 +238,18 @@ function parseConfigRecord(
 				maxActive: readBoundedInteger(history.maxActive, 1, 1_000, DEFAULT_GLOBAL_CONFIG.history.maxActive),
 				maxArchived: readBoundedInteger(history.maxArchived, 1, 1_000, DEFAULT_GLOBAL_CONFIG.history.maxArchived),
 			},
+			subagents: {
+				advisorModel: typeof subagents.advisorModel === "string"
+					? subagents.advisorModel
+					: DEFAULT_GLOBAL_CONFIG.subagents.advisorModel,
+			},
 		};
 		if (
 			(history.autoArchive !== undefined && typeof history.autoArchive !== "boolean") ||
 			!validOptionalInteger(history.shortTestMaxWords, 1, 100) ||
 			!validOptionalInteger(history.maxActive, 1, 1_000) ||
 			!validOptionalInteger(history.maxArchived, 1, 1_000)
+			|| (subagents.advisorModel !== undefined && !isAdvisorModel(subagents.advisorModel))
 		) return { diagnostic: invalidOwnedConfig(path) };
 		return { config, source };
 	} catch {
@@ -311,8 +344,16 @@ function formatHistoryConfig(config: HistoryConfig): string {
 	return `History: auto-archive ${config.autoArchive ? "on" : "off"}; short-test words <${config.shortTestMaxWords}; max active ${config.maxActive}; max archived ${config.maxArchived}.`;
 }
 
+function formatSubagentsConfig(config: SubagentsConfig): string {
+	return `Advisor/reviewer model: ${config.advisorModel}.`;
+}
+
 function cloneDefaults(): GlobalConfig {
-	return { version: GLOBAL_CONFIG_VERSION, history: { ...DEFAULT_GLOBAL_CONFIG.history } };
+	return {
+		version: GLOBAL_CONFIG_VERSION,
+		history: { ...DEFAULT_GLOBAL_CONFIG.history },
+		subagents: { ...DEFAULT_GLOBAL_CONFIG.subagents },
+	};
 }
 
 function invalidResult(code: GlobalConfigDiagnostic["code"], message: string, path: string): GlobalConfigLoadResult {
@@ -320,7 +361,7 @@ function invalidResult(code: GlobalConfigDiagnostic["code"], message: string, pa
 }
 
 function invalidOwnedConfig(path: string): GlobalConfigDiagnostic {
-	return diagnostic("malformed", `MyPi global history configuration is invalid; complete defaults are active. Repair ${path} or run /config reset --confirm.`, path);
+	return diagnostic("malformed", `MyPi global configuration is invalid; complete defaults are active. Repair ${path} or run /config reset --confirm.`, path);
 }
 
 function diagnostic(code: GlobalConfigDiagnostic["code"], message: string, path: string): GlobalConfigDiagnostic {
@@ -337,6 +378,14 @@ function readBoundedInteger(value: unknown, minimum: number, maximum: number, fa
 
 function validOptionalInteger(value: unknown, minimum: number, maximum: number): boolean {
 	return value === undefined || (Number.isInteger(value) && (value as number) >= minimum && (value as number) <= maximum);
+}
+
+function isAdvisorModel(value: unknown): value is string {
+	return typeof value === "string" && (
+		value === "inherit" || (
+			value.length >= 3 && value.length <= 512 && /^[^\s/]+\/.+$/u.test(value) && !/[\r\n\0]/u.test(value)
+		)
+	);
 }
 
 function isRecord(value: unknown): value is ConfigRecord {

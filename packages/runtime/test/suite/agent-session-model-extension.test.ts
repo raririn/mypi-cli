@@ -14,7 +14,7 @@ describe("AgentSession model and extension characterization", () => {
 		}
 	});
 
-	it("setModel saves the model and emits model_select", async () => {
+	it("setModel records session state without changing the global preset unless requested", async () => {
 		const modelEvents: string[] = [];
 		const harness = await createHarness({
 			models: [
@@ -36,12 +36,18 @@ describe("AgentSession model and extension characterization", () => {
 
 		expect(harness.session.model?.id).toBe("faux-2");
 		expect(modelEvents).toEqual(["faux-1->faux-2:set"]);
+		expect(harness.settingsManager.getDefaultModel()).toBeUndefined();
 		expect(
 			harness.sessionManager
 				.getEntries()
 				.filter((entry) => entry.type === "model_change")
 				.map((entry) => `${entry.provider}/${entry.modelId}`),
 		).toEqual([`${nextModel.provider}/${nextModel.id}`]);
+
+		const initialModel = harness.getModel("faux-1")!;
+		await harness.session.setModel(initialModel, { persistGlobal: true });
+		expect(harness.settingsManager.getDefaultProvider()).toBe(initialModel.provider);
+		expect(harness.settingsManager.getDefaultModel()).toBe(initialModel.id);
 	});
 
 	it("cycles through scoped models and preserves the scoped thinking preference", async () => {
@@ -111,6 +117,20 @@ describe("AgentSession model and extension characterization", () => {
 		await expect(harness.session.setModel(harness.getModel("faux-2")!)).rejects.toThrow(
 			`No API key for ${harness.getModel().provider}/faux-2`,
 		);
+	});
+
+	it("notifies session-owned subagents immediately when the parent is interrupted", async () => {
+		const reasons: unknown[] = [];
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.events.on("mypi:subagent-parent-abort", (event) => reasons.push(event));
+				},
+			],
+		});
+		harnesses.push(harness);
+		await harness.session.abort();
+		expect(reasons).toEqual([{ reason: "parent_interrupted" }]);
 	});
 
 	it("allows extension tool_call handlers to block tool execution", async () => {
