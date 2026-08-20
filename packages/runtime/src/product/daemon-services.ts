@@ -143,6 +143,7 @@ export async function readPersistedSession(options: PersistedSessionReadOptions)
 	const entries: unknown[] = [];
 	let cursorSeen = options.since === undefined;
 	let bytes = 0;
+	let countedEntries = 0;
 	let lastEntryId: string | undefined;
 	let stopped = false;
 	try {
@@ -165,13 +166,16 @@ export async function readPersistedSession(options: PersistedSessionReadOptions)
 			}
 			if (options.since !== undefined && id === options.since) continue;
 			const encodedBytes = Buffer.byteLength(line, "utf8") + 1;
-			if (entries.length >= limit || bytes + encodedBytes > maxBytes) {
+			if (countedEntries >= limit || bytes + encodedBytes > maxBytes) {
 				stopped = true;
 				break;
 			}
 			entries.push(entry);
 			bytes += encodedBytes;
-			if (id) lastEntryId = id;
+			if (id) {
+				lastEntryId = id;
+				countedEntries += 1;
+			}
 		}
 	} finally {
 		await handle.close();

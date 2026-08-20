@@ -77,6 +77,7 @@ import net from "node:net";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import {
+  clearDaemonServiceCache,
   MYPI_DAEMON_PROTOCOL,
   acquireStartupLock,
   daemonDir,
@@ -202,6 +203,7 @@ const sessions = new Map();
 const externalOwners = new Map();
 /** @type {Set<object>} connections that completed the handshake */
 const clients = new Set();
+const preparedFreshSessionIds = new Set();
 const daemonAgentDir = getAgentDir();
 const globalConfigResult = loadGlobalConfig(resolve(daemonAgentDir, "config.yaml"));
 
@@ -540,6 +542,11 @@ function handleEngineFrame(session, line) {
       if (pending.originalId === undefined) delete restored.id;
       else restored.id = pending.originalId;
       sendToClient(pending.client, restored);
+      if (
+        frame.success &&
+        pending.preparedOperation === "new" &&
+        typeof frame.data?.target?.sessionId === "string"
+      ) preparedFreshSessionIds.add(frame.data.target.sessionId);
       if (frame.success && pending.commandType === "set_session_name") persistedChanged(session, "renamed");
       if (finishedSurfacePreparation && draining) maybeFinishDrain();
       // A legacy sole-client command may still replace the child in place;
@@ -591,6 +598,7 @@ function handleEngineFrame(session, line) {
     session.turnActive = false;
     broadcast(session, { ...frame, sessionId: session.sessionId ?? session.key });
     session.structuredCorrelations.clear();
+    clearDaemonServiceCache();
     persistedChanged(session, "updated");
     // A drain in progress exits as soon as the last turn settles.
     if (draining) maybeFinishDrain();
@@ -1258,6 +1266,7 @@ function handleClientFrame(client, frame) {
       commandType: engineFrame.type,
       responseCommand: "prepare_surface_session",
       surfacePreparation: true,
+      preparedOperation: frame.operation,
     });
     sendToEngine(source, { ...engineFrame, id: routedId });
     return;
@@ -1278,11 +1287,12 @@ function handleClientFrame(client, frame) {
     // broadcasts `attached` once the child reports its native id.
     let session = sessionId ? sessions.get(sessionId) : undefined;
     if (!session) {
+      const preparedFresh = sessionId ? preparedFreshSessionIds.delete(sessionId) : false;
       session = startSession({
         sessionId,
         cwd: frame.cwd,
         model: frame.model,
-        sessionStart: normalizeSessionStart(frame.sessionStart),
+        sessionStart: normalizeSessionStart(frame.sessionStart) ?? (preparedFresh ? { reason: "new" } : null),
       });
     }
     if (session.graceTimer) {

@@ -7,7 +7,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import type { AgentSessionEvent, SessionStats } from "../../core/agent-session.ts";
+import type { AgentSessionEvent, QueuedMessageItem, SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
@@ -252,6 +252,16 @@ export class RpcClient {
 	async followUp(message: string, images?: ImageContent[]): Promise<string> {
 		const response = await this.send({ type: "follow_up", message, images });
 		return this.getData<{ queueId: string }>(response).queueId;
+	}
+
+	async removeQueued(queueId: string): Promise<QueuedMessageItem> {
+		const response = await this.send({ type: "remove_queued", queueId });
+		return this.getData(response);
+	}
+
+	async updateQueued(queueId: string, message: string): Promise<QueuedMessageItem> {
+		const response = await this.send({ type: "update_queued", queueId, message });
+		return this.getData(response);
 	}
 
 	/**
