@@ -526,7 +526,7 @@ export class InteractiveMode {
 	}
 
 	private getAutocompleteSourceTag(sourceInfo?: SourceInfo): string | undefined {
-		if (!sourceInfo || sourceInfo.source === "builtin") {
+		if (!sourceInfo || sourceInfo.source === "builtin" || sourceInfo.source === "product") {
 			return undefined;
 		}
 
