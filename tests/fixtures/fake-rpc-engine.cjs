@@ -19,7 +19,8 @@ const readFlag = (name) => {
   return index >= 0 ? args[index + 1] : undefined;
 };
 
-const sessionId = readFlag('--session') || 'fake-session-1';
+let sessionId = readFlag('--session') || 'fake-session-1';
+let newSessionCounter = 0;
 const out = (obj) => process.stdout.write(`${JSON.stringify(obj)}\n`);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -60,7 +61,7 @@ async function runTurn(promptText) {
         { label: 'Yes', description: 'Continue' },
         { label: 'No', description: 'Stop' },
       ],
-      recommendedOption: 0,
+      recommendedOption: 1,
     });
   }
   await sleep(Number(process.env.FAKE_ENGINE_TURN_MS || 40));
@@ -105,6 +106,39 @@ async function handleCommand(command) {
       return;
     case 'extension_ui_response':
       out({ type: '__fake_ui_response_received', id: command.id, value: command.value });
+      return;
+    case 'new_session':
+      sessionId = `fake-new-${(newSessionCounter += 1)}`;
+      out({ id, type: 'response', command: 'new_session', success: true, data: { cancelled: false } });
+      return;
+    case 'get_messages':
+      out({ id, type: 'response', command: 'get_messages', success: true, data: { messages: [] } });
+      return;
+    case 'get_system_prompt':
+      out({ id, type: 'response', command: 'get_system_prompt', success: true, data: { systemPrompt: 'fake system prompt' } });
+      return;
+    case 'get_commands':
+      out({
+        id,
+        type: 'response',
+        command: 'get_commands',
+        success: true,
+        data: {
+          commands: [
+            {
+              name: 'plan',
+              invocationName: 'plan',
+              description: 'Fake plan command',
+              source: 'extension',
+              sourceInfo: { source: 'auto', scope: 'user', origin: 'package', path: '<fake>' },
+            },
+          ],
+        },
+      });
+      return;
+    case 'set_thinking_level':
+      out({ id, type: 'response', command: 'set_thinking_level', success: true });
+      out({ type: 'thinking_level_changed', level: command.level });
       return;
     default:
       out({ id, type: 'response', command: String(type), success: false, error: `Unknown command: ${type}` });

@@ -10,6 +10,7 @@ import type { ImageContent, Model } from "@earendil-works/pi-ai";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
+import type { ContextUsage } from "../../core/extensions/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 
@@ -57,7 +58,7 @@ export type RpcCommand =
 	// Session
 	| { id?: string; type: "get_session_stats" }
 	| { id?: string; type: "export_html"; outputPath?: string }
-	| { id?: string; type: "switch_session"; sessionPath: string }
+	| { id?: string; type: "switch_session"; sessionPath: string; cwdOverride?: string }
 	| {
 			id?: string;
 			type: "navigate_tree";
@@ -67,7 +68,7 @@ export type RpcCommand =
 			replaceInstructions?: boolean;
 			label?: string;
 	  }
-	| { id?: string; type: "fork"; entryId: string }
+	| { id?: string; type: "fork"; entryId: string; position?: "before" | "at" }
 	| { id?: string; type: "clone" }
 	| { id?: string; type: "get_fork_messages" }
 	| { id?: string; type: "get_entries"; since?: string }
@@ -79,7 +80,25 @@ export type RpcCommand =
 	| { id?: string; type: "get_messages" }
 
 	// Commands (available for invocation via prompt)
-	| { id?: string; type: "get_commands" };
+	| { id?: string; type: "get_commands" }
+
+	// Hosted-surface support (FEAT-061 Phase B). These give a daemon client —
+	// the hosted TUI foremost — wire forms for the remaining session
+	// operations that previously only existed in-process.
+	| {
+			id?: string;
+			type: "set_scoped_models";
+			models: Array<{ provider: string; modelId: string; thinkingLevel?: ThinkingLevel }>;
+	  }
+	| { id?: string; type: "clear_queue" }
+	| { id?: string; type: "abort_compaction" }
+	| { id?: string; type: "abort_branch_summary" }
+	| { id?: string; type: "reload" }
+	| { id?: string; type: "record_bash_result"; command: string; result: BashResult; excludeFromContext?: boolean }
+	| { id?: string; type: "export_jsonl"; outputPath?: string }
+	| { id?: string; type: "append_label_change"; targetId: string; label?: string }
+	| { id?: string; type: "get_system_prompt" }
+	| { id?: string; type: "set_transport"; transport: string };
 
 // ============================================================================
 // RPC Slash Command (for get_commands response)
@@ -89,6 +108,8 @@ export type RpcCommand =
 export interface RpcSlashCommand {
 	/** Command name (without leading slash) */
 	name: string;
+	/** Conflict-free name to type (differs from `name` when a built-in shadows it) */
+	invocationName?: string;
 	/** Human-readable description */
 	description?: string;
 	/** What kind of command this is */
@@ -114,6 +135,24 @@ export interface RpcSessionState {
 	autoCompactionEnabled: boolean;
 	messageCount: number;
 	pendingMessageCount: number;
+	// Hosted-surface additions (FEAT-061 Phase B). Optional so an older
+	// client reading a newer engine's state — or the reverse — degrades
+	// instead of breaking; the daemon handshake already pins equal versions
+	// for the surfaces we ship.
+	cwd?: string;
+	sessionDir?: string;
+	usesDefaultSessionDir?: boolean;
+	isPersisted?: boolean;
+	leafId?: string | null;
+	scopedModels?: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
+	retryAttempt?: number;
+	isRetrying?: boolean;
+	autoRetryEnabled?: boolean;
+	isBashRunning?: boolean;
+	contextUsage?: ContextUsage;
+	steeringQueue?: string[];
+	followUpQueue?: string[];
+	supportsThinking?: boolean;
 }
 
 // ============================================================================
@@ -247,6 +286,24 @@ export type RpcResponse =
 			success: true;
 			data: { commands: RpcSlashCommand[] };
 	  }
+
+	// Hosted-surface support (FEAT-061 Phase B)
+	| { id?: string; type: "response"; command: "set_scoped_models"; success: true }
+	| {
+			id?: string;
+			type: "response";
+			command: "clear_queue";
+			success: true;
+			data: { steering: string[]; followUp: string[] };
+	  }
+	| { id?: string; type: "response"; command: "abort_compaction"; success: true }
+	| { id?: string; type: "response"; command: "abort_branch_summary"; success: true }
+	| { id?: string; type: "response"; command: "reload"; success: true }
+	| { id?: string; type: "response"; command: "record_bash_result"; success: true }
+	| { id?: string; type: "response"; command: "export_jsonl"; success: true; data: { path: string } }
+	| { id?: string; type: "response"; command: "append_label_change"; success: true; data: { entryId: string } }
+	| { id?: string; type: "response"; command: "get_system_prompt"; success: true; data: { systemPrompt: string } }
+	| { id?: string; type: "response"; command: "set_transport"; success: true }
 
 	// Error response (any command can fail)
 	| { id?: string; type: "response"; command: string; success: false; error: string };

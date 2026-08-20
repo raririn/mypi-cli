@@ -96,3 +96,59 @@ export function acquireStartupLock() {
     return { acquired: false, release: () => {} };
   }
 }
+
+/**
+ * Connect-or-spawn: returns the socket path of a live daemon, starting a
+ * detached one from `launcherPath` (the `mypi` entry script) when none is
+ * running. Used by every surface that treats the daemon as the authority.
+ */
+export async function ensureDaemonRunning(launcherPath, { spawnTimeoutMs = 15_000 } = {}) {
+  const live = readLiveDaemon();
+  if (live) return live.socketPath;
+  const { spawn } = await import("node:child_process");
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(process.execPath, [launcherPath, "__daemon"], {
+      detached: true,
+      stdio: ["ignore", "pipe", "ignore"],
+      env: { ...process.env },
+    });
+    let buffer = "";
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill("SIGTERM");
+      reject(new Error("Timed out waiting for the MyPi session daemon to start"));
+    }, spawnTimeoutMs);
+    timer.unref?.();
+    child.stdout?.on("data", (data) => {
+      buffer += data.toString();
+      const line = buffer.split("\n").find((candidate) => candidate.trim());
+      if (!line || settled) return;
+      try {
+        const frame = JSON.parse(line);
+        if (frame?.type === "daemon_ready" && typeof frame.socketPath === "string") {
+          settled = true;
+          clearTimeout(timer);
+          child.stdout?.destroy();
+          child.unref();
+          resolvePromise(frame.socketPath);
+        }
+      } catch {
+        // Bootstrap noise before the daemon takes stdout.
+      }
+    });
+    child.on("exit", (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(`MyPi session daemon exited during startup (code ${code})`));
+    });
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+  });
+}

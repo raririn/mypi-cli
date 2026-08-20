@@ -246,6 +246,13 @@ export type AgentSessionEvent =
 	| { type: "entry_appended"; entry: SessionEntry }
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
+	// Emitted whenever the active model changes (set, cycle, or catalog
+	// refresh) so remote surfaces can mirror it without polling (FEAT-061).
+	| { type: "model_changed"; model: Model<any>; thinkingLevel: ThinkingLevel }
+	| {
+			type: "scoped_models_changed";
+			scopedModels: ReadonlyArray<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>;
+	  }
 	| {
 			type: "compaction_end";
 			reason: "manual" | "threshold" | "overflow";
@@ -1101,6 +1108,7 @@ export class AgentSession {
 	/** Update scoped models for cycling */
 	setScopedModels(scopedModels: Array<{ model: Model<any>; thinkingLevel?: ThinkingLevel }>): void {
 		this._scopedModels = scopedModels;
+		this._emit({ type: "scoped_models_changed", scopedModels });
 	}
 
 	/** File-based prompt templates */
@@ -1749,6 +1757,7 @@ export class AgentSession {
 		source: "set" | "cycle" | "restore",
 	): Promise<void> {
 		if (modelsAreEqual(previousModel, nextModel)) return;
+		this._emit({ type: "model_changed", model: nextModel, thinkingLevel: this.thinkingLevel });
 		await this._extensionRunner.emit({
 			type: "model_select",
 			model: nextModel,
@@ -2539,6 +2548,7 @@ export class AgentSession {
 		}
 
 		this.agent.state.model = refreshedModel;
+		this._emit({ type: "model_changed", model: refreshedModel, thinkingLevel: this.thinkingLevel });
 	}
 
 	private _bindExtensionCore(runner: ExtensionRunner): void {

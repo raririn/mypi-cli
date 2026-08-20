@@ -49,8 +49,14 @@ import {
 	getShareViewerUrl,
 	VERSION,
 } from "../../config.ts";
-import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
-import { type InteractiveRuntimeHost, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
+import { type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
+import {
+	type InteractiveExtensionSurface,
+	type InteractiveRuntimeHost,
+	type InteractiveSessionManagerSurface,
+	type InteractiveSessionSurface,
+	SessionImportFileNotFoundError,
+} from "../../core/agent-session-runtime.ts";
 import {
 	CACHE_TTL_MS,
 	type CacheMiss,
@@ -232,7 +238,7 @@ function quoteIfNeeded(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-export function formatResumeCommand(sessionManager: SessionManager): string | undefined {
+export function formatResumeCommand(sessionManager: InteractiveSessionManagerSurface): string | undefined {
 	if (!process.stdout.isTTY) return undefined;
 	if (!sessionManager.isPersisted()) return undefined;
 
@@ -441,7 +447,7 @@ export class InteractiveMode {
 	private themeController: InteractiveThemeController;
 
 	// Convenience accessors
-	private get session(): AgentSession {
+	private get session(): InteractiveSessionSurface {
 		return this.runtimeHost.session;
 	}
 	private get agent() {
@@ -536,7 +542,7 @@ export class InteractiveMode {
 		return description ? `[${sourceTag}] ${description}` : `[${sourceTag}]`;
 	}
 
-	private getBuiltInCommandConflictDiagnostics(extensionRunner: ExtensionRunner): ResourceDiagnostic[] {
+	private getBuiltInCommandConflictDiagnostics(extensionRunner: InteractiveExtensionSurface): ResourceDiagnostic[] {
 		const builtinNames = new Set(BUILTIN_SLASH_COMMANDS.map((command) => command.name));
 		return extensionRunner
 			.getRegisteredCommands()
@@ -1855,7 +1861,7 @@ export class InteractiveMode {
 	/**
 	 * Set up keyboard shortcuts registered by extensions.
 	 */
-	private setupExtensionShortcuts(extensionRunner: ExtensionRunner): void {
+	private setupExtensionShortcuts(extensionRunner: InteractiveExtensionSurface): void {
 		const shortcuts = extensionRunner.getShortcuts(this.keybindings.getEffectiveConfig());
 		if (shortcuts.size === 0) return;
 

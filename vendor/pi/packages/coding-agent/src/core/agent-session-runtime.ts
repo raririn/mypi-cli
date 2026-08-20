@@ -1,9 +1,11 @@
 import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
+import type { Agent } from "@earendil-works/pi-agent-core";
 import { resolvePath } from "../utils/paths.ts";
 import type { AgentSession } from "./agent-session.ts";
 import type { AgentSessionRuntimeDiagnostic, AgentSessionServices } from "./agent-session-services.ts";
 import type {
+	ExtensionRunner,
 	ProjectTrustContext,
 	ReplacedSessionContext,
 	SessionShutdownEvent,
@@ -81,23 +83,145 @@ function extractUserMessageText(content: string | Array<{ type: string; text?: s
  * satisfies it today, and a daemon-backed implementation can satisfy it later
  * without touching the TUI again.
  *
- * Deriving it with `Pick` rather than hand-writing it is deliberate — the
- * compiler then proves this list stays complete. If the TUI reaches for a
- * member that is not named here, the build fails instead of silently widening
- * the surface a remote implementation would have to reproduce.
+ * Deriving these surfaces with `Pick` rather than hand-writing them is
+ * deliberate — the compiler then proves each list stays complete. If the TUI
+ * reaches for a member that is not named here, the build fails instead of
+ * silently widening the surface a remote implementation would have to
+ * reproduce.
+ *
+ * Phase B extends the seam below the runtime: the session, its session
+ * manager, its extension runner, and the agent are themselves narrowed to the
+ * members the TUI touches, because `AgentSession` is nominally typed (private
+ * state) and a daemon-backed facade could never satisfy the concrete class.
+ * The concrete classes remain assignable to every surface, so the embedded
+ * path is unchanged.
  */
+
+/** The `Agent` members the interactive TUI touches. */
+export type InteractiveAgentSurface = Pick<Agent, "abort" | "signal" | "transport">;
+
+/**
+ * The `SessionManager` members the interactive TUI touches, including the
+ * `ReadonlySessionManager` view it hands to extension shortcut contexts.
+ */
+export type InteractiveSessionManagerSurface = Pick<
+	SessionManager,
+	| "appendLabelChange"
+	| "buildContextEntries"
+	| "getBranch"
+	| "getCwd"
+	| "getEntries"
+	| "getEntry"
+	| "getHeader"
+	| "getLabel"
+	| "getLeafEntry"
+	| "getLeafId"
+	| "getSessionDir"
+	| "getSessionFile"
+	| "getSessionId"
+	| "getSessionName"
+	| "getTree"
+	| "isPersisted"
+	| "usesDefaultSessionDir"
+>;
+
+/**
+ * The `ExtensionRunner` members the interactive TUI touches.
+ *
+ * Extensions execute agent-side. In the embedded TUI that is the same
+ * process; in a hosted TUI they run inside the daemon's engine child, and
+ * this surface is served from the wire (commands) or degrades to default
+ * rendering (renderers), per the supported-surface policy in docs/25.
+ */
+export type InteractiveExtensionSurface = Pick<
+	ExtensionRunner,
+	| "emitUserBash"
+	| "getCommand"
+	| "getCommandDiagnostics"
+	| "getEntryRenderer"
+	| "getMessageRenderer"
+	| "getModelRegistry"
+	| "getRegisteredCommands"
+	| "getShortcutDiagnostics"
+	| "getShortcuts"
+>;
+
+/**
+ * The `AgentSession` members the interactive TUI touches.
+ *
+ * `agent`, `sessionManager`, and `extensionRunner` are re-declared with their
+ * own narrowed surfaces instead of being picked, so the whole tree the TUI
+ * sees is structural.
+ */
+export type InteractiveSessionSurface = Pick<
+	AgentSession,
+	| "abortBash"
+	| "abortBranchSummary"
+	| "abortCompaction"
+	| "abortRetry"
+	| "autoCompactionEnabled"
+	| "bindExtensions"
+	| "clearQueue"
+	| "compact"
+	| "cycleModel"
+	| "cycleThinkingLevel"
+	| "executeBash"
+	| "exportToHtml"
+	| "exportToJsonl"
+	| "followUp"
+	| "followUpMode"
+	| "getAvailableThinkingLevels"
+	| "getContextUsage"
+	| "getFollowUpMessages"
+	| "getLastAssistantText"
+	| "getSessionStats"
+	| "getSteeringMessages"
+	| "getToolDefinition"
+	| "getUserMessagesForForking"
+	| "isBashRunning"
+	| "isCompacting"
+	| "isIdle"
+	| "isStreaming"
+	| "messages"
+	| "model"
+	| "modelRuntime"
+	| "navigateTree"
+	| "pendingMessageCount"
+	| "prompt"
+	| "promptTemplates"
+	| "recordBashResult"
+	| "reload"
+	| "resourceLoader"
+	| "retryAttempt"
+	| "scopedModels"
+	| "setAutoCompactionEnabled"
+	| "setFollowUpMode"
+	| "setModel"
+	| "setScopedModels"
+	| "setSessionName"
+	| "setSteeringMode"
+	| "setThinkingLevel"
+	| "settingsManager"
+	| "state"
+	| "steer"
+	| "steeringMode"
+	| "subscribe"
+	| "systemPrompt"
+	| "thinkingLevel"
+	| "waitForIdle"
+> & {
+	readonly agent: InteractiveAgentSurface;
+	readonly sessionManager: InteractiveSessionManagerSurface;
+	readonly extensionRunner: InteractiveExtensionSurface;
+};
+
 export type InteractiveRuntimeHost = Pick<
 	AgentSessionRuntime,
-	| "session"
-	| "services"
-	| "setRebindSession"
-	| "setBeforeSessionInvalidate"
-	| "newSession"
-	| "fork"
-	| "switchSession"
-	| "importFromJsonl"
-	| "dispose"
->;
+	"services" | "setBeforeSessionInvalidate" | "newSession" | "fork" | "switchSession" | "importFromJsonl" | "dispose"
+> & {
+	readonly session: InteractiveSessionSurface;
+	setRebindSession(rebindSession?: (session: InteractiveSessionSurface) => Promise<void>): void;
+};
 
 export class AgentSessionRuntime {
 	private rebindSession?: (session: AgentSession) => Promise<void>;

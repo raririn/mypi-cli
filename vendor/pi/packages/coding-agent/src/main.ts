@@ -5,6 +5,7 @@
  * createAgentSession() options. The SDK does the heavy lifting.
  */
 
+import { existsSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { type ImageContent, modelsAreEqual } from "@earendil-works/pi-ai";
 import chalk from "chalk";
@@ -25,6 +26,8 @@ import {
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { exportFromFile } from "./core/export-html/index.ts";
 import type { InlineExtension } from "./core/extensions/types.ts";
+import { readHostedDaemonEnv } from "./core/hosted/daemon-client.ts";
+import { createHostedRuntime } from "./core/hosted/hosted-runtime-host.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
 import type { ModelRuntime } from "./core/model-runtime.ts";
@@ -95,6 +98,31 @@ function reportDiagnostics(diagnostics: readonly AgentSessionRuntimeDiagnostic[]
 function isTruthyEnvFlag(value: string | undefined): boolean {
 	if (!value) return false;
 	return value === "1" || value.toLowerCase() === "true" || value.toLowerCase() === "yes";
+}
+
+/**
+ * The invocation flags that make a shared, daemon-hosted session the wrong
+ * runtime: they reshape the engine (tools, extensions, prompts, credentials)
+ * for this one process, which a shared engine child cannot honor. Mirrors
+ * codex's unadoptable-config rule; these launches run embedded instead.
+ */
+function hostedIneligibleFlag(parsed: Args): string | undefined {
+	if (parsed.systemPrompt !== undefined) return "--system-prompt";
+	if (parsed.appendSystemPrompt && parsed.appendSystemPrompt.length > 0) return "--append-system-prompt";
+	if (parsed.apiKey !== undefined) return "--api-key";
+	if (parsed.tools && parsed.tools.length > 0) return "--tools";
+	if (parsed.excludeTools && parsed.excludeTools.length > 0) return "--exclude-tools";
+	if (parsed.noTools) return "--no-tools";
+	if (parsed.noBuiltinTools) return "--no-builtin-tools";
+	if (parsed.extensions && parsed.extensions.length > 0) return "--extension";
+	if (parsed.noExtensions) return "--no-extensions";
+	if (parsed.skills && parsed.skills.length > 0) return "--skill";
+	if (parsed.noSkills) return "--no-skills";
+	if (parsed.promptTemplates && parsed.promptTemplates.length > 0) return "--prompt-template";
+	if (parsed.noPromptTemplates) return "--no-prompt-templates";
+	if (parsed.noContextFiles) return "--no-context-files";
+	if (parsed.unknownFlags.size > 0) return `--${[...parsed.unknownFlags.keys()][0]}`;
+	return undefined;
 }
 
 function resolveAppMode(parsed: Args, stdinIsTTY: boolean, stdoutIsTTY: boolean): AppMode {
@@ -740,6 +768,113 @@ export async function main(args: string[], options?: MainOptions) {
 		};
 	};
 	time("createRuntime");
+
+	// FEAT-061 Phase B: hosted TUI. When the launcher points this process at
+	// a session daemon, an eligible interactive launch attaches as a daemon
+	// client instead of owning an embedded runtime — the session then lives
+	// in the daemon, co-drivable by every other surface, and survives the
+	// TUI exiting. Anything ineligible falls back to embedded, which remains
+	// the default and fully supported path.
+	const hostedEnv = readHostedDaemonEnv();
+	let hostedStdinContent: string | undefined;
+	let hostedStdinRead = false;
+	if (
+		hostedEnv &&
+		appMode === "interactive" &&
+		!parsed.help &&
+		parsed.listModels === undefined &&
+		!isTruthyEnvFlag(process.env.PI_STARTUP_BENCHMARK)
+	) {
+		hostedStdinContent = await readPipedStdin();
+		hostedStdinRead = true;
+		if (hostedStdinContent === undefined) {
+			const hostedCwd = sessionManager.getCwd();
+			const hasTrustResources = hasTrustRequiringProjectResources(hostedCwd);
+			const recordedTrust = trustStore.get(hostedCwd);
+			const needsTrustPrompt =
+				parsed.projectTrustOverride === undefined && hasTrustResources && recordedTrust === undefined;
+			const refusal = !sessionManager.isPersisted()
+				? "in-memory session"
+				: !sessionManager.usesDefaultSessionDir()
+					? "custom session directory"
+					: needsTrustPrompt
+						? "project trust is undecided"
+						: parsed.projectTrustOverride !== undefined
+							? "explicit trust override"
+							: parsed.provider !== undefined
+								? "--provider"
+								: hostedIneligibleFlag(parsed);
+			if (refusal) {
+				console.error(chalk.dim(`Hosted session unavailable (${refusal}); running embedded.`));
+			} else {
+				const projectTrusted = !hasTrustResources || recordedTrust === true;
+				const hostedSettingsManager = SettingsManager.create(hostedCwd, agentDir, { projectTrusted });
+				const hostedServices = await createAgentSessionServices({
+					cwd: hostedCwd,
+					agentDir,
+					settingsManager: hostedSettingsManager,
+					extensionFlagValues: parsed.unknownFlags,
+					resourceLoaderOptions: {
+						includeBuiltInExtensions: process.env.MYPI_RUNTIME_PROFILE !== "chat",
+						additionalThemePaths: resolvedThemePaths,
+						noThemes: parsed.noThemes,
+					},
+				});
+				reportDiagnostics([
+					...hostedServices.diagnostics,
+					...collectSettingsDiagnostics(hostedSettingsManager, "hosted runtime creation"),
+				]);
+				const sessionFileOnDisk = sessionManager.getSessionFile();
+				const resumeExisting = !!sessionFileOnDisk && existsSync(sessionFileOnDisk);
+				let hostedRuntime: Awaited<ReturnType<typeof createHostedRuntime>> | undefined;
+				try {
+					hostedRuntime = await createHostedRuntime({
+						services: hostedServices,
+						sessionId: resumeExisting ? sessionManager.getSessionId() : undefined,
+						cwd: hostedCwd,
+						model: parsed.model,
+					});
+				} catch (error: unknown) {
+					const message = error instanceof Error ? error.message : String(error);
+					console.error(chalk.yellow(`Hosted session unavailable (${message}); running embedded.`));
+				}
+				if (hostedRuntime) {
+					time("createHostedRuntime");
+					if (parsed.thinking !== undefined) {
+						hostedRuntime.session.setThinkingLevel(parsed.thinking);
+					}
+					const hostedModelPatterns = parsed.models ?? hostedSettingsManager.getEnabledModels();
+					if (hostedModelPatterns && hostedModelPatterns.length > 0) {
+						const scoped = await resolveModelScope(hostedModelPatterns, hostedServices.modelRuntime);
+						if (scoped.length > 0) hostedRuntime.session.setScopedModels(scoped);
+					}
+					const { initialMessage, initialImages } = await prepareInitialMessage(
+						parsed,
+						hostedSettingsManager.getImageAutoResize(),
+					);
+					initTheme(hostedSettingsManager.getTheme(), true);
+					if (deprecationWarnings.length > 0) {
+						await showDeprecationWarnings(deprecationWarnings);
+					}
+					if (!offlineMode) {
+						void hostedServices.modelRuntime.refresh().catch(() => {});
+					}
+					const interactiveMode = new InteractiveMode(hostedRuntime, {
+						migratedProviders,
+						autoTrustOnReloadCwd,
+						initialMessage,
+						initialImages,
+						initialMessages: parsed.messages,
+						verbose: parsed.verbose,
+					});
+					printTimings();
+					await interactiveMode.run();
+					return;
+				}
+			}
+		}
+	}
+
 	const runtime = await createAgentSessionRuntime(createRuntime, {
 		cwd: sessionManager.getCwd(),
 		agentDir,
@@ -768,7 +903,7 @@ export async function main(args: string[], options?: MainOptions) {
 	// Read piped stdin content (if any) - skip for RPC mode which uses stdin for JSON-RPC
 	let stdinContent: string | undefined;
 	if (appMode !== "rpc") {
-		stdinContent = await readPipedStdin();
+		stdinContent = hostedStdinRead ? hostedStdinContent : await readPipedStdin();
 		if (stdinContent !== undefined && appMode === "interactive") {
 			appMode = "print";
 		}

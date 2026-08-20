@@ -81,6 +81,34 @@ if (internalCommand === "__remote-node-eval") {
   await import("./mypi-attach.mjs");
 } else {
 
+  // Hosted TUI (FEAT-061 Phase C: default on). Interactive launches attach
+  // to the per-profile session daemon as clients — the TUI spawns the daemon
+  // when it is not yet alive, otherwise it connects and treats it as the
+  // authority — so every surface co-drives one session and sessions survive
+  // any surface exiting. MYPI_TUI_HOSTED=0 forces the embedded runtime,
+  // which also remains the automatic fallback for ineligible launches and
+  // every failure here.
+  const cliArgs = process.argv.slice(2);
+  const nonSessionInvocation =
+    cliArgs[0] === "chat" ||
+    cliArgs.some((arg) =>
+      ["--help", "-h", "--version", "-v", "--list-models", "--export", "--print", "-p", "--mode"].includes(arg),
+    );
+  if (process.env.MYPI_TUI_HOSTED !== "0" && !nonSessionInvocation && process.stdin.isTTY && process.stdout.isTTY) {
+    try {
+      const { MYPI_DAEMON_PROTOCOL, ensureDaemonRunning } = await import("./mypi-daemon-discovery.mjs");
+      const socketPath = await ensureDaemonRunning(process.argv[1]);
+      process.env.MYPI_TUI_HOSTED = "1";
+      process.env.MYPI_DAEMON_SOCKET = socketPath;
+      process.env.MYPI_DAEMON_PROTOCOL = String(MYPI_DAEMON_PROTOCOL);
+    } catch (error) {
+      delete process.env.MYPI_TUI_HOSTED;
+      process.stderr.write(
+        `Hosted session unavailable (${error instanceof Error ? error.message : String(error)}); running embedded.\n`,
+      );
+    }
+  }
+
   const { runWebSearchCommand } = await import("./mypi-web-search-config.mjs");
   try {
     if (!(await runWebSearchCommand(process.argv.slice(2)))) {

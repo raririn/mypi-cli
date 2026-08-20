@@ -469,3 +469,106 @@ test("mypi attach --take releases the session and opens it natively", async () =
     await daemon.cleanup();
   }
 });
+
+test("attach without a sessionId creates a fresh session keyed by its native id", async () => {
+  const daemon = await startDaemon();
+  try {
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+
+    client.send({ type: "attach", cwd: daemon.daemonDir });
+    await waitFor(() => client.ofType("attached").length === 1, 5_000, "attached");
+    const attached = client.ofType("attached")[0];
+    assert.equal(attached.sessionId, "fake-session-1", "the attached frame carries the engine's native id");
+    assert.equal(attached.nativeSessionId, "fake-session-1");
+
+    // The adopted id routes commands to the fresh child.
+    client.send({ id: "s", type: "get_state", sessionId: attached.sessionId });
+    await waitFor(() => client.ofType("response").length === 1, 5_000, "routed response");
+    assert.equal(client.ofType("response")[0].data.sessionId, "fake-session-1");
+
+    client.send({ type: "list_sessions" });
+    await waitFor(() => client.ofType("sessions").length === 1, 3_000, "session list");
+    assert.deepEqual(
+      client.ofType("sessions")[0].sessions.map((s) => s.sessionId),
+      ["fake-session-1"],
+      "the fresh session is listed under its native id, not a placeholder",
+    );
+    client.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("the first prompt answer wins and other surfaces are told it resolved", async () => {
+  const daemon = await startDaemon({ mode: "ask-user" });
+  try {
+    const first = connect(daemon.socketPath);
+    const second = connect(daemon.socketPath);
+    await Promise.all([first.connected(), second.connected()]);
+    await Promise.all([first.hello(), second.hello()]);
+    first.send({ type: "attach", sessionId: "s1" });
+    second.send({ type: "attach", sessionId: "s1" });
+    await waitFor(() => second.ofType("attached").length === 1, 5_000, "attached");
+
+    first.send({ id: "p1", type: "prompt", message: "go", sessionId: "s1" });
+    await waitFor(
+      () => first.ofType("extension_ui_request").length === 1 && second.ofType("extension_ui_request").length === 1,
+      5_000,
+      "prompt fan-out",
+    );
+
+    second.send({ type: "extension_ui_response", id: "ask-1", value: "Yes", sessionId: "s1" });
+    await waitFor(() => first.ofType("extension_ui_resolved").length === 1, 5_000, "resolved notice");
+    assert.equal(first.ofType("extension_ui_resolved")[0].id, "ask-1");
+    assert.equal(
+      second.ofType("extension_ui_resolved").length,
+      0,
+      "the answering client does not get a resolution notice for its own answer",
+    );
+
+    // A late answer for the same prompt is dropped, not forwarded twice.
+    first.send({ type: "extension_ui_response", id: "ask-1", value: "No", sessionId: "s1" });
+    await waitFor(() => first.ofType("__fake_ui_response_received").length === 1, 5_000, "engine received one answer");
+    assert.equal(first.ofType("__fake_ui_response_received")[0].value, "Yes");
+    first.socket.destroy();
+    second.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("a successful new_session re-learns the child identity and re-broadcasts attached", async () => {
+  const daemon = await startDaemon();
+  try {
+    const client = connect(daemon.socketPath);
+    const watcher = connect(daemon.socketPath);
+    await Promise.all([client.connected(), watcher.connected()]);
+    await Promise.all([client.hello(), watcher.hello()]);
+    client.send({ type: "attach", sessionId: "s1" });
+    watcher.send({ type: "attach", sessionId: "s1" });
+    await waitFor(() => watcher.ofType("attached").length === 1, 5_000, "attached");
+
+    client.send({ id: "n1", type: "new_session", sessionId: "s1" });
+    await waitFor(() => client.ofType("response").length === 1, 5_000, "new_session response");
+    assert.equal(client.ofType("response")[0].success, true);
+
+    // Both surfaces learn the child's new identity without re-attaching.
+    await waitFor(() => watcher.ofType("attached").length === 2, 5_000, "identity re-broadcast");
+    const rebroadcast = watcher.ofType("attached")[1];
+    assert.equal(rebroadcast.sessionId, "fake-new-1");
+
+    // The new id routes; the old id no longer does.
+    client.send({ id: "s2", type: "get_state", sessionId: "fake-new-1" });
+    await waitFor(() => client.ofType("response").length === 2, 5_000, "routed by new id");
+    assert.equal(client.ofType("response")[1].data.sessionId, "fake-new-1");
+    client.send({ id: "s3", type: "get_state", sessionId: "s1" });
+    await waitFor(() => client.ofType("error").length === 1, 5_000, "old id refused");
+    assert.match(client.ofType("error")[0].error, /No live session/);
+    client.socket.destroy();
+    watcher.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
