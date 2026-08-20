@@ -197,7 +197,13 @@ for (const fragment of ["setMasked(secret)", "[secret submitted]"]) {
   }
 }
 const safetyMode = await readFile(join(packageRoot, "dist", "core", "safety-mode.js"), "utf8");
-for (const fragment of ["SAFETY_MODE_ICONS", 'safe: "✓"', 'full: "!"', "displayedSafetyMode"]) {
+for (const fragment of [
+  "SAFETY_MODE_ICONS",
+  'safe: "✓"',
+  'full: "!"',
+  "displayedSafetyMode",
+  'TRUSTED_PASSIVE_MYPI_PACKAGE_TOOLS = new Set(["set_status"])',
+]) {
   if (!safetyMode.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing mode-specific safety footer copy (${fragment}).`);
   }

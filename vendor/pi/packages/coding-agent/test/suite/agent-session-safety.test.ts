@@ -1,10 +1,14 @@
-import { fauxAssistantMessage } from "@earendil-works/pi-ai";
+import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtensionContext } from "../../src/core/extensions/types.ts";
 import type { BashOperations } from "../../src/core/tools/bash.ts";
 import safetyExtension from "../../src/extensions/mypi/safety.ts";
 import planGoalExtension from "../../src/extensions/mypi/plan-goal.ts";
+import { createTestExtensionsResult, createTestResourceLoader } from "../utilities.ts";
 import { createHarness, type Harness } from "./harness.ts";
 
 describe("AgentSession turn-scoped safety", () => {
@@ -57,6 +61,72 @@ describe("AgentSession turn-scoped safety", () => {
 		harness.setResponses([fauxAssistantMessage("done")]);
 		await harness.session.prompt("next turn");
 		expect(harness.session.getActiveToolNames()).toContain("unclassified");
+	});
+
+	it("keeps provenance-verified set_status available and executable in Safe", async () => {
+		const packageRoot = mkdtempSync(join(tmpdir(), "mypi-safe-status-"));
+		const extensionsDirectory = join(packageRoot, "extensions");
+		const extensionPath = join(extensionsDirectory, "mypi-agent-signals.ts");
+		mkdirSync(extensionsDirectory, { recursive: true });
+		writeFileSync(extensionPath, "export default function agentSignals() {}\n");
+		writeFileSync(
+			join(packageRoot, "package.json"),
+			`${JSON.stringify({
+				name: "@mypi/core",
+				pi: { extensions: ["./extensions/mypi-agent-signals.ts"] },
+			})}\n`,
+		);
+
+		let executedStatus: string | undefined;
+		const extensionsResult = await createTestExtensionsResult(
+			[
+				{
+					path: extensionPath,
+					factory: (pi) => {
+						pi.registerTool({
+							name: "set_status",
+							label: "Set Status",
+							description: "Publish bounded progress",
+							parameters: Type.Object({ status: Type.String({ maxLength: 120 }) }),
+							execute: async (_id, input) => {
+								executedStatus = (input as { status: string }).status;
+								return { content: [{ type: "text", text: "Status set." }], details: {} };
+							},
+						});
+					},
+				},
+			],
+			packageRoot,
+		);
+		const sourceInfo = {
+			path: extensionPath,
+			source: "npm:@mypi/core",
+			scope: "user" as const,
+			origin: "package" as const,
+			baseDir: packageRoot,
+		};
+		extensionsResult.extensions[0]!.sourceInfo = sourceInfo;
+		for (const tool of extensionsResult.extensions[0]!.tools.values()) tool.sourceInfo = sourceInfo;
+
+		try {
+			const harness = await createHarness({
+				settings: { safety: { defaultMode: "safe" } },
+				resourceLoader: createTestResourceLoader({ extensionsResult }),
+			});
+			harnesses.push(harness);
+			expect(harness.session.getActiveToolNames()).toContain("set_status");
+
+			harness.setResponses([
+				fauxAssistantMessage(fauxToolCall("set_status", { status: "Testing FEAT-070" }), {
+					stopReason: "toolUse",
+				}),
+				fauxAssistantMessage("done"),
+			]);
+			await harness.session.prompt("report progress");
+			expect(executedStatus).toBe("Testing FEAT-070");
+		} finally {
+			rmSync(packageRoot, { recursive: true, force: true });
+		}
 	});
 
 	it.each([

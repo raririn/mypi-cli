@@ -124,6 +124,7 @@ const TRUSTED_MYPI_CORE_TOOLS = new Set([
 ]);
 const TRUSTED_USER_INTERACTION_TOOLS = new Set(["ask_user"]);
 const TRUSTED_PASSIVE_BUILTIN_TOOLS = new Set(["commentary"]);
+const TRUSTED_PASSIVE_MYPI_PACKAGE_TOOLS = new Set(["set_status"]);
 
 function isWithin(path: string, parent: string): boolean {
 	const rel = relative(parent, path);
@@ -180,6 +181,9 @@ export function isTrustedSafetyTool(name: string, sourceInfo: SourceInfo | undef
 		return sourceInfo.source === "builtin" && sourceInfo.path === "<builtin:mypi-core>";
 	}
 	if (TRUSTED_USER_INTERACTION_TOOLS.has(name)) {
+		return isTrustedPackageTool(sourceInfo, "@mypi/core");
+	}
+	if (TRUSTED_PASSIVE_MYPI_PACKAGE_TOOLS.has(name)) {
 		return isTrustedPackageTool(sourceInfo, "@mypi/core");
 	}
 	return false;
