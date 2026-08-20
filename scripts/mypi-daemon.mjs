@@ -77,7 +77,6 @@ import net from "node:net";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
 import {
-  clearDaemonServiceCache,
   MYPI_DAEMON_PROTOCOL,
   acquireStartupLock,
   daemonDir,
@@ -86,6 +85,7 @@ import {
   readLiveDaemon,
 } from "./mypi-daemon-discovery.mjs";
 import {
+  clearDaemonServiceCache,
   getDaemonAvailableModels,
   getAgentDir,
   getPersistedSessionStats,
