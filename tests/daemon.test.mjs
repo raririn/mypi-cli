@@ -447,6 +447,33 @@ test("daemon routes stable per-item queue updates, edits, and removal", async ()
   }
 });
 
+test("unattached stats for a live session use persisted read authority instead of routing commands", async () => {
+  const daemon = await startDaemon();
+  try {
+    const cwd = join(daemon.daemonDir, "stats-workspace");
+    const sessionDir = join(daemon.agentDir, "sessions", "workspace");
+    await Promise.all([mkdir(cwd), mkdir(sessionDir, { recursive: true })]);
+    await writeFile(join(sessionDir, "live-stats.jsonl"), persistedSession({ id: "live-stats", cwd }));
+    const owner = connect(daemon.socketPath);
+    const observer = connect(daemon.socketPath);
+    await Promise.all([owner.connected(), observer.connected()]);
+    await Promise.all([owner.hello(), observer.hello()]);
+    owner.send({ type: "attach", sessionId: "live-stats", cwd });
+    await waitFor(() => owner.ofType("attached").length === 1, 5_000, "live stats owner");
+
+    observer.send({ id: "stats-observer", type: "get_session_stats", sessionId: "live-stats" });
+    await waitFor(() => observer.frames.some((frame) => frame.id === "stats-observer"), 5_000, "unattached persisted stats");
+    const response = observer.frames.find((frame) => frame.id === "stats-observer");
+    assert.equal(response.success, true);
+    assert.equal(response.data.sessionId, "live-stats");
+    assert.equal(response.data.lastUsage.totalTokens, 2);
+    owner.socket.destroy();
+    observer.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
 test("an external writer produces a typed conflict and authenticated handoff routing", async () => {
   const ownerDir = await mkdtemp(join(tmpdir(), "mypi-external-owner-test-"));
   const sessionFile = join(ownerDir, "blocked.jsonl");

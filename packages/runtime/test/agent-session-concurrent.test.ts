@@ -209,6 +209,21 @@ describe("AgentSession concurrent prompt guard", () => {
 		]);
 		expect(session.removeQueuedMessage("unknown")).toBeUndefined();
 		expect(queueEvents.some((event) => event.steeringItems.some((item) => item.id === steerId))).toBe(true);
+		await session.prompt("client queued", {
+			expandPromptTemplates: false,
+			streamingBehavior: "steer",
+			mypiQueuedMessageId: "client-stable-id",
+		});
+		await expect(session.prompt("duplicate", {
+			expandPromptTemplates: false,
+			streamingBehavior: "followUp",
+			mypiQueuedMessageId: "client-stable-id",
+		})).rejects.toThrow(/already active/i);
+		await expect(session.prompt("unsafe id", {
+			expandPromptTemplates: false,
+			streamingBehavior: "followUp",
+			mypiQueuedMessageId: "not safe/id",
+		})).rejects.toThrow(/safe identifier/i);
 
 		await session.abort();
 		await firstPrompt.catch(() => {});

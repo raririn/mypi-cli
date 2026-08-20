@@ -95,14 +95,20 @@ for (const fragment of ["config.yaml", "shortTestMaxWords: 10", "maxActive: 10",
     throw new Error(`Installed Pi ${expectedVersion} is missing global YAML configuration behavior (${fragment}).`);
   }
 }
+if (globalConfig.includes('pi.on("input"')) {
+  throw new Error(`Installed Pi ${expectedVersion} allows extension-origin messages to invoke global config mutation.`);
+}
 const sessionMaintenance = await readFile(join(packageRoot, "dist", "product", "session-maintenance.js"), "utf8");
 for (const fragment of ['registerCommand("archive-cleanup"', "previewArchiveCleanup", "runNewSessionMaintenance", "--confirm"]) {
   if (!sessionMaintenance.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing session maintenance behavior (${fragment}).`);
   }
 }
+if (sessionMaintenance.includes('pi.on("input"')) {
+  throw new Error(`Installed Pi ${expectedVersion} allows extension-origin messages to invoke archive cleanup.`);
+}
 const daemonServices = await readFile(join(packageRoot, "dist", "product", "daemon-services.js"), "utf8");
-for (const fragment of ["listPersistedSessions", "readPersistedSession", "listDaemonSkills", "listDaemonExtensions", "runNewSessionMaintenance", "cleanupArchivedSessions"]) {
+for (const fragment of ["listPersistedSessions", "readPersistedSession", "listDaemonSkills", "listDaemonExtensions", "ProjectTrustStore", "runNewSessionMaintenance", "cleanupArchivedSessions"]) {
   if (!daemonServices.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing daemon GUI service behavior (${fragment}).`);
   }
@@ -535,7 +541,7 @@ for (const fragment of ["requiresChatGptAccountId === false", "supportsCodexTool
   }
 }
 const imageInput = await readFile(join(aiPackageRoot, "dist", "utils", "image-input.js"), "utf8");
-for (const fragment of ["invalid_image_input", "data URL type", "Image bytes do not match", "Animated GIF"]) {
+for (const fragment of ["invalid_image_input", "data URL type", "Image bytes do not match", "MAX_IMAGE_COUNT = 20", "A request may contain at most", "Animated GIF"]) {
   if (!imageInput.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing bounded image-input normalization (${fragment}).`);
   }

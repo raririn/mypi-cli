@@ -25,7 +25,7 @@ import type {
 	PrepareNextTurnContext,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import { contentText, normalizeImageInput } from "@earendil-works/pi-ai";
+import { contentText, normalizeImageInputs } from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
 	AuthResult,
@@ -1635,7 +1635,7 @@ export class AgentSession {
 				if (!this.model?.input.includes("image")) {
 					throw new Error(`Model ${this.model?.provider ?? "unknown"}/${this.model?.id ?? "unknown"} does not accept image input.`);
 				}
-				currentImages = currentImages.map(normalizeImageInput);
+				currentImages = normalizeImageInputs(currentImages);
 			}
 
 			// Expand skill commands (/skill:name args) and prompt templates (/template args)
@@ -1949,7 +1949,7 @@ export class AgentSession {
 		skillPresentation?: MyPiSkillInvocationPresentation,
 		mypiQueuedMessageId?: string,
 	): Promise<string> {
-		const queueId = mypiQueuedMessageId ?? randomUUID();
+		const queueId = this._reserveQueuedMessageId(mypiQueuedMessageId);
 		this._steeringMessages.push({ id: queueId, message: text, mode: "steer", hasImages: Boolean(images?.length) });
 		this._emitQueueUpdate();
 		const content: (MyPiTextContent | ImageContent)[] = [
@@ -1981,7 +1981,7 @@ export class AgentSession {
 		skillPresentation?: MyPiSkillInvocationPresentation,
 		mypiQueuedMessageId?: string,
 	): Promise<string> {
-		const queueId = mypiQueuedMessageId ?? randomUUID();
+		const queueId = this._reserveQueuedMessageId(mypiQueuedMessageId);
 		this._followUpMessages.push({ id: queueId, message: text, mode: "followUp", hasImages: Boolean(images?.length) });
 		this._emitQueueUpdate();
 		const content: (MyPiTextContent | ImageContent)[] = [
@@ -2192,6 +2192,17 @@ export class AgentSession {
 			if (typeof id === "string" && id) return id;
 		}
 		return undefined;
+	}
+
+	private _reserveQueuedMessageId(requested: string | undefined): string {
+		const id = requested ?? randomUUID();
+		if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u.test(id)) {
+			throw new Error("Queued message ID must be 1-128 safe identifier characters.");
+		}
+		if ([...this._steeringMessages, ...this._followUpMessages].some((item) => item.id === id)) {
+			throw new Error(`Queued message ID is already active: ${id}`);
+		}
+		return id;
 	}
 
 	private _replaceQueuedMessageText(message: AgentMessage, text: string): AgentMessage {

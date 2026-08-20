@@ -9,6 +9,7 @@ import type { ExtensionAPI, ExtensionContext } from "../core/extensions/types.ts
 
 export const GLOBAL_CONFIG_VERSION = 1;
 export const GLOBAL_CONFIG_FILENAME = "config.yaml";
+const MAX_GLOBAL_CONFIG_BYTES = 1024 * 1024;
 
 export interface HistoryConfig {
 	readonly autoArchive: boolean;
@@ -74,6 +75,9 @@ export async function loadGlobalConfig(path = resolveGlobalConfigPath()): Promis
 		if (info.isSymbolicLink() || !info.isFile()) {
 			return invalidResult("unsafe-file", `MyPi global configuration is not a regular non-symlink file: ${path}`, path);
 		}
+		if (info.size > MAX_GLOBAL_CONFIG_BYTES) {
+			return invalidResult("malformed", `MyPi global configuration exceeds ${MAX_GLOBAL_CONFIG_BYTES} bytes: ${path}`, path);
+		}
 		raw = await readFile(path, "utf8");
 	} catch (error) {
 		if (isErrorCode(error, "ENOENT")) return { config: cloneDefaults() };
@@ -91,7 +95,7 @@ export async function updateHistoryConfig(
 	path = resolveGlobalConfigPath(),
 ): Promise<GlobalConfig> {
 	return withConfigLock(path, async () => {
-		const source = await readConfigSourceForMutation(path, false);
+		const source = await readConfigSourceForMutation(path);
 		const history = isRecord(source.history) ? { ...source.history } : {};
 		history[key] = value;
 		const next = { ...source, version: GLOBAL_CONFIG_VERSION, history };
@@ -175,13 +179,6 @@ export default function globalConfigExtension(pi: ExtensionAPI): void {
 		},
 		handler: handle,
 	});
-	pi.on("input", async (event, ctx) => {
-		if (event.source !== "extension") return undefined;
-		const match = event.text.trim().match(/^\/config(?:\s+([\s\S]*))?$/iu);
-		if (!match) return undefined;
-		await handle(match[1] ?? "", ctx);
-		return { action: "handled" };
-	});
 	pi.on("session_start", async (_event, ctx) => {
 		if (warned) return;
 		warned = true;
@@ -227,14 +224,14 @@ function parseConfigRecord(
 	}
 }
 
-async function readConfigSourceForMutation(path: string, allowMalformed: boolean): Promise<ConfigRecord> {
+async function readConfigSourceForMutation(path: string): Promise<ConfigRecord> {
 	try {
 		const info = await lstat(path);
 		if (info.isSymbolicLink() || !info.isFile()) throw new Error(`Refusing to replace unsafe MyPi global configuration at ${path}.`);
+		if (info.size > MAX_GLOBAL_CONFIG_BYTES) throw new Error(`MyPi global configuration exceeds ${MAX_GLOBAL_CONFIG_BYTES} bytes; the file was not changed.`);
 		const raw = await readFile(path, "utf8");
 		const parsed = parseConfigRecord(raw, path);
 		if ("diagnostic" in parsed) {
-			if (allowMalformed) return { ...cloneDefaults() };
 			throw new Error(`${parsed.diagnostic.message} The file was not changed.`);
 		}
 		return parsed.source;

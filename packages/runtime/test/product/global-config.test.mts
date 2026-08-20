@@ -5,6 +5,9 @@ import { join } from "node:path";
 import test from "node:test";
 import { mkdtemp } from "node:fs/promises";
 import { parse } from "yaml";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import globalConfigExtension from "../../src/product/global-config.ts";
+import sessionMaintenanceExtension from "../../src/product/session-maintenance.ts";
 import {
   DEFAULT_GLOBAL_CONFIG,
   loadGlobalConfig,
@@ -42,6 +45,7 @@ test("malformed, unsupported, and partially invalid YAML use complete defaults a
       "version: 1\nhistory: [\n",
       "version: 99\nhistory:\n  maxActive: 42\n",
       "version: 1\nhistory:\n  maxActive: 42\n  maxArchived: zero\n",
+      `version: 1\nfuture: ${"x".repeat(1024 * 1024)}\n`,
     ]) {
       await writeFile(path, content, { mode: 0o600 });
       const loaded = await loadGlobalConfig(path);
@@ -88,4 +92,18 @@ test("global config rejects symlinks and serializes concurrent field updates", a
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("config reset and archive cleanup remain user command authority, not extension-message hooks", () => {
+  const commands = new Map<string, unknown>();
+  const handlers = new Map<string, unknown[]>();
+  const pi = {
+    registerCommand(name: string, command: unknown) { commands.set(name, command); },
+    on(name: string, handler: unknown) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
+  } as unknown as ExtensionAPI;
+  globalConfigExtension(pi);
+  sessionMaintenanceExtension(pi);
+  assert.ok(commands.has("config"));
+  assert.ok(commands.has("archive-cleanup"));
+  assert.equal(handlers.has("input"), false, "arbitrary extensions cannot inject destructive slash commands");
 });

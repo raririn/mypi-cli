@@ -1168,7 +1168,10 @@ function handleClientFrame(client, frame) {
     return;
   }
 
-  if (frame?.type === "get_session_stats" && (!frame.sessionId || !sessions.has(String(frame.sessionId)))) {
+  const statsLiveSession = frame?.type === "get_session_stats" && typeof frame.sessionId === "string"
+    ? sessions.get(String(frame.sessionId))
+    : undefined;
+  if (frame?.type === "get_session_stats" && (!statsLiveSession || !statsLiveSession.clients.has(client))) {
     sendDaemonResponse(client, frame, "get_session_stats", getPersistedSessionStats({
       agentDir: daemonAgentDir,
       ...(typeof frame.sessionId === "string" ? { id: frame.sessionId } : {}),

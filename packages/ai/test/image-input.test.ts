@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { convertResponsesMessages } from "../src/api/openai-responses-shared.ts";
-import { ImageInputError, normalizeImageInput } from "../src/utils/image-input.ts";
+import { ImageInputError, normalizeImageInput, normalizeImageInputs } from "../src/utils/image-input.ts";
 import { OPENAI_CODEX_MODELS } from "../src/providers/openai-codex.models.ts";
 import type { Context, Model } from "../src/types.ts";
 
@@ -29,6 +29,10 @@ describe("image input normalization", () => {
     expect(() => normalizeImageInput({ type: "image", mimeType: "image/png", data: "%%%" })).toThrow(/base64/i);
     expect(() => normalizeImageInput({ type: "image", mimeType: "image/png", data: Buffer.from("not png").toString("base64") })).toThrow(/do not match/i);
   });
+
+	it("bounds image count before provider dispatch", () => {
+		expect(() => normalizeImageInputs(Array.from({ length: 21 }, () => ({ type: "image", mimeType: "image/png", data: PNG_BASE64 })))).toThrow(/at most 20/i);
+	});
 
   it("emits the official Responses input_image data URL shape for Codex models", () => {
     const model: Model<"openai-codex-responses"> = {

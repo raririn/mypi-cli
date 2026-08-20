@@ -1,4 +1,4 @@
-import { constants } from "node:fs";
+import { constants, realpathSync } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
@@ -6,7 +6,9 @@ import type { Api, Model, Usage } from "@earendil-works/pi-ai";
 import lockfile from "@bybrave/proper-lockfile2";
 import { getAgentDir } from "../config.ts";
 import { createAgentSessionServices, type AgentSessionServices } from "../core/agent-session-services.ts";
+import { SettingsManager } from "../core/settings-manager.ts";
 import type { SourceInfo } from "../core/source-info.ts";
+import { ProjectTrustStore } from "../core/trust-manager.ts";
 import { loadGlobalConfig, type GlobalConfigDiagnostic, type HistoryConfig } from "./global-config.ts";
 
 const MAX_DISCOVERED_FILES = 10_000;
@@ -117,7 +119,7 @@ export async function listPersistedSessions(options: PersistedSessionListOptions
 	const cwd = options.cwd ? await canonicalPath(options.cwd) : undefined;
 	const sessions = [...active, ...archived]
 		.filter((session) => !cwd || session.cwd === cwd)
-		.sort((left, right) => Date.parse(right.modifiedAt) - Date.parse(left.modifiedAt));
+		.sort(compareNewestSession);
 	const offset = boundedInteger(options.offset, 0, Number.MAX_SAFE_INTEGER, 0);
 	const limit = boundedInteger(options.limit, 1, MAX_LIST_LIMIT, DEFAULT_LIST_LIMIT);
 	const page = sessions.slice(offset, offset + limit);
@@ -181,6 +183,9 @@ export async function readPersistedSession(options: PersistedSessionReadOptions)
 		await handle.close();
 	}
 	if (!cursorSeen) throw new Error("read_session since cursor was not found");
+	if (stopped && !lastEntryId) {
+		throw new Error("read_session maxBytes is too small for the next complete entry");
+	}
 	return {
 		id: session.id,
 		sessionFile: session.sessionFile,
@@ -192,12 +197,12 @@ export async function readPersistedSession(options: PersistedSessionReadOptions)
 }
 
 export async function getPersistedSessionStats(options: PersistedSessionReadOptions): Promise<Record<string, unknown>> {
-	const page = await listPersistedSessions({
-		agentDir: options.agentDir,
-		includeArchived: options.includeArchived !== false,
-		limit: MAX_LIST_LIMIT,
-	});
-	const matches = page.sessions.filter((session) =>
+	const roots = resolveSessionRoots(options.agentDir);
+	const candidates = [
+		...(await scanSessionRoot(roots.sessionsRoot, false)),
+		...(options.includeArchived === false ? [] : await scanSessionRoot(roots.archiveRoot, true)),
+	];
+	const matches = candidates.filter((session) =>
 		(options.id ? session.id === options.id : true) &&
 		(options.sessionFile ? session.sessionFile === resolve(options.sessionFile) : true),
 	);
@@ -266,12 +271,12 @@ export async function runNewSessionMaintenance(options: {
 	const archivedOverflow: SessionMaintenanceMove[] = [];
 	const skipped: Array<{ id: string; reason: string }> = [];
 	const cwd = await canonicalPath(options.cwd);
-	const currentFile = resolve(options.sessionFile);
+	const currentFile = await canonicalPath(options.sessionFile);
 
 	if (config.autoArchive) {
 		const initial = (await scanSessionRoot(roots.sessionsRoot, false))
 			.filter((session) => session.cwd === cwd && session.sessionFile !== currentFile)
-			.sort((left, right) => Date.parse(left.modifiedAt) - Date.parse(right.modifiedAt));
+			.sort(compareOldestSession);
 		for (const session of initial) {
 			if (!(await isObviousShortTest(session, roots.sessionsRoot, config.shortTestMaxWords))) continue;
 			try {
@@ -283,7 +288,7 @@ export async function runNewSessionMaintenance(options: {
 
 		const remaining = (await scanSessionRoot(roots.sessionsRoot, false))
 			.filter((session) => session.cwd === cwd && session.sessionFile !== currentFile)
-			.sort((left, right) => Date.parse(right.modifiedAt) - Date.parse(left.modifiedAt));
+			.sort(compareNewestSession);
 		// The current new session consumes one slot even if its header has not yet
 		// appeared in a concurrent scan.
 		const overflow = remaining.slice(Math.max(0, config.maxActive - 1));
@@ -322,7 +327,7 @@ export async function previewArchiveCleanup(cwd: string, agentDir = getAgentDir(
 	const project = await canonicalPath(cwd);
 	const archived = (await scanSessionRoot(roots.archiveRoot, true))
 		.filter((session) => session.cwd === project)
-		.sort((left, right) => Date.parse(right.modifiedAt) - Date.parse(left.modifiedAt));
+		.sort(compareNewestSession);
 	const candidates = archived.slice(loaded.config.history.maxArchived);
 	return {
 		cwd: project,
@@ -361,10 +366,17 @@ export async function cleanupArchivedSessions(
 }
 
 async function daemonServices(cwd: string, agentDir: string): Promise<AgentSessionServices> {
-	const key = `${resolve(agentDir)}\0${resolve(cwd)}`;
+	let projectTrusted = false;
+	try {
+		projectTrusted = new ProjectTrustStore(agentDir).get(cwd) === true;
+	} catch {
+		// A malformed or unsafe trust store cannot grant project code authority.
+	}
+	const key = `${resolve(agentDir)}\0${resolve(cwd)}\0${projectTrusted ? "trusted" : "untrusted"}`;
 	let pending = serviceCache.get(key);
 	if (!pending) {
-		pending = createAgentSessionServices({ cwd, agentDir, productProfile: "coding" });
+		const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted });
+		pending = createAgentSessionServices({ cwd, agentDir, settingsManager, productProfile: "coding" });
 		serviceCache.set(key, pending);
 		pending.catch(() => serviceCache.delete(key));
 	}
@@ -491,7 +503,8 @@ async function collectSessionFiles(root: string, directory: string, depth: numbe
 		return;
 	}
 	for (const entry of entries) {
-		if (files.length >= MAX_DISCOVERED_FILES || entry.isSymbolicLink()) break;
+		if (files.length >= MAX_DISCOVERED_FILES) break;
+		if (entry.isSymbolicLink()) continue;
 		const path = join(directory, entry.name);
 		if (entry.isDirectory()) await collectSessionFiles(root, path, depth + 1, files);
 		else if (entry.isFile() && entry.name.endsWith(".jsonl") && isContained(path, root)) files.push(resolve(path));
@@ -541,7 +554,7 @@ async function summarizeSessionFile(file: string, root: string, archived: boolea
 		const modifiedTime = lastActivity ?? (Date.parse(createdAt) || stats.mtimeMs);
 		return {
 			id: String(header.id),
-			sessionFile: resolve(file),
+			sessionFile: await canonicalPath(file),
 			cwd: typeof header.cwd === "string" ? await canonicalPath(header.cwd) : "",
 			...(name ? { name } : {}),
 			firstUserText,
@@ -580,7 +593,12 @@ async function openSafeSessionFile(file: string, root: string) {
 }
 
 function resolveSessionRoots(agentDir = getAgentDir()): { sessionsRoot: string; archiveRoot: string } {
-	const root = resolve(agentDir);
+	let root = resolve(agentDir);
+	try {
+		root = realpathSync(root);
+	} catch {
+		// The profile may not exist yet; callers will observe empty roots.
+	}
 	return { sessionsRoot: join(root, "sessions"), archiveRoot: join(root, "session-archive") };
 }
 
@@ -644,6 +662,18 @@ function isUsage(value: unknown): value is Usage {
 function validIso(value: unknown): string | undefined {
 	if (typeof value !== "string" || !Number.isFinite(Date.parse(value))) return undefined;
 	return new Date(value).toISOString();
+}
+
+function compareNewestSession(left: PersistedSessionSummary, right: PersistedSessionSummary): number {
+	return (
+		Date.parse(right.modifiedAt) - Date.parse(left.modifiedAt) ||
+		Date.parse(right.createdAt) - Date.parse(left.createdAt) ||
+		right.id.localeCompare(left.id)
+	);
+}
+
+function compareOldestSession(left: PersistedSessionSummary, right: PersistedSessionSummary): number {
+	return -compareNewestSession(left, right);
 }
 
 async function canonicalPath(path: string): Promise<string> {

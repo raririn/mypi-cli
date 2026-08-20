@@ -65,16 +65,9 @@ export default function sessionMaintenanceExtension(pi: ExtensionAPI): void {
 		},
 		handler: handleCleanup,
 	});
-	pi.on("input", async (event, ctx) => {
-		if (event.source !== "extension") return undefined;
-		const match = event.text.trim().match(/^\/archive-cleanup(?:\s+([\s\S]*))?$/iu);
-		if (!match) return undefined;
-		await handleCleanup(match[1] ?? "", ctx);
-		return { action: "handled" };
-	});
-
 	pi.on("session_start", (event, ctx) => {
-		if (event.reason !== "new" || process.env.MYPI_DAEMON_ENGINE === "1") return;
+		const freshStartup = event.reason === "startup" && ctx.sessionManager.getEntries().length === 0;
+		if ((event.reason !== "new" && !freshStartup) || process.env.MYPI_DAEMON_ENGINE === "1") return;
 		const sessionFile = ctx.sessionManager.getSessionFile();
 		const sessionId = ctx.sessionManager.getSessionId();
 		if (!sessionFile || !sessionId) return;
