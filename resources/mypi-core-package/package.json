@@ -1,6 +1,6 @@
 {
   "name": "@mypi/core",
-  "version": "1.6.0",
+  "version": "1.7.0-beta.1",
   "description": "MyPi's profile-specific policy and control-surface extensions",
   "license": "MIT",
   "keywords": [
