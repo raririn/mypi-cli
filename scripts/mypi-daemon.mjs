@@ -205,7 +205,7 @@ const externalOwners = new Map();
 const clients = new Set();
 const preparedFreshSessionIds = new Set();
 const daemonAgentDir = getAgentDir();
-const globalConfigResult = loadGlobalConfig(resolve(daemonAgentDir, "config.yaml"));
+const daemonGlobalConfigPath = resolve(daemonAgentDir, "config.yaml");
 
 let server = null;
 let shuttingDown = false;
@@ -1098,7 +1098,7 @@ function handleClientFrame(client, frame) {
       pid: process.pid,
       daemonVersion: process.env.MYPI_RUNTIME_DISPLAY_VERSION ?? null,
     });
-    void globalConfigResult.then((loaded) => {
+    void loadGlobalConfig(daemonGlobalConfigPath).then((loaded) => {
       if (loaded.diagnostic) {
         sendToClient(client, {
           type: "configuration_warning",
