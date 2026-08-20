@@ -163,26 +163,8 @@ async function prepare(values) {
 async function install(values) {
   if (required(values, "artifact-hash") !== ARTIFACT_HASH) throw new Error("Artifact hash mismatch");
   const agentDir = resolve(required(values, "agent-dir"));
-  // A compatible MyPi installation already loads gui-control from its managed
-  // core package. Reuse it so an existing MyPi TUI can tether immediately,
-  // without installing a duplicate direct extension or demanding a reload.
-  const packagedExtension = join(agentDir, "packages", "mypi-core", "extensions", "gui-control", "index.ts");
-  try {
-    const packagedInfo = await lstat(packagedExtension);
-    const packagedReal = await realpath(packagedExtension);
-    if (!packagedInfo.isFile() || packagedInfo.isSymbolicLink() || !packagedReal.startsWith(`${await realpath(agentDir)}${sep}`)) {
-      throw new Error("Unsafe managed MyPi gui-control extension");
-    }
-    process.stdout.write(`${JSON.stringify({
-      application: APPLICATION,
-      artifactHash: ARTIFACT_HASH,
-      extensionPath: packagedReal,
-      reloadRequired: false,
-    })}\n`);
-    return;
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
+  // The historical desktop bridge deploys its own content-addressed surface
+  // module. Product MyPi no longer discovers a profile-installed core package.
   const extensionsDir = await ensureDirectory(join(agentDir, "extensions"));
   const target = join(extensionsDir, `mypi-gui-control-${ARTIFACT_HASH.slice(0, 12)}`);
   const source = dirname(fileURLToPath(import.meta.url));
