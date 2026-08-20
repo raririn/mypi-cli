@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { MYPI_CONTROL_PROTOCOL, parseEndpointManifest, type ClientFrame, type ServerFrame, type TuiHello } from './protocol.js'
-import { SocketTransport } from './transport.js'
+import { MYPI_CONTROL_PROTOCOL, parseEndpointManifest, type ClientFrame, type ServerFrame, type TuiHello } from './protocol.ts'
+import { SocketTransport } from './transport.ts'
 
 export type ControllerState = 'disabled' | 'discovering' | 'connecting' | 'handshaking' | 'connected' | 'backoff' | 'closing'
 export interface ControllerCallbacks {

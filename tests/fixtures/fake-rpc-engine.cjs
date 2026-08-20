@@ -32,6 +32,16 @@ let aborted = false;
 let sessionStartAnnounced = false;
 let safetyMode = 'full';
 let pendingSafetyMode;
+let queuedCounter = 0;
+let queuedItems = [];
+
+const emitQueue = () => out({
+  type: 'queue_update',
+  steering: queuedItems.filter((item) => item.mode === 'steer').map((item) => item.message),
+  followUp: queuedItems.filter((item) => item.mode === 'followUp').map((item) => item.message),
+  steeringItems: queuedItems.filter((item) => item.mode === 'steer'),
+  followUpItems: queuedItems.filter((item) => item.mode === 'followUp'),
+});
 
 const sessionDir = join(process.cwd(), 'persisted-sessions');
 const sessionPath = () => {
@@ -226,6 +236,36 @@ async function handleCommand(command) {
 	  }
       void runTurn(command.message, command.structuredOutput, id);
       return;
+    case 'steer':
+    case 'follow_up': {
+      const queueId = `fake-queue-${(queuedCounter += 1)}`;
+      queuedItems.push({ id: queueId, message: command.message, mode: type === 'steer' ? 'steer' : 'followUp', hasImages: Boolean(command.images?.length) });
+      emitQueue();
+      out({ id, type: 'response', command: type, success: true, data: { queueId } });
+      return;
+    }
+    case 'remove_queued': {
+      const index = queuedItems.findIndex((item) => item.id === command.queueId);
+      if (index < 0) {
+        out({ id, type: 'response', command: type, success: false, error: `Queued message not found: ${command.queueId}` });
+        return;
+      }
+      const [removed] = queuedItems.splice(index, 1);
+      emitQueue();
+      out({ id, type: 'response', command: type, success: true, data: removed });
+      return;
+    }
+    case 'update_queued': {
+      const index = queuedItems.findIndex((item) => item.id === command.queueId);
+      if (index < 0) {
+        out({ id, type: 'response', command: type, success: false, error: `Queued message not found: ${command.queueId}` });
+        return;
+      }
+      queuedItems[index] = { ...queuedItems[index], message: command.message };
+      emitQueue();
+      out({ id, type: 'response', command: type, success: true, data: queuedItems[index] });
+      return;
+    }
     case 'abort':
       aborted = turnActive;
       out({ id, type: 'response', command: 'abort', success: true });

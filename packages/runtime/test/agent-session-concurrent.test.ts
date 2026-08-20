@@ -181,6 +181,39 @@ describe("AgentSession concurrent prompt guard", () => {
 		await firstPrompt.catch(() => {});
 	});
 
+	it("assigns stable queue ids and updates or removes one item in place", async () => {
+		await createSession();
+		const queueEvents: Array<{ steeringItems: readonly { id: string; message: string }[]; followUpItems: readonly { id: string; message: string }[] }> = [];
+		session.subscribe((event) => {
+			if (event.type === "queue_update") queueEvents.push(event);
+		});
+
+		const firstPrompt = session.prompt("First message");
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		const steerId = await session.steerWithId("original steer");
+		const followUpId = await session.followUpWithId("remove me");
+		expect(steerId).not.toBe(followUpId);
+		expect(session.getQueuedMessageItems()).toEqual([
+			expect.objectContaining({ id: steerId, message: "original steer", mode: "steer" }),
+			expect.objectContaining({ id: followUpId, message: "remove me", mode: "followUp" }),
+		]);
+
+		expect(session.updateQueuedMessage(steerId, "updated steer")).toEqual(
+			expect.objectContaining({ id: steerId, message: "updated steer" }),
+		);
+		expect(session.removeQueuedMessage(followUpId)).toEqual(
+			expect.objectContaining({ id: followUpId, message: "remove me" }),
+		);
+		expect(session.getQueuedMessageItems()).toEqual([
+			expect.objectContaining({ id: steerId, message: "updated steer", mode: "steer" }),
+		]);
+		expect(session.removeQueuedMessage("unknown")).toBeUndefined();
+		expect(queueEvents.some((event) => event.steeringItems.some((item) => item.id === steerId))).toBe(true);
+
+		await session.abort();
+		await firstPrompt.catch(() => {});
+	});
+
 	it("should queue extension-origin steering messages while streaming", async () => {
 		const model = getModel("anthropic", "claude-sonnet-4-5")!;
 		let abortSignal: AbortSignal | undefined;

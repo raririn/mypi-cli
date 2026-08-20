@@ -1,6 +1,6 @@
 import { connect, type Socket } from 'node:net'
 import { StringDecoder } from 'node:string_decoder'
-import { GUI_CONTROL_MAX_BUFFER_BYTES, GUI_CONTROL_MAX_FRAME_BYTES, parseServerFrame, type ClientFrame, type ServerFrame } from './protocol.js'
+import { GUI_CONTROL_MAX_BUFFER_BYTES, GUI_CONTROL_MAX_FRAME_BYTES, parseServerFrame, type ClientFrame, type ServerFrame } from './protocol.ts'
 
 export class BoundedEventQueue {
   private frames: ClientFrame[] = []

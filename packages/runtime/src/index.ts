@@ -19,6 +19,7 @@ export {
 	type AgentSessionEventListener,
 	type ModelCycleResult,
 	type ParsedSkillBlock,
+	type QueuedMessageItem,
 	type PromptOptions,
 	parseSkillBlock,
 	type SessionStats,
@@ -445,6 +446,39 @@ export {
 export { CHAT_TOOL_NAMES } from "./product/mypi-chat.ts";
 export { REDPANDA_PROVIDER_CONFIG, REDPANDA_PROVIDER_ID } from "./product/redpanda-provider-core.ts";
 export { pickNewThreadGreeting } from "./product/tui-hero/greetings.ts";
+export {
+	DEFAULT_GLOBAL_CONFIG,
+	GLOBAL_CONFIG_FILENAME,
+	GLOBAL_CONFIG_VERSION,
+	loadGlobalConfig,
+	resetGlobalConfig,
+	resolveGlobalConfigPath,
+	updateHistoryConfig,
+	type GlobalConfig,
+	type GlobalConfigDiagnostic,
+	type GlobalConfigLoadResult,
+	type HistoryConfig,
+} from "./product/global-config.ts";
+export {
+	clearDaemonServiceCache,
+	cleanupArchivedSessions,
+	getDaemonAvailableModels,
+	getPersistedSessionStats,
+	listDaemonExtensions,
+	listDaemonSkills,
+	listPersistedSessions,
+	previewArchiveCleanup,
+	readPersistedSession,
+	runNewSessionMaintenance,
+	type ArchiveCleanupPreview,
+	type DaemonResourceInventoryEntry,
+	type PersistedSessionPage,
+	type PersistedSessionReadOptions,
+	type PersistedSessionReadResult,
+	type PersistedSessionSummary,
+	type SessionMaintenanceMove,
+	type SessionMaintenanceResult,
+} from "./product/daemon-services.ts";
 export * from "./product/gui-control/presence.ts";
 export * from "./product/gui-control/protocol.ts";
 // Shell utilities

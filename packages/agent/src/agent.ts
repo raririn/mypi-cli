@@ -154,6 +154,19 @@ class PendingMessageQueue {
 	clear(): void {
 		this.messages = [];
 	}
+
+	remove(predicate: (message: AgentMessage) => boolean): AgentMessage | undefined {
+		const index = this.messages.findIndex(predicate);
+		if (index < 0) return undefined;
+		return this.messages.splice(index, 1)[0];
+	}
+
+	update(predicate: (message: AgentMessage) => boolean, update: (message: AgentMessage) => AgentMessage): boolean {
+		const index = this.messages.findIndex(predicate);
+		if (index < 0) return false;
+		this.messages[index] = update(this.messages[index]!);
+		return true;
+	}
 }
 
 type ActiveRun = {
@@ -296,6 +309,19 @@ export class Agent {
 	clearAllQueues(): void {
 		this.clearSteeringQueue();
 		this.clearFollowUpQueue();
+	}
+
+	/** Remove one queued message from either queue before it is dispatched. */
+	removeQueuedMessage(predicate: (message: AgentMessage) => boolean): AgentMessage | undefined {
+		return this.steeringQueue.remove(predicate) ?? this.followUpQueue.remove(predicate);
+	}
+
+	/** Update one queued message in place while preserving its queue position. */
+	updateQueuedMessage(
+		predicate: (message: AgentMessage) => boolean,
+		update: (message: AgentMessage) => AgentMessage,
+	): boolean {
+		return this.steeringQueue.update(predicate, update) || this.followUpQueue.update(predicate, update);
 	}
 
 	/** Returns true when either queue still contains pending messages. */

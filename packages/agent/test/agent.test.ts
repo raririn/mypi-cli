@@ -134,6 +134,20 @@ describe("Agent", () => {
 		expect(agent.state.thinkingLevel).toBe("low");
 	});
 
+	it("updates and removes one queued message by predicate without clearing peers", () => {
+		const agent = new Agent({ streamFn: unusedStreamFunction });
+		agent.steer({ role: "user", content: [{ type: "text", text: "one", queueId: "one" }], timestamp: 1 });
+		agent.followUp({ role: "user", content: [{ type: "text", text: "two", queueId: "two" }], timestamp: 2 });
+		const hasId = (id: string) => (message: Parameters<typeof agent.steer>[0]) =>
+			message.role === "user" && Array.isArray(message.content) && message.content.some((part) => part.type === "text" && (part as { queueId?: string }).queueId === id);
+		expect(agent.updateQueuedMessage(hasId("one"), (message) => ({ ...message, timestamp: 3 }))).toBe(true);
+		expect(agent.removeQueuedMessage(hasId("two"))?.role).toBe("user");
+		expect(agent.removeQueuedMessage(hasId("missing"))).toBeUndefined();
+		expect(agent.hasQueuedMessages()).toBe(true);
+		expect(agent.removeQueuedMessage(hasId("one"))?.role).toBe("user");
+		expect(agent.hasQueuedMessages()).toBe(false);
+	});
+
 	it("should subscribe to events", () => {
 		const agent = new Agent({ streamFn: unusedStreamFunction });
 

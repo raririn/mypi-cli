@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,8 +36,12 @@ async function startDaemon({
   ownershipConflict,
   signalGraceMs,
   ownerControlTimeoutMs,
+  configContent,
 } = {}) {
   const daemonDir = await mkdtemp(join(tmpdir(), "mypi-daemon-test-"));
+  const agentDir = join(daemonDir, "agent");
+  await mkdir(agentDir, { recursive: true });
+  if (configContent !== undefined) await writeFile(join(agentDir, "config.yaml"), configContent, { mode: 0o600 });
   const child = spawn(
     process.execPath,
     [DAEMON_SCRIPT, "__daemon", "--idle-grace-ms", String(idleGraceMs)],
@@ -45,7 +49,10 @@ async function startDaemon({
       env: {
         ...process.env,
         MYPI_DAEMON_DIR: daemonDir,
+        MYPI_AGENT_DIR: agentDir,
+        MYPI_CODING_AGENT_DIR: agentDir,
         MYPI_DAEMON_ENGINE_CMD: JSON.stringify([process.execPath, FAKE_ENGINE]),
+        MYPI_DAEMON_NO_REEXEC: "1",
         FAKE_ENGINE_MODE: mode ?? "",
         ...(version !== undefined ? { MYPI_RUNTIME_DISPLAY_VERSION: version } : {}),
         ...(turnMs !== undefined ? { FAKE_ENGINE_TURN_MS: String(turnMs) } : {}),
@@ -80,12 +87,35 @@ async function startDaemon({
   return {
     child,
     daemonDir,
+    agentDir,
     socketPath: ready.socketPath,
     async cleanup() {
       child.kill("SIGKILL");
       await rm(daemonDir, { recursive: true, force: true });
     },
   };
+}
+
+function persistedSession({ id, cwd, user = "hello", assistant = "world", name }) {
+  const timestamp = new Date().toISOString();
+  const entries = [
+    { type: "session", version: 3, id, timestamp, cwd },
+    { type: "message", id: `${id}-u`, parentId: null, timestamp, message: { role: "user", content: user, timestamp: Date.parse(timestamp) } },
+    {
+      type: "message",
+      id: `${id}-a`,
+      parentId: `${id}-u`,
+      timestamp,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: assistant }],
+        timestamp: Date.parse(timestamp) + 1,
+        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      },
+    },
+    ...(name ? [{ type: "session_info", id: `${id}-n`, parentId: `${id}-a`, timestamp, name }] : []),
+  ];
+  return `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
 }
 
 function connect(socketPath) {
@@ -151,6 +181,164 @@ test("a frame before the handshake is refused", async () => {
     client.send({ type: "list_sessions" });
     await waitFor(() => client.ofType("hello_error").length === 1, 3_000, "refusal");
     await closed;
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("malformed global YAML falls back completely and produces a launch warning", async () => {
+  const daemon = await startDaemon({ configContent: "version: 1\nhistory: [\n" });
+  try {
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    await waitFor(() => client.ofType("configuration_warning").length === 1, 3_000, "configuration warning");
+    assert.match(client.ofType("configuration_warning")[0].message, /defaults are active/i);
+    assert.equal(client.ofType("configuration_warning")[0].code, "malformed");
+    client.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("daemon re-exec closes inherited spawner descriptors and outlives the starter", async () => {
+  const daemonDir = await mkdtemp(join(tmpdir(), "mypi-daemon-detach-test-"));
+  const agentDir = join(daemonDir, "agent");
+  await mkdir(agentDir, { recursive: true });
+  const starter = spawn(process.execPath, [DAEMON_SCRIPT, "__daemon", "--idle-grace-ms", "300"], {
+    env: {
+      ...process.env,
+      MYPI_DAEMON_DIR: daemonDir,
+      MYPI_AGENT_DIR: agentDir,
+      MYPI_CODING_AGENT_DIR: agentDir,
+      MYPI_DAEMON_ENGINE_CMD: JSON.stringify([process.execPath, FAKE_ENGINE]),
+    },
+    stdio: ["ignore", "pipe", "pipe", "pipe"],
+  });
+  let workerPid;
+  try {
+    const ready = await new Promise((resolve, reject) => {
+      let buffer = "";
+      starter.stdout.on("data", (chunk) => {
+        buffer += chunk.toString();
+        const line = buffer.split("\n").find((candidate) => candidate.trim());
+        if (line) resolve(JSON.parse(line));
+      });
+      starter.once("error", reject);
+      starter.once("exit", (code) => {
+        if (!buffer.trim()) reject(new Error(`daemon starter exited before ready (${code})`));
+      });
+    });
+    workerPid = ready.pid;
+    await new Promise((resolve) => starter.once("exit", resolve));
+    await Promise.race([
+      starter.stdio[3].destroyed ? Promise.resolve() : new Promise((resolve) => starter.stdio[3].once("close", resolve)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("inherited descriptor stayed open")), 2_000)),
+    ]);
+
+    const client = connect(ready.socketPath);
+    await client.connected();
+    await client.hello();
+    assert.equal(client.ofType("hello_ack")[0].pid, workerPid);
+    client.socket.destroy();
+  } finally {
+    if (Number.isInteger(workerPid)) {
+      try { process.kill(workerPid, "SIGKILL"); } catch {}
+    }
+    await rm(daemonDir, { recursive: true, force: true });
+  }
+});
+
+test("daemon lists and reads persisted history, models, skills, and extensions without attaching", async () => {
+  const daemon = await startDaemon();
+  try {
+    const cwd = join(daemon.daemonDir, "workspace");
+    const sessionDir = join(daemon.agentDir, "sessions", "workspace");
+    await Promise.all([mkdir(cwd), mkdir(sessionDir, { recursive: true })]);
+    await writeFile(join(sessionDir, "persisted.jsonl"), persistedSession({ id: "persisted", cwd, name: "Persisted name" }));
+
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    const response = (command) => client.frames.find((frame) => frame.type === "response" && frame.command === command);
+
+    client.send({ id: "list", type: "list_persisted_sessions", cwd });
+    await waitFor(() => response("list_persisted_sessions"), 5_000, "persisted listing");
+    assert.equal(response("list_persisted_sessions").success, true);
+    assert.equal(response("list_persisted_sessions").data.sessions[0].name, "Persisted name");
+
+    client.send({ id: "read", type: "read_session", sessionId: "persisted", limit: 2 });
+    await waitFor(() => response("read_session"), 5_000, "persisted read");
+    assert.equal(response("read_session").data.entries.length, 2);
+    assert.equal(Array.isArray(response("read_session").data.entries), true);
+
+    client.send({ id: "stats", type: "get_session_stats", sessionId: "persisted" });
+    await waitFor(() => response("get_session_stats"), 5_000, "persisted stats");
+    assert.equal(response("get_session_stats").data.lastUsage.totalTokens, 2);
+
+    client.send({ id: "models", type: "get_available_models", cwd });
+    client.send({ id: "skills", type: "list_skills", cwd });
+    client.send({ id: "extensions", type: "list_extensions", cwd });
+    await waitFor(
+      () => response("get_available_models") && response("list_skills") && response("list_extensions"),
+      15_000,
+      "unattached catalogs",
+    );
+    assert.equal(response("get_available_models").success, true);
+    assert.ok(Array.isArray(response("get_available_models").data.models));
+    assert.equal(response("list_skills").success, true);
+    assert.ok(Array.isArray(response("list_skills").data.skills));
+    assert.equal(response("list_extensions").success, true);
+    assert.ok(response("list_extensions").data.extensions.some((extension) => extension.name === "global-config"));
+
+    client.send({ type: "list_sessions" });
+    await waitFor(() => client.ofType("sessions").length === 1, 3_000, "live session listing");
+    assert.equal(client.ofType("sessions")[0].sessions.length, 0, "unattached reads start no engines");
+    client.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("fresh daemon sessions run configured project maintenance and request archive cleanup", async () => {
+  const daemon = await startDaemon({
+    configContent: "version: 1\nhistory:\n  autoArchive: true\n  shortTestMaxWords: 1\n  maxActive: 1\n  maxArchived: 1\n",
+  });
+  try {
+    const cwd = join(daemon.daemonDir, "maintenance-workspace");
+    const activeDir = join(daemon.agentDir, "sessions", "workspace");
+    const archiveDir = join(daemon.agentDir, "session-archive", "workspace");
+    await Promise.all([mkdir(cwd), mkdir(activeDir, { recursive: true }), mkdir(archiveDir, { recursive: true })]);
+    for (const id of ["active-old", "active-new"]) {
+      await writeFile(join(activeDir, `${id}.jsonl`), persistedSession({
+        id,
+        cwd,
+        user: "meaningful retained user history",
+        assistant: "meaningful retained assistant history",
+      }));
+    }
+    for (const id of ["archive-old", "archive-new"]) {
+      await writeFile(join(archiveDir, `${id}.jsonl`), persistedSession({ id, cwd }));
+    }
+
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    client.send({ id: "before-maintenance", type: "list_persisted_sessions", cwd, includeArchived: true });
+    await waitFor(() => client.frames.some((frame) => frame.id === "before-maintenance"), 5_000, "maintenance fixture listing");
+    assert.equal(client.frames.find((frame) => frame.id === "before-maintenance").data.total, 4);
+    client.send({ type: "attach", cwd, sessionStart: { reason: "new" } });
+    await waitFor(() => client.ofType("attached").length === 1, 5_000, "fresh attach");
+    await waitFor(() => client.ofType("session_maintenance").length === 1 || client.ofType("session_maintenance_error").length === 1, 5_000, "session maintenance");
+    assert.equal(client.ofType("session_maintenance_error").length, 0, JSON.stringify(client.ofType("session_maintenance_error")));
+    const maintenance = client.ofType("session_maintenance")[0];
+    assert.equal(maintenance.archivedOverflow, 2, JSON.stringify(maintenance));
+    assert.equal(maintenance.activeCount, 0, "fake engine session file is outside the persisted fixture store");
+    assert.equal(maintenance.archivedCount, 4);
+    assert.equal(maintenance.archivedExcess, 3);
+    assert.equal(maintenance.command, "/archive-cleanup");
+    assert.equal(client.ofType("persisted_changed").filter((frame) => frame.kind === "archived").length, 2);
+    client.socket.destroy();
   } finally {
     await daemon.cleanup();
   }
@@ -222,6 +410,38 @@ test("attach spawns a session child, list_sessions reports it, and events fan ou
 
     first.socket.destroy();
     second.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("daemon routes stable per-item queue updates, edits, and removal", async () => {
+  const daemon = await startDaemon({ turnMs: 500 });
+  try {
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    client.send({ type: "attach", sessionId: "queue-session" });
+    await waitFor(() => client.ofType("attached").length === 1, 5_000, "queue session attach");
+
+    client.send({ id: "turn", type: "prompt", message: "keep running", sessionId: "queue-session" });
+    await waitFor(() => client.ofType("agent_start").length === 1, 5_000, "active queue turn");
+    client.send({ id: "steer", type: "steer", message: "first queued", sessionId: "queue-session" });
+    client.send({ id: "follow", type: "follow_up", message: "second queued", sessionId: "queue-session" });
+    await waitFor(() => client.frames.filter((frame) => frame.type === "response" && ["steer", "follow_up"].includes(frame.command)).length === 2, 5_000, "queue ids");
+    const steerId = client.frames.find((frame) => frame.id === "steer")?.data.queueId;
+    const followId = client.frames.find((frame) => frame.id === "follow")?.data.queueId;
+    assert.equal(typeof steerId, "string");
+    assert.equal(typeof followId, "string");
+    await waitFor(() => client.ofType("queue_update").some((frame) => frame.steeringItems?.some((item) => item.id === steerId)), 3_000, "stable queue update");
+
+    client.send({ id: "update", type: "update_queued", queueId: steerId, message: "edited queued", sessionId: "queue-session" });
+    client.send({ id: "remove", type: "remove_queued", queueId: followId, sessionId: "queue-session" });
+    await waitFor(() => client.frames.some((frame) => frame.id === "update") && client.frames.some((frame) => frame.id === "remove"), 5_000, "queue mutations");
+    assert.equal(client.frames.find((frame) => frame.id === "update").data.message, "edited queued");
+    assert.equal(client.frames.find((frame) => frame.id === "remove").data.id, followId);
+    await waitFor(() => client.ofType("queue_update").some((frame) => frame.steeringItems?.[0]?.message === "edited queued" && frame.followUpItems?.length === 0), 3_000, "mutated queue update");
+    client.socket.destroy();
   } finally {
     await daemon.cleanup();
   }

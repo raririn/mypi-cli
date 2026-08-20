@@ -1,6 +1,7 @@
 import archiveManageExtension from "./archive-manage.ts";
 import compactionRecallExtension from "./compaction-recall.ts";
 import guiControlExtension from "./gui-control/index.ts";
+import globalConfigExtension from "./global-config.ts";
 import hooksExtension from "./hooks.ts";
 import llamaExtension from "./llama/index.ts";
 import agentSignalsExtension from "./mypi-agent-signals.ts";
@@ -21,6 +22,7 @@ import workingTimerExtension from "./mypi-working-timer.ts";
 import planGoalExtension from "./plan-goal.ts";
 import { defineProductModule, type ProductModule } from "./registry.ts";
 import safetyExtension from "./safety.ts";
+import sessionMaintenanceExtension from "./session-maintenance.ts";
 import pizzaHeroExtension from "./tui-hero/index.ts";
 import webSearchExtension from "./web/index.ts";
 
@@ -32,6 +34,8 @@ import webSearchExtension from "./web/index.ts";
 export const productModules: readonly ProductModule[] = [
 	defineProductModule("llama.cpp", "provider", llamaExtension),
 	defineProductModule("goal", "required", planGoalExtension),
+	defineProductModule("global-config", "required", globalConfigExtension),
+	defineProductModule("session-maintenance", "required", sessionMaintenanceExtension),
 	defineProductModule("hooks", "capability", hooksExtension),
 	defineProductModule("archive", "capability", archiveManageExtension),
 	defineProductModule("compaction-recall", "required", compactionRecallExtension),

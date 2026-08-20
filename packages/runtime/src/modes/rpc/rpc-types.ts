@@ -7,7 +7,7 @@
 
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ImageContent, Model } from "@earendil-works/pi-ai";
-import type { SessionStats } from "../../core/agent-session.ts";
+import type { QueuedMessageItem, SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { ContextUsage } from "../../core/extensions/index.ts";
@@ -105,6 +105,8 @@ export type RpcCommand =
 	  }
 	| { id?: string; type: "clear_queue" }
 	| { id?: string; type: "clear_steering_queue" }
+	| { id?: string; type: "remove_queued"; queueId: string }
+	| { id?: string; type: "update_queued"; queueId: string; message: string }
 	| { id?: string; type: "abort_compaction" }
 	| { id?: string; type: "abort_branch_summary" }
 	| { id?: string; type: "reload" }
@@ -169,6 +171,7 @@ export interface RpcSessionState {
 	contextUsage?: ContextUsage;
 	steeringQueue?: string[];
 	followUpQueue?: string[];
+	queuedItems?: QueuedMessageItem[];
 	supportsThinking?: boolean;
 }
 
@@ -187,8 +190,8 @@ export interface PreparedSessionTarget {
 export type RpcResponse =
 	// Prompting (async - events follow)
 	| { id?: string; type: "response"; command: "prompt"; success: true }
-	| { id?: string; type: "response"; command: "steer"; success: true }
-	| { id?: string; type: "response"; command: "follow_up"; success: true }
+	| { id?: string; type: "response"; command: "steer"; success: true; data: { queueId: string } }
+	| { id?: string; type: "response"; command: "follow_up"; success: true; data: { queueId: string } }
 	| { id?: string; type: "response"; command: "abort"; success: true }
 	| { id?: string; type: "response"; command: "new_session"; success: true; data: { cancelled: boolean } }
 	| {
@@ -198,6 +201,8 @@ export type RpcResponse =
 			success: true;
 			data: { cancelled: boolean; target?: PreparedSessionTarget };
 	  }
+	| { id?: string; type: "response"; command: "remove_queued"; success: true; data: QueuedMessageItem }
+	| { id?: string; type: "response"; command: "update_queued"; success: true; data: QueuedMessageItem }
 
 	// State
 	| { id?: string; type: "response"; command: "get_state"; success: true; data: RpcSessionState }

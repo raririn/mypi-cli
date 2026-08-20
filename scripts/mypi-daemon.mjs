@@ -19,6 +19,11 @@
 //     {type:"hello", protocol:N, client:"name", pid?, processStartTime?}
 //                                                        required first frame
 //     {type:"list_sessions"}
+//     {type:"list_persisted_sessions", cwd?, includeArchived?, offset?, limit?}
+//     {type:"read_session", sessionId?|sessionFile?, since?, limit?, maxBytes?}
+//     {type:"get_available_models", cwd?}             no engine required
+//     {type:"list_skills"|"list_extensions", cwd?}   no engine required
+//     {type:"get_session_stats", sessionId|sessionFile} no engine required
 //     {type:"daemon_status"}                           version/pid/turn counts
 //     {type:"restart", force?}                         graceful drain + exit
 //     {type:"attach", sessionId?, cwd?, model?, sessionStart?}
@@ -35,6 +40,7 @@
 //       operation:"new"|"fork", parentSession?, entryId?, position?, id?}
 //                                                       requester-local target
 //     {..any RPC command.., sessionId, id?}           routed to the child
+//       Includes remove_queued/update_queued for stable queue item IDs.
 //     {type:"extension_ui_response", sessionId, id, ...}
 //
 //   daemon -> client
@@ -45,6 +51,10 @@
 //     {type:"daemon_restarting", force}               broadcast when a drain starts
 //     {type:"daemon_draining", reason}                new attach refused mid-drain
 //     {type:"sessions", sessions:[{sessionId, cwd, sessionFile, clients, busy}]}
+//     {type:"response", command:"list_persisted_sessions"|"read_session"|...}
+//     {type:"configuration_warning", code, message, path}
+//     {type:"persisted_changed", sessionId, sessionFile, cwd, kind}
+//     {type:"session_maintenance", ..., archivedExcess, command?}
 //     {type:"attached", sessionId, sessionFile, cwd, clients}
 //       Re-broadcast if a legacy sole-client command changes child identity.
 //       Modern navigation/create/derive attaches the requester to another child.
@@ -65,6 +75,7 @@ import { execFile, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { hostname } from "node:os";
+import { resolve } from "node:path";
 import {
   MYPI_DAEMON_PROTOCOL,
   acquireStartupLock,
@@ -73,6 +84,17 @@ import {
   daemonSocketPath,
   readLiveDaemon,
 } from "./mypi-daemon-discovery.mjs";
+import {
+  getDaemonAvailableModels,
+  getAgentDir,
+  getPersistedSessionStats,
+  listDaemonExtensions,
+  listDaemonSkills,
+  listPersistedSessions,
+  loadGlobalConfig,
+  readPersistedSession,
+  runNewSessionMaintenance,
+} from "@earendil-works/pi-coding-agent";
 
 const DEFAULT_IDLE_GRACE_MS = 5 * 60_000;
 const ENGINE_CLOSE_GRACE_MS = 2_000;
@@ -125,6 +147,53 @@ function attachLineReader(stream, onLine) {
   });
 }
 
+async function startDetachedWorker() {
+  const live = readLiveDaemon();
+  if (live) {
+    process.stdout.write(`${JSON.stringify({ type: "daemon_ready", socketPath: live.socketPath, pid: live.pid, protocol: live.protocol, reused: true })}\n`);
+    return;
+  }
+  const child = spawn(process.execPath, process.argv.slice(1), {
+    detached: true,
+    stdio: "ignore",
+    env: { ...process.env, MYPI_DAEMON_WORKER: "1" },
+  });
+  let exitCode;
+  child.once("exit", (code) => { exitCode = code; });
+  const deadline = Date.now() + 15_000;
+  while (Date.now() <= deadline) {
+    const started = readLiveDaemon();
+    if (started) {
+      child.unref();
+      process.stdout.write(`${JSON.stringify({
+        type: "daemon_ready",
+        socketPath: started.socketPath,
+        pid: started.pid,
+        protocol: started.protocol,
+      })}\n`);
+      return;
+    }
+    if (exitCode !== undefined) throw new Error(`MyPi daemon worker exited during startup (code ${exitCode})`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  try { child.kill("SIGTERM"); } catch {}
+  throw new Error("Timed out waiting for detached MyPi daemon worker");
+}
+
+// Re-exec one worker with an explicit stdio table. This is the portable
+// close-fds boundary: inherited GUI/browser pipes, files, and sockets stay in
+// the short-lived starter, while the long-lived daemon owns only descriptors
+// opened by the worker. Tests may opt out to retain a direct child handle.
+if (process.env.MYPI_DAEMON_WORKER !== "1" && process.env.MYPI_DAEMON_NO_REEXEC !== "1") {
+  try {
+    await startDetachedWorker();
+    process.exit(0);
+  } catch (error) {
+    process.stderr.write(`MyPi daemon failed to detach: ${boundedError(error)}\n`);
+    process.exit(1);
+  }
+}
+
 const { idleGraceMs } = parseArgs(process.argv.slice(3));
 
 /** @type {Map<string, {child: import('node:child_process').ChildProcess, sessionId: string, sessionFile: string|null, cwd: string, clients: Set<object>, pending: Map<string, {client: object, originalId: string|undefined, commandType?: string, structuredOutput?: boolean}>, structuredCorrelations: Map<string, {client: object, originalId: string|undefined}>, outstandingUi: Set<string>, turnActive: boolean, exited: boolean, graceTimer: NodeJS.Timeout|null, counter: number, lastErrorNotify: string|null, pendingRelease: object|null}>} */
@@ -133,6 +202,8 @@ const sessions = new Map();
 const externalOwners = new Map();
 /** @type {Set<object>} connections that completed the handshake */
 const clients = new Set();
+const daemonAgentDir = getAgentDir();
+const globalConfigResult = loadGlobalConfig(resolve(daemonAgentDir, "config.yaml"));
 
 let server = null;
 let shuttingDown = false;
@@ -149,6 +220,45 @@ function sendToClient(client, frame) {
 
 function broadcast(session, frame) {
   for (const client of session.clients) sendToClient(client, frame);
+}
+
+function broadcastAll(frame) {
+  for (const client of clients) sendToClient(client, frame);
+}
+
+function sendDaemonResponse(client, request, command, task) {
+  void Promise.resolve(task).then(
+    (data) => sendToClient(client, {
+      type: "response",
+      command,
+      success: true,
+      ...(typeof request.id === "string" ? { id: request.id } : {}),
+      data,
+    }),
+    (error) => sendToClient(client, {
+      type: "response",
+      command,
+      success: false,
+      ...(typeof request.id === "string" ? { id: request.id } : {}),
+      error: boundedError(error),
+    }),
+  );
+}
+
+function boundedError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/[\r\n]+/g, " ").slice(0, 1_000) || "Daemon request failed";
+}
+
+function persistedChanged(session, kind) {
+  if (!session.sessionFile) return;
+  broadcastAll({
+    type: "persisted_changed",
+    sessionId: session.sessionId ?? session.key,
+    sessionFile: session.sessionFile,
+    cwd: session.cwd,
+    kind,
+  });
 }
 
 function publicOwnershipConflict(record) {
@@ -284,6 +394,9 @@ function startSession({ sessionId, cwd, model, sessionStart }) {
     pendingRelease: null,
     preparingSurfaceTarget: false,
     ready: false,
+    fresh: !sessionId || sessionStart?.reason === "new",
+    persistedAnnounced: false,
+    maintenanceStarted: false,
   };
   const [executable, ...args] = engineCommand(session);
   session.child = spawn(executable, args, {
@@ -363,6 +476,49 @@ function handleEngineFrame(session, line) {
           cwd: session.cwd,
           clients: session.clients.size,
         });
+        if (!session.persistedAnnounced && session.sessionFile) {
+          session.persistedAnnounced = true;
+          persistedChanged(session, session.fresh ? "created" : "attached");
+        }
+        if (session.fresh && !session.maintenanceStarted && session.sessionFile && typeof nativeSessionId === "string") {
+          session.maintenanceStarted = true;
+          void runNewSessionMaintenance({
+            sessionId: nativeSessionId,
+            sessionFile: session.sessionFile,
+            cwd: session.cwd,
+            agentDir: daemonAgentDir,
+          }).then(
+            (result) => {
+              for (const moved of [...result.archivedShortTests, ...result.archivedOverflow]) {
+                broadcastAll({
+                  type: "persisted_changed",
+                  sessionId: moved.id,
+                  sessionFile: moved.to,
+                  previousSessionFile: moved.from,
+                  cwd: session.cwd,
+                  kind: "archived",
+                });
+              }
+              broadcastAll({
+                type: "session_maintenance",
+                sessionId: nativeSessionId,
+                cwd: session.cwd,
+                archivedShortTests: result.archivedShortTests.length,
+                archivedOverflow: result.archivedOverflow.length,
+                activeCount: result.activeCount,
+                archivedCount: result.archivedCount,
+                archivedExcess: result.archivedExcess,
+                ...(result.cleanupCommand ? { command: result.cleanupCommand } : {}),
+                ...(result.skipped.length ? { skipped: result.skipped } : {}),
+              });
+            },
+            (error) => broadcast(session, {
+              type: "session_maintenance_error",
+              sessionId: nativeSessionId,
+              message: boundedError(error),
+            }),
+          );
+        }
       }
       return;
     }
@@ -384,6 +540,7 @@ function handleEngineFrame(session, line) {
       if (pending.originalId === undefined) delete restored.id;
       else restored.id = pending.originalId;
       sendToClient(pending.client, restored);
+      if (frame.success && pending.commandType === "set_session_name") persistedChanged(session, "renamed");
       if (finishedSurfacePreparation && draining) maybeFinishDrain();
       // A legacy sole-client command may still replace the child in place;
       // re-learn its identity so that one client retains a truthful address.
@@ -434,6 +591,7 @@ function handleEngineFrame(session, line) {
     session.turnActive = false;
     broadcast(session, { ...frame, sessionId: session.sessionId ?? session.key });
     session.structuredCorrelations.clear();
+    persistedChanged(session, "updated");
     // A drain in progress exits as soon as the last turn settles.
     if (draining) maybeFinishDrain();
     if (session.pendingRelease) {
@@ -932,6 +1090,16 @@ function handleClientFrame(client, frame) {
       pid: process.pid,
       daemonVersion: process.env.MYPI_RUNTIME_DISPLAY_VERSION ?? null,
     });
+    void globalConfigResult.then((loaded) => {
+      if (loaded.diagnostic) {
+        sendToClient(client, {
+          type: "configuration_warning",
+          code: loaded.diagnostic.code,
+          message: loaded.diagnostic.message,
+          path: loaded.diagnostic.path,
+        });
+      }
+    });
     return;
   }
 
@@ -947,6 +1115,58 @@ function handleClientFrame(client, frame) {
         busy: session.turnActive,
       })),
     });
+    return;
+  }
+
+  if (frame?.type === "list_persisted_sessions") {
+    sendDaemonResponse(client, frame, "list_persisted_sessions", listPersistedSessions({
+      agentDir: daemonAgentDir,
+      ...(typeof frame.cwd === "string" ? { cwd: frame.cwd } : {}),
+      includeArchived: frame.includeArchived === true,
+      ...(Number.isInteger(frame.offset) ? { offset: frame.offset } : {}),
+      ...(Number.isInteger(frame.limit) ? { limit: frame.limit } : {}),
+    }));
+    return;
+  }
+
+  if (frame?.type === "read_session") {
+    sendDaemonResponse(client, frame, "read_session", readPersistedSession({
+      agentDir: daemonAgentDir,
+      ...(typeof frame.sessionFile === "string" ? { sessionFile: frame.sessionFile } : {}),
+      ...(typeof frame.sessionId === "string" ? { id: frame.sessionId } : typeof frame.session === "string" ? { id: frame.session } : {}),
+      ...(typeof frame.since === "string" ? { since: frame.since } : {}),
+      ...(Number.isInteger(frame.limit) ? { limit: frame.limit } : {}),
+      ...(Number.isInteger(frame.maxBytes) ? { maxBytes: frame.maxBytes } : {}),
+      includeArchived: frame.includeArchived !== false,
+    }));
+    return;
+  }
+
+  if (frame?.type === "get_available_models" && typeof frame.sessionId !== "string") {
+    const cwd = typeof frame.cwd === "string" ? frame.cwd : process.cwd();
+    sendDaemonResponse(client, frame, "get_available_models", getDaemonAvailableModels(cwd, daemonAgentDir).then((models) => ({ models })));
+    return;
+  }
+
+  if (frame?.type === "list_skills") {
+    const cwd = typeof frame.cwd === "string" ? frame.cwd : process.cwd();
+    sendDaemonResponse(client, frame, "list_skills", listDaemonSkills(cwd, daemonAgentDir).then((skills) => ({ skills })));
+    return;
+  }
+
+  if (frame?.type === "list_extensions") {
+    const cwd = typeof frame.cwd === "string" ? frame.cwd : process.cwd();
+    sendDaemonResponse(client, frame, "list_extensions", listDaemonExtensions(cwd, daemonAgentDir).then((extensions) => ({ extensions })));
+    return;
+  }
+
+  if (frame?.type === "get_session_stats" && (!frame.sessionId || !sessions.has(String(frame.sessionId)))) {
+    sendDaemonResponse(client, frame, "get_session_stats", getPersistedSessionStats({
+      agentDir: daemonAgentDir,
+      ...(typeof frame.sessionId === "string" ? { id: frame.sessionId } : {}),
+      ...(typeof frame.sessionFile === "string" ? { sessionFile: frame.sessionFile } : {}),
+      includeArchived: frame.includeArchived !== false,
+    }));
     return;
   }
 

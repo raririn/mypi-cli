@@ -77,6 +77,8 @@ for (const fragment of [
   "productModules",
   "defineProductModule",
   'defineProductModule("goal", "required"',
+  'defineProductModule("global-config", "required"',
+  'defineProductModule("session-maintenance", "required"',
   'defineProductModule("cliproxy", "provider"',
   'defineProductModule("gui-control", "surface"',
   "webSearchExtension",
@@ -85,6 +87,24 @@ for (const fragment of [
 ]) {
   if (!productComposition.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing sealed MyPi product composition (${fragment}).`);
+  }
+}
+const globalConfig = await readFile(join(packageRoot, "dist", "product", "global-config.js"), "utf8");
+for (const fragment of ["config.yaml", "shortTestMaxWords: 10", "maxActive: 10", "maxArchived: 10", "defaults are active", 'registerCommand("config"']) {
+  if (!globalConfig.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing global YAML configuration behavior (${fragment}).`);
+  }
+}
+const sessionMaintenance = await readFile(join(packageRoot, "dist", "product", "session-maintenance.js"), "utf8");
+for (const fragment of ['registerCommand("archive-cleanup"', "previewArchiveCleanup", "runNewSessionMaintenance", "--confirm"]) {
+  if (!sessionMaintenance.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing session maintenance behavior (${fragment}).`);
+  }
+}
+const daemonServices = await readFile(join(packageRoot, "dist", "product", "daemon-services.js"), "utf8");
+for (const fragment of ["listPersistedSessions", "readPersistedSession", "listDaemonSkills", "listDaemonExtensions", "runNewSessionMaintenance", "cleanupArchivedSessions"]) {
+  if (!daemonServices.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing daemon GUI service behavior (${fragment}).`);
   }
 }
 for (const relativePath of [
@@ -280,7 +300,7 @@ if (!extensionRunner.includes("navigateTree: (targetId, options)") || !extension
 }
 
 const agentSessionTypes = await readFile(join(packageRoot, "dist", "core", "agent-session.d.ts"), "utf8");
-for (const fragment of ["requireStreaming?: boolean", "mypiQueuedMessageId?: string"]) {
+for (const fragment of ["requireStreaming?: boolean", "mypiQueuedMessageId?: string", "QueuedMessageItem", "removeQueuedMessage", "updateQueuedMessage"]) {
   if (!agentSessionTypes.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing the MyPi queue-only prompt declaration (${fragment}).`);
   }
@@ -294,7 +314,10 @@ for (const fragment of [
   "options?.source === \"extension\" ? this._skillInvocationPresentation(text)",
   "options?.requireStreaming && !this.isStreaming",
   "Session finished streaming before the queued message could be accepted",
-  "mypiQueuedMessageId ? { mypiQueuedMessageId }",
+  "mypiQueuedMessageId: queueId",
+  "steeringItems",
+  "removeQueuedMessage(id)",
+  "updateQueuedMessage(id, message)",
   'mypiQueuedMessageMode: "steer"',
   'mypiQueuedMessageMode: "followUp"',
   "mypiShouldContinueAfterThresholdCompaction",
@@ -509,6 +532,18 @@ const codexResponses = await readFile(
 for (const fragment of ["requiresChatGptAccountId === false", "supportsCodexToolCallIds"]) {
   if (!codexResponses.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing API-key Codex gateway support (${fragment}).`);
+  }
+}
+const imageInput = await readFile(join(aiPackageRoot, "dist", "utils", "image-input.js"), "utf8");
+for (const fragment of ["invalid_image_input", "data URL type", "Image bytes do not match", "Animated GIF"]) {
+  if (!imageInput.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing bounded image-input normalization (${fragment}).`);
+  }
+}
+const codexCatalog = JSON.parse(await readFile(join(aiPackageRoot, "dist", "providers", "data", "openai-codex.json"), "utf8"));
+for (const model of Object.values(codexCatalog["openai-codex-responses"] ?? {})) {
+  if (JSON.stringify(model.input) !== JSON.stringify(["text"])) {
+    throw new Error(`Installed Pi ${expectedVersion} still advertises unqualified ChatGPT Codex image input for ${model.id}.`);
   }
 }
 for (const relativePath of ["models.js", "compat.js"]) {

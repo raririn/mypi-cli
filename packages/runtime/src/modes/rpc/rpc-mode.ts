@@ -556,13 +556,13 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			}
 
 			case "steer": {
-				await session.steer(command.message, command.images);
-				return success(id, "steer");
+				const queueId = await session.steerWithId(command.message, command.images);
+				return success(id, "steer", { queueId });
 			}
 
 			case "follow_up": {
-				await session.followUp(command.message, command.images);
-				return success(id, "follow_up");
+				const queueId = await session.followUpWithId(command.message, command.images);
+				return success(id, "follow_up", { queueId });
 			}
 
 			case "abort": {
@@ -640,6 +640,7 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 					contextUsage: session.getContextUsage(),
 					steeringQueue: [...session.getSteeringMessages()],
 					followUpQueue: [...session.getFollowUpMessages()],
+					queuedItems: [...session.getQueuedMessageItems()],
 					supportsThinking: session.supportsThinking(),
 				};
 				return success(id, "get_state", state);
@@ -983,6 +984,18 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 			case "clear_steering_queue": {
 				const steering = session.clearSteeringMessages();
 				return success(id, "clear_steering_queue", { steering });
+			}
+
+			case "remove_queued": {
+				const removed = session.removeQueuedMessage(command.queueId);
+				if (!removed) return error(id, "remove_queued", `Queued message not found: ${command.queueId}`);
+				return success(id, "remove_queued", removed);
+			}
+
+			case "update_queued": {
+				const updated = session.updateQueuedMessage(command.queueId, command.message);
+				if (!updated) return error(id, "update_queued", `Queued message cannot be updated: ${command.queueId}`);
+				return success(id, "update_queued", updated);
 			}
 
 			case "abort_compaction": {

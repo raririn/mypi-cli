@@ -13,6 +13,7 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname } from "node:path";
 import type {
@@ -24,7 +25,7 @@ import type {
 	PrepareNextTurnContext,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
-import { contentText } from "@earendil-works/pi-ai";
+import { contentText, normalizeImageInput } from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
 	AuthResult,
@@ -179,6 +180,13 @@ type MyPiTextContent = TextContent & {
 	mypiQueuedMessageMode?: MyPiQueuedMessageMode;
 };
 
+export interface QueuedMessageItem {
+	readonly id: string;
+	readonly message: string;
+	readonly mode: MyPiQueuedMessageMode;
+	readonly hasImages: boolean;
+}
+
 function latestMyPiGoalState(branchEntries: unknown[]): MyPiGoalState | undefined {
 	for (let index = branchEntries.length - 1; index >= 0; index--) {
 		const entry = branchEntries[index];
@@ -285,6 +293,8 @@ export type AgentSessionEvent =
 			type: "queue_update";
 			steering: readonly string[];
 			followUp: readonly string[];
+			steeringItems: readonly QueuedMessageItem[];
+			followUpItems: readonly QueuedMessageItem[];
 	  }
 	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
 	| { type: "entry_appended"; entry: SessionEntry }
@@ -468,9 +478,9 @@ export class AgentSession {
 	private _resolveIdleWait: (() => void) | undefined;
 
 	/** Tracks pending steering messages for UI display. Removed when delivered. */
-	private _steeringMessages: string[] = [];
+	private _steeringMessages: QueuedMessageItem[] = [];
 	/** Tracks pending follow-up messages for UI display. Removed when delivered. */
-	private _followUpMessages: string[] = [];
+	private _followUpMessages: QueuedMessageItem[] = [];
 	/** Messages queued to be included with the next user prompt as context ("asides"). */
 	private _pendingNextTurnMessages: CustomMessage[] = [];
 
@@ -736,8 +746,10 @@ export class AgentSession {
 	private _emitQueueUpdate(): void {
 		this._emit({
 			type: "queue_update",
-			steering: [...this._steeringMessages],
-			followUp: [...this._followUpMessages],
+			steering: this._steeringMessages.map((item) => item.message),
+			followUp: this._followUpMessages.map((item) => item.message),
+			steeringItems: this._steeringMessages.map((item) => ({ ...item })),
+			followUpItems: this._followUpMessages.map((item) => ({ ...item })),
 		});
 	}
 
@@ -793,15 +805,20 @@ export class AgentSession {
 		if (event.type === "message_start" && event.message.role === "user") {
 			this._overflowRecoveryAttempted = false;
 			const messageText = contentText(event.message.content, "");
-			if (messageText) {
+			const queuedMessageId = this._queuedMessageId(event.message);
+			if (messageText || queuedMessageId) {
 				// Check steering queue first
-				const steeringIndex = this._steeringMessages.indexOf(messageText);
+				const steeringIndex = this._steeringMessages.findIndex((item) =>
+					queuedMessageId ? item.id === queuedMessageId : item.message === messageText,
+				);
 				if (steeringIndex !== -1) {
 					this._steeringMessages.splice(steeringIndex, 1);
 					this._emitQueueUpdate();
 				} else {
 					// Check follow-up queue
-					const followUpIndex = this._followUpMessages.indexOf(messageText);
+					const followUpIndex = this._followUpMessages.findIndex((item) =>
+						queuedMessageId ? item.id === queuedMessageId : item.message === messageText,
+					);
 					if (followUpIndex !== -1) {
 						this._followUpMessages.splice(followUpIndex, 1);
 						this._emitQueueUpdate();
@@ -1614,6 +1631,12 @@ export class AgentSession {
 					currentImages = inputResult.images ?? currentImages;
 				}
 			}
+			if (currentImages?.length) {
+				if (!this.model?.input.includes("image")) {
+					throw new Error(`Model ${this.model?.provider ?? "unknown"}/${this.model?.id ?? "unknown"} does not accept image input.`);
+				}
+				currentImages = currentImages.map(normalizeImageInput);
+			}
 
 			// Expand skill commands (/skill:name args) and prompt templates (/template args)
 			// Extension commands send through sendUserMessage(), which disables normal
@@ -1875,6 +1898,10 @@ export class AgentSession {
 	 * @throws Error if text is an extension command
 	 */
 	async steer(text: string, images?: ImageContent[]): Promise<void> {
+		await this.steerWithId(text, images);
+	}
+
+	async steerWithId(text: string, images?: ImageContent[]): Promise<string> {
 		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
@@ -1885,7 +1912,7 @@ export class AgentSession {
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		await this._queueSteer(expandedText, images, skillPresentation);
+		return this._queueSteer(expandedText, images, skillPresentation);
 	}
 
 	/**
@@ -1896,6 +1923,10 @@ export class AgentSession {
 	 * @throws Error if text is an extension command
 	 */
 	async followUp(text: string, images?: ImageContent[]): Promise<void> {
+		await this.followUpWithId(text, images);
+	}
+
+	async followUpWithId(text: string, images?: ImageContent[]): Promise<string> {
 		// Check for extension commands (cannot be queued)
 		if (text.startsWith("/")) {
 			this._throwIfExtensionCommand(text);
@@ -1906,7 +1937,7 @@ export class AgentSession {
 		let expandedText = this._expandSkillCommand(text);
 		expandedText = expandPromptTemplate(expandedText, [...this.promptTemplates]);
 
-		await this._queueFollowUp(expandedText, images, skillPresentation);
+		return this._queueFollowUp(expandedText, images, skillPresentation);
 	}
 
 	/**
@@ -1917,15 +1948,16 @@ export class AgentSession {
 		images?: ImageContent[],
 		skillPresentation?: MyPiSkillInvocationPresentation,
 		mypiQueuedMessageId?: string,
-	): Promise<void> {
-		this._steeringMessages.push(text);
+	): Promise<string> {
+		const queueId = mypiQueuedMessageId ?? randomUUID();
+		this._steeringMessages.push({ id: queueId, message: text, mode: "steer", hasImages: Boolean(images?.length) });
 		this._emitQueueUpdate();
 		const content: (MyPiTextContent | ImageContent)[] = [
 			{
 				type: "text",
 				text,
 				...(skillPresentation ? { mypiSkillInvocation: skillPresentation } : {}),
-				...(mypiQueuedMessageId ? { mypiQueuedMessageId } : {}),
+				mypiQueuedMessageId: queueId,
 				mypiQueuedMessageMode: "steer",
 			},
 		];
@@ -1937,6 +1969,7 @@ export class AgentSession {
 			content,
 			timestamp: Date.now(),
 		});
+		return queueId;
 	}
 
 	/**
@@ -1947,15 +1980,16 @@ export class AgentSession {
 		images?: ImageContent[],
 		skillPresentation?: MyPiSkillInvocationPresentation,
 		mypiQueuedMessageId?: string,
-	): Promise<void> {
-		this._followUpMessages.push(text);
+	): Promise<string> {
+		const queueId = mypiQueuedMessageId ?? randomUUID();
+		this._followUpMessages.push({ id: queueId, message: text, mode: "followUp", hasImages: Boolean(images?.length) });
 		this._emitQueueUpdate();
 		const content: (MyPiTextContent | ImageContent)[] = [
 			{
 				type: "text",
 				text,
 				...(skillPresentation ? { mypiSkillInvocation: skillPresentation } : {}),
-				...(mypiQueuedMessageId ? { mypiQueuedMessageId } : {}),
+				mypiQueuedMessageId: queueId,
 				mypiQueuedMessageMode: "followUp",
 			},
 		];
@@ -1967,6 +2001,7 @@ export class AgentSession {
 			content,
 			timestamp: Date.now(),
 		});
+		return queueId;
 	}
 
 	/**
@@ -2078,8 +2113,8 @@ export class AgentSession {
 	 * @returns Object with steering and followUp arrays
 	 */
 	clearQueue(): { steering: string[]; followUp: string[] } {
-		const steering = [...this._steeringMessages];
-		const followUp = [...this._followUpMessages];
+		const steering = this._steeringMessages.map((item) => item.message);
+		const followUp = this._followUpMessages.map((item) => item.message);
 		this._steeringMessages = [];
 		this._followUpMessages = [];
 		this.agent.clearAllQueues();
@@ -2093,7 +2128,7 @@ export class AgentSession {
 	 * steer immediately.
 	 */
 	clearSteeringMessages(): string[] {
-		const steering = [...this._steeringMessages];
+		const steering = this._steeringMessages.map((item) => item.message);
 		this._steeringMessages = [];
 		this.agent.clearSteeringQueue();
 		this._emitQueueUpdate();
@@ -2107,12 +2142,70 @@ export class AgentSession {
 
 	/** Get pending steering messages (read-only) */
 	getSteeringMessages(): readonly string[] {
-		return this._steeringMessages;
+		return this._steeringMessages.map((item) => item.message);
 	}
 
 	/** Get pending follow-up messages (read-only) */
 	getFollowUpMessages(): readonly string[] {
-		return this._followUpMessages;
+		return this._followUpMessages.map((item) => item.message);
+	}
+
+	getQueuedMessageItems(): readonly QueuedMessageItem[] {
+		return [...this._steeringMessages, ...this._followUpMessages].map((item) => ({ ...item }));
+	}
+
+	removeQueuedMessage(id: string): QueuedMessageItem | undefined {
+		const item = [...this._steeringMessages, ...this._followUpMessages].find((candidate) => candidate.id === id);
+		if (!item) return undefined;
+		const removed = this.agent.removeQueuedMessage((message) => this._queuedMessageId(message) === id);
+		if (!removed) return undefined;
+		const queue = item.mode === "steer" ? this._steeringMessages : this._followUpMessages;
+		const index = queue.findIndex((candidate) => candidate.id === id);
+		if (index >= 0) queue.splice(index, 1);
+		this._emitQueueUpdate();
+		return { ...item };
+	}
+
+	updateQueuedMessage(id: string, message: string): QueuedMessageItem | undefined {
+		const text = message.trim();
+		if (!text || text.length > 100_000 || text.startsWith("/")) return undefined;
+		const item = [...this._steeringMessages, ...this._followUpMessages].find((candidate) => candidate.id === id);
+		if (!item) return undefined;
+		const updated = this.agent.updateQueuedMessage(
+			(candidate) => this._queuedMessageId(candidate) === id,
+			(candidate) => this._replaceQueuedMessageText(candidate, text),
+		);
+		if (!updated) return undefined;
+		const queue = item.mode === "steer" ? this._steeringMessages : this._followUpMessages;
+		const index = queue.findIndex((candidate) => candidate.id === id);
+		if (index < 0) return undefined;
+		queue[index] = { ...queue[index]!, message: text };
+		this._emitQueueUpdate();
+		return { ...queue[index]! };
+	}
+
+	private _queuedMessageId(message: AgentMessage): string | undefined {
+		if (message.role !== "user" || !Array.isArray(message.content)) return undefined;
+		for (const part of message.content) {
+			if (part.type !== "text") continue;
+			const id = (part as MyPiTextContent).mypiQueuedMessageId;
+			if (typeof id === "string" && id) return id;
+		}
+		return undefined;
+	}
+
+	private _replaceQueuedMessageText(message: AgentMessage, text: string): AgentMessage {
+		if (message.role !== "user" || !Array.isArray(message.content)) return message;
+		let replaced = false;
+		const content = message.content.map((part) => {
+			if (replaced || part.type !== "text") return part;
+			const typed = part as MyPiTextContent;
+			if (!typed.mypiQueuedMessageId) return part;
+			replaced = true;
+			const { mypiSkillInvocation: _presentation, ...rest } = typed;
+			return { ...rest, text };
+		});
+		return replaced ? { ...message, content } : message;
 	}
 
 	get resourceLoader(): ResourceLoader {

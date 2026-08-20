@@ -5,12 +5,12 @@ import { homedir } from 'node:os'
 import { join, relative, resolve } from 'node:path'
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from '../../core/extensions/types.ts'
 import { buildSessionContext, sessionEntryToContextMessages, type SessionEntry } from '../../core/session-manager.ts'
-import { GuiControlController, type ControllerState } from './controller.js'
-import { GUI_CONTROL_STATE_EVENT } from './events.js'
-import { BoundedEventQueue } from './transport.js'
-import { loadGuiControlConfig, saveGuiControlConfig } from './config.js'
-import { GUI_CONTROL_MAX_ATTACHMENT_BYTES, GUI_CONTROL_MAX_FRAME_BYTES, GUI_CONTROL_MAX_MESSAGE_BYTES, GUI_CONTROL_MAX_SNAPSHOT_BATCH, GUI_CONTROL_MAX_SNAPSHOT_MESSAGES, type ClientFrame, type ManagedAttachment, type ServerFrame, type TuiSnapshotMetadata, type TuiSnapshotUsage } from './protocol.js'
-import { startTuiPresence, type TuiPresenceHandle } from './presence.js'
+import { GuiControlController, type ControllerState } from './controller.ts'
+import { GUI_CONTROL_STATE_EVENT } from './events.ts'
+import { BoundedEventQueue } from './transport.ts'
+import { loadGuiControlConfig, saveGuiControlConfig } from './config.ts'
+import { GUI_CONTROL_MAX_ATTACHMENT_BYTES, GUI_CONTROL_MAX_FRAME_BYTES, GUI_CONTROL_MAX_MESSAGE_BYTES, GUI_CONTROL_MAX_SNAPSHOT_BATCH, GUI_CONTROL_MAX_SNAPSHOT_MESSAGES, type ClientFrame, type ManagedAttachment, type ServerFrame, type TuiSnapshotMetadata, type TuiSnapshotUsage } from './protocol.ts'
+import { startTuiPresence, type TuiPresenceHandle } from './presence.ts'
 import {
   readLiveForeignLease,
   startSessionOwnership,
@@ -18,8 +18,8 @@ import {
   type SessionHandoffDecision,
   type SessionHandoffRequest,
   type SessionOwnershipHandle,
-} from './ownership.js'
-import { createKeywordSkillRouter } from './keyword-skill-routing.js'
+} from './ownership.ts'
+import { createKeywordSkillRouter } from './keyword-skill-routing.ts'
 
 const HELP = `# /gui-control — TUI-to-GUI bridge
 
