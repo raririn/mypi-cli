@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import planGoalExtension from "../../vendor/pi/packages/coding-agent/src/extensions/mypi/plan-goal.ts";
+import planGoalExtension from "../../packages/runtime/src/extensions/mypi/plan-goal.ts";
 
 const ROOT_PLAN = "# Ordinary project planning notes\n\nThis file is not Goal state.\n";
 const STRUCTURED_ITEMS = [

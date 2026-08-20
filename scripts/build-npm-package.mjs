@@ -28,14 +28,14 @@ const stageRoot = join(repositoryRoot, "build", "npm-stage");
 const npmCache = join(repositoryRoot, ".cache", "npm");
 
 const customPackageDirectories = [
-  "vendor/pi/packages/tui",
-  "vendor/pi/packages/ai",
-  "vendor/pi/packages/agent",
-  "vendor/pi/packages/coding-agent",
+  "packages/tui",
+  "packages/ai",
+  "packages/agent",
+  "packages/runtime",
 ];
 const productManifest = readJson(join(productRoot, "package.json"));
 const coreManifest = readJson(join(productRoot, "resources", "mypi-core-package", "package.json"));
-const provenance = readJson(join(productRoot, "vendor", "pi", "MYPI_PROVENANCE.json"));
+const provenance = readJson(join(productRoot, "PI_UPSTREAM_PROVENANCE.json"));
 const version = productManifest.version;
 const release = productManifest.mypiRelease;
 const versionContract = readMyPiRepositoryVersionContract(productRoot);
@@ -48,10 +48,10 @@ assert(version === coreManifest.version, "@mypi/core version does not match the 
 assert(
   normalizeVersion(productManifest.devDependencies?.["@earendil-works/pi-coding-agent"])
     === provenance.upstreamVersion,
-  "product Pi pin does not match vendored provenance",
+  "product Pi pin does not match upstream provenance",
 );
-assert(existsSync(join(productRoot, "vendor", "pi", "packages", "coding-agent", "dist", "cli.js")),
-  "vendored Pi must be built before staging the npm package");
+assert(existsSync(join(productRoot, "packages", "runtime", "dist", "cli.js")),
+  "runtime packages must be built before staging the npm package");
 
 rmSync(stageRoot, { recursive: true, force: true });
 mkdirSync(stageRoot, { recursive: true });

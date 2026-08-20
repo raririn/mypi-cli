@@ -7,9 +7,9 @@ import { readAttachmentManifest } from "./mypi-chat-storage.mts";
 import { MYPI_IDENTITY_LINE } from "./mypi-identity.ts";
 import credentialRedactionExtension from "./mypi-credential-redaction.ts";
 import tuiAutoTitleExtension from "./mypi-tui-auto-title.ts";
-import type { BraveResult } from "../../vendor/pi/packages/coding-agent/src/extensions/mypi/web/brave.ts";
-import { requestText } from "../../vendor/pi/packages/coding-agent/src/extensions/mypi/web/http.ts";
-import { searchWeb } from "../../vendor/pi/packages/coding-agent/src/extensions/mypi/web/search.ts";
+import type { BraveResult } from "../../packages/runtime/src/extensions/mypi/web/brave.ts";
+import { requestText } from "../../packages/runtime/src/extensions/mypi/web/http.ts";
+import { searchWeb } from "../../packages/runtime/src/extensions/mypi/web/search.ts";
 
 export const CHAT_TOOL_NAMES = ["read_canvas", "edit_canvas", "replace_canvas", "list_attachments", "read_attachment", "calculate", "web_search", "web_fetch"] as const;
 const CHAT_TOOL_SET = new Set<string>(CHAT_TOOL_NAMES);

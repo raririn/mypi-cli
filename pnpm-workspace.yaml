@@ -1,8 +1,8 @@
 packages:
-  - vendor/pi/packages/tui
-  - vendor/pi/packages/ai
-  - vendor/pi/packages/agent
-  - vendor/pi/packages/coding-agent
+  - packages/tui
+  - packages/ai
+  - packages/agent
+  - packages/runtime
 
 allowBuilds:
   '@google/genai': false

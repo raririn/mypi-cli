@@ -14,12 +14,12 @@ import {
   usageTokens,
   validateGoalPlanDraft,
   validateStructuredGoalPlan,
-} from "../../vendor/pi/packages/coding-agent/src/extensions/mypi/goal-state.ts";
+} from "../../packages/runtime/src/extensions/mypi/goal-state.ts";
 import {
   goalContinuationTemplateForTest,
   goalPlanningTemplateForTest,
   renderGoalContinuationPrompt,
-} from "../../vendor/pi/packages/coding-agent/src/extensions/mypi/goal-prompts.ts";
+} from "../../packages/runtime/src/extensions/mypi/goal-prompts.ts";
 
 const draft = [
   { task: "Build the durable parser", acceptance: ["protected scope survives"], verify: ["node --test parser"] },

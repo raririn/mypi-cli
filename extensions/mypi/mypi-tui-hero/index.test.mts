@@ -5,8 +5,8 @@ import { KeybindingsManager, setKeybindings, visibleWidth } from "@earendil-work
 import pizzaHeroExtension, {
   PizzaHeroComponent,
   RESOURCE_COMMANDS,
-} from "../../../vendor/pi/packages/coding-agent/src/extensions/mypi/tui-hero/index.ts";
-import { pickNewThreadGreeting } from "../../../vendor/pi/packages/coding-agent/src/extensions/mypi/tui-hero/greetings.ts";
+} from "../../../packages/runtime/src/extensions/mypi/tui-hero/index.ts";
+import { pickNewThreadGreeting } from "../../../packages/runtime/src/extensions/mypi/tui-hero/greetings.ts";
 
 setKeybindings(new KeybindingsManager({
   "app.interrupt": { defaultKeys: "escape" },

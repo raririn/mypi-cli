@@ -3,7 +3,7 @@ import test from "node:test";
 import {
   WEB_FETCH_PROMPT_GUIDELINES,
   WEB_SEARCH_PROMPT_GUIDELINES,
-} from "../../vendor/pi/packages/coding-agent/src/extensions/mypi/web/index.ts";
+} from "../../packages/runtime/src/extensions/mypi/web/index.ts";
 
 test("web prompt policy requires opened authoritative sources and honest limitations", () => {
   const search = WEB_SEARCH_PROMPT_GUIDELINES.join("\n");

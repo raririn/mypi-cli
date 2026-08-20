@@ -32,7 +32,7 @@ const forbiddenPaths = files.filter((path) => (
   || (
     /(^|\/)(?:package-lock\.json|npm-shrinkwrap\.json)$/.test(path)
     && path !== "extensions/gui-control/package-lock.json"
-    && !path.startsWith("vendor/pi/packages/coding-agent/")
+    && !path.startsWith("packages/runtime/")
   )
 ));
 assert(forbiddenPaths.length === 0,
@@ -74,7 +74,7 @@ assert(manifest.mypiRelease?.chronicle === 1, "repository root has unexpected re
 assert(manifest.mypiRelease?.protocol === 1, "repository root has unexpected protocol generation");
 
 const sourceProvenance = readJson("SOURCE_PROVENANCE.json");
-const piProvenance = readJson("vendor/pi/MYPI_PROVENANCE.json");
+const piProvenance = readJson("PI_UPSTREAM_PROVENANCE.json");
 assert(sourceProvenance.version === manifest.version, "source provenance has product-version drift");
 assert(sourceProvenance.releaseName === manifest.mypiRelease.name, "source provenance has release-name drift");
 assert(sourceProvenance.releaseChronicle === manifest.mypiRelease.chronicle,
@@ -93,11 +93,8 @@ assert(
 assert(sourceProvenance.acknowledgments?.[0]?.sourceIncluded === false,
   "pi-gui must remain an acknowledgment, not an included source component");
 
-assert(
-  readFileSync(join(root, "LICENSES", "pi-MIT.txt"), "utf8").trimEnd()
-    === readFileSync(join(root, "vendor", "pi", "LICENSE"), "utf8").trimEnd(),
-  "the distributed Pi MIT notice differs from the vendored upstream notice",
-);
+assert(readFileSync(join(root, "LICENSES", "pi-MIT.txt"), "utf8").includes("Copyright (c) 2025 Mario Zechner"),
+  "the distributed Pi MIT notice is missing its upstream copyright");
 assert(readFileSync(join(root, "LICENSE"), "utf8").includes("Copyright (c) 2026 raririn"),
   "MyPi license does not name raririn as the copyright owner");
 

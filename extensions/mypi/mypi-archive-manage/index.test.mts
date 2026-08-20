@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test, { describe } from "node:test";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import lockfile from "@bybrave/proper-lockfile2";
-import archiveManageExtension from "../../../vendor/pi/packages/coding-agent/src/extensions/mypi/archive-manage.ts";
+import archiveManageExtension from "../../../packages/runtime/src/extensions/mypi/archive-manage.ts";
 
 const ARCHIVE_TOOLS = [
   "session_archive_stats",

@@ -15,8 +15,8 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "node scripts/build-vendored-pi.mjs",
-    "clean": "shx rm -rf build dist vendor/pi/packages/ai/dist vendor/pi/packages/agent/dist vendor/pi/packages/tui/dist vendor/pi/packages/coding-agent/dist",
+    "build": "node scripts/build-runtime-packages.mjs",
+    "clean": "shx rm -rf build dist packages/ai/dist packages/agent/dist packages/tui/dist packages/runtime/dist",
     "package": "pnpm build && node scripts/build-npm-package.mjs",
     "test": "pnpm test:extensions && pnpm test:host && pnpm test:daemon && pnpm test:hosted && pnpm test:rpc-dialogs && pnpm test:preattach && pnpm test:distribution",
     "test:distribution": "node --test tests/distribution.test.mjs",
@@ -29,7 +29,7 @@
     "typecheck": "tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --types node --skipLibCheck --allowImportingTsExtensions extensions/gui-control/*.ts extensions/mypi/*.ts",
     "verify:public": "node scripts/verify-public-tree.mjs",
     "verify:release": "node scripts/verify-release.mjs",
-    "verify:runtime": "node scripts/verify-pi-customizations.mjs",
+    "verify:runtime": "node scripts/verify-runtime-customizations.mjs",
     "verify": "pnpm verify:public && pnpm build && pnpm typecheck && pnpm test && pnpm package && pnpm verify:runtime && node scripts/verify-distribution.mjs"
   },
   "devDependencies": {
@@ -46,9 +46,9 @@
     "typescript": "5.9.3"
   },
   "workspaces": [
-    "vendor/pi/packages/tui",
-    "vendor/pi/packages/ai",
-    "vendor/pi/packages/agent",
-    "vendor/pi/packages/coding-agent"
+    "packages/tui",
+    "packages/ai",
+    "packages/agent",
+    "packages/runtime"
   ]
 }

@@ -17,16 +17,16 @@ importers:
         version: 5.0.0
       '@earendil-works/pi-agent-core':
         specifier: workspace:0.82.1
-        version: link:vendor/pi/packages/agent
+        version: link:packages/agent
       '@earendil-works/pi-ai':
         specifier: workspace:0.82.1
-        version: link:vendor/pi/packages/ai
+        version: link:packages/ai
       '@earendil-works/pi-coding-agent':
         specifier: workspace:0.82.1
-        version: link:vendor/pi/packages/coding-agent
+        version: link:packages/runtime
       '@earendil-works/pi-tui':
         specifier: workspace:0.82.1
-        version: link:vendor/pi/packages/tui
+        version: link:packages/tui
       '@types/node':
         specifier: 24.12.4
         version: 24.12.4
@@ -46,7 +46,7 @@ importers:
         specifier: 5.9.3
         version: 5.9.3
 
-  vendor/pi/packages/agent:
+  packages/agent:
     dependencies:
       '@earendil-works/pi-ai':
         specifier: 0.82.1
@@ -77,7 +77,7 @@ importers:
         specifier: 4.1.9
         version: 4.1.9(@opentelemetry/api@1.9.0)(@types/node@24.12.4)(@vitest/coverage-v8@4.1.9)(jsdom@29.1.1(canvas@3.2.3))(vite@8.1.5(@types/node@24.12.4)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.0))
 
-  vendor/pi/packages/ai:
+  packages/ai:
     dependencies:
       '@anthropic-ai/sdk':
         specifier: 0.91.1
@@ -126,7 +126,7 @@ importers:
         specifier: 4.1.9
         version: 4.1.9(@opentelemetry/api@1.9.0)(@types/node@24.12.4)(@vitest/coverage-v8@4.1.9)(jsdom@29.1.1(canvas@3.2.3))(vite@8.1.5(@types/node@24.12.4)(esbuild@0.28.1)(jiti@2.7.0)(yaml@2.9.0))
 
-  vendor/pi/packages/coding-agent:
+  packages/runtime:
     dependencies:
       '@anthropic-ai/sandbox-runtime':
         specifier: 0.0.67
@@ -245,7 +245,7 @@ importers:
         specifier: 0.3.9
         version: 0.3.9
 
-  vendor/pi/packages/tui:
+  packages/tui:
     dependencies:
       get-east-asian-width:
         specifier: 1.6.0
