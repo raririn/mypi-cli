@@ -125,6 +125,7 @@ const TRUSTED_PRODUCT_TOOLS = new Set([
 	"subagent_followup",
 	"subagent_cancel",
 	"subagent_status",
+	"advisor_evidence",
 ]);
 const TRUSTED_PASSIVE_BUILTIN_TOOLS = new Set(["commentary"]);
 

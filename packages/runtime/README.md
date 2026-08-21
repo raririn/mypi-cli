@@ -179,6 +179,8 @@ Type `/` in the editor to trigger commands. [Extensions](#extensions) can regist
 | [`/llama`](docs/llama-cpp.md) | Download, load, and unload llama.cpp router models |
 | `/model [--global] <provider/model> [--global]` | Switch this session's model; `--global` also updates the preset |
 | [`/advisor-model`](docs/subagents.md) | Select the global model for new advisor/reviewer children |
+| `/advisor [on|off]` | Toggle mandatory advisor guidance for this and future sessions |
+| `/reviewer [on|off]` | Toggle mandatory reviewer guidance for this and future sessions |
 | `/scoped-models` | Enable/disable models for Ctrl+P cycling |
 | `/settings` | Thinking level, theme, message delivery, transport |
 | `/resume` | Pick from previous sessions |

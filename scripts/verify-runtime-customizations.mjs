@@ -96,7 +96,7 @@ for (const fragment of [
   }
 }
 const globalConfig = await readFile(join(packageRoot, "dist", "product", "global-config.js"), "utf8");
-for (const fragment of ["config.yaml", "shortTestMaxWords: 10", "maxActive: 10", "maxArchived: 10", 'advisorModel: "inherit"', "defaults are active", 'registerCommand("config"']) {
+for (const fragment of ["config.yaml", "shortTestMaxWords: 10", "maxActive: 10", "maxArchived: 10", 'advisorModel: "inherit"', "requireAdvisor: false", "requireReviewer: false", "defaults are active", 'registerCommand("config"']) {
   if (!globalConfig.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing global YAML configuration behavior (${fragment}).`);
   }
@@ -121,10 +121,30 @@ for (const fragment of [
   "MYPI_SUBAGENT_CHILD",
   "mypi-subagent-results",
   'registerCommand("advisor-model"',
+  'registerRequirementCommand(pi, manager, "advisor"',
+  'registerRequirementCommand(pi, manager, "reviewer"',
+  "advisor_evidence",
+  "neutral_brief",
+  "arrivedAfterMutation",
 ]) {
   if (!subagents.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing async subagent behavior (${fragment}).`);
   }
+}
+const reviewPolicy = await readFile(join(packageRoot, "dist", "product", "review-policy.js"), "utf8");
+for (const fragment of [".mypi", "REVIEW.md", "REVIEW_POLICY_INVALID", "MAX_REVIEW_POLICY_BYTES"]) {
+  if (!reviewPolicy.includes(fragment)) throw new Error(`Installed Pi ${expectedVersion} is missing project review policy behavior (${fragment}).`);
+}
+for (const name of [
+  "parent-advisor-required.md",
+  "parent-reviewer-required.md",
+  "advisor.md",
+  "advisor-brief.md",
+  "reviewer-envelope.md",
+  "reviewer-default.md",
+]) {
+  const content = await readFile(join(packageRoot, "dist", "product", "subagent-prompts", name), "utf8");
+  if (!content.trim()) throw new Error(`Installed Pi ${expectedVersion} has an empty subagent prompt: ${name}.`);
 }
 if (sessionMaintenance.includes('pi.on("input"')) {
   throw new Error(`Installed Pi ${expectedVersion} allows extension-origin messages to invoke archive cleanup.`);

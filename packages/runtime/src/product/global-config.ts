@@ -20,6 +20,8 @@ export interface HistoryConfig {
 
 export interface SubagentsConfig {
 	readonly advisorModel: "inherit" | string;
+	readonly requireAdvisor: boolean;
+	readonly requireReviewer: boolean;
 }
 
 export interface GlobalConfig {
@@ -47,7 +49,7 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfig = Object.freeze({
 		maxActive: 10,
 		maxArchived: 10,
 	}),
-	subagents: Object.freeze({ advisorModel: "inherit" }),
+	subagents: Object.freeze({ advisorModel: "inherit", requireAdvisor: false, requireReviewer: false }),
 });
 
 type ConfigRecord = Record<string, unknown>;
@@ -66,6 +68,8 @@ const HELP = `# /config — inspect or update global MyPi configuration
 /config reset --confirm
 
 Use /advisor-model to inspect or change the global advisor/reviewer model.
+Use /advisor [on|off] and /reviewer [on|off] to change mandatory consultation
+guidance for the current session and the default for new sessions.
 
 Configuration is stored in $MYPI_AGENT_DIR/config.yaml. Changes are global to
 that MyPi profile and affect the next new-session maintenance pass. Malformed or
@@ -123,6 +127,23 @@ export async function updateAdvisorModel(
 		const source = await readConfigSourceForMutation(path);
 		const subagents = isRecord(source.subagents) ? { ...source.subagents } : {};
 		subagents.advisorModel = advisorModel;
+		const next = { ...source, version: GLOBAL_CONFIG_VERSION, subagents };
+		const parsed = parseConfigRecord(stringify(next), path);
+		if ("diagnostic" in parsed) throw new Error(parsed.diagnostic.message);
+		await atomicWriteConfig(path, stringify(next, { lineWidth: 0 }));
+		return parsed.config;
+	});
+}
+
+export async function updateSubagentRequirement(
+	key: "requireAdvisor" | "requireReviewer",
+	value: boolean,
+	path = resolveGlobalConfigPath(),
+): Promise<GlobalConfig> {
+	return withConfigLock(path, async () => {
+		const source = await readConfigSourceForMutation(path);
+		const subagents = isRecord(source.subagents) ? { ...source.subagents } : {};
+		subagents[key] = value;
 		const next = { ...source, version: GLOBAL_CONFIG_VERSION, subagents };
 		const parsed = parseConfigRecord(stringify(next), path);
 		if ("diagnostic" in parsed) throw new Error(parsed.diagnostic.message);
@@ -242,6 +263,8 @@ function parseConfigRecord(
 				advisorModel: typeof subagents.advisorModel === "string"
 					? subagents.advisorModel
 					: DEFAULT_GLOBAL_CONFIG.subagents.advisorModel,
+				requireAdvisor: readBoolean(subagents.requireAdvisor, DEFAULT_GLOBAL_CONFIG.subagents.requireAdvisor),
+				requireReviewer: readBoolean(subagents.requireReviewer, DEFAULT_GLOBAL_CONFIG.subagents.requireReviewer),
 			},
 		};
 		if (
@@ -250,6 +273,8 @@ function parseConfigRecord(
 			!validOptionalInteger(history.maxActive, 1, 1_000) ||
 			!validOptionalInteger(history.maxArchived, 1, 1_000)
 			|| (subagents.advisorModel !== undefined && !isAdvisorModel(subagents.advisorModel))
+			|| (subagents.requireAdvisor !== undefined && typeof subagents.requireAdvisor !== "boolean")
+			|| (subagents.requireReviewer !== undefined && typeof subagents.requireReviewer !== "boolean")
 		) return { diagnostic: invalidOwnedConfig(path) };
 		return { config, source };
 	} catch {
@@ -345,7 +370,7 @@ function formatHistoryConfig(config: HistoryConfig): string {
 }
 
 function formatSubagentsConfig(config: SubagentsConfig): string {
-	return `Advisor/reviewer model: ${config.advisorModel}.`;
+	return `Advisor/reviewer model: ${config.advisorModel}; mandatory advisor ${config.requireAdvisor ? "on" : "off"}; mandatory reviewer ${config.requireReviewer ? "on" : "off"}.`;
 }
 
 function cloneDefaults(): GlobalConfig {

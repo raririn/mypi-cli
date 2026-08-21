@@ -5,7 +5,7 @@ const BUILTIN_READ_TOOLS = new Set(["read", "grep", "find", "ls", "read_workspac
 const MYPI_WEB_READ_TOOLS = new Set(["web_search", "web_fetch"]);
 const MYPI_SESSION_READ_TOOLS = new Set(["recall_compacted_history"]);
 const MYPI_USER_INTERACTION_TOOLS = new Set(["ask_user"]);
-const MYPI_SUBAGENT_READ_TOOLS = new Set(["subagent_start", "subagent_followup", "subagent_cancel", "subagent_status"]);
+const MYPI_SUBAGENT_READ_TOOLS = new Set(["subagent_start", "subagent_followup", "subagent_cancel", "subagent_status", "advisor_evidence"]);
 const MYPI_SUBAGENT_CONTROL_TOOLS = new Set(["subagent_cancel", "subagent_status"]);
 
 export function isTrustedWebReadTool(pi: ExtensionAPI, toolName: string): boolean {

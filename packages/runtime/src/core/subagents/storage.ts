@@ -12,6 +12,7 @@ export type SubagentRole = "explore" | "work" | "advisor" | "review";
 export type SubagentGrantStatus =
 	| "queued"
 	| "starting"
+	| "briefing"
 	| "running"
 	| "cancelling"
 	| "completed"

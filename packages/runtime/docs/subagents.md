@@ -15,9 +15,9 @@ completion delivery.
 - `review`: read-only review of supplied final code or changes, with a bounded
   current Git snapshot when available.
 
-Advisor and reviewer intentionally use separate minimal system prompts. A
-later prompt-engineering pass will refine their rubrics after the lifecycle and
-storage contract is checkpointed.
+Advisor and reviewer use separate packaged prompts. Their Markdown resources
+are intentionally modular so policy wording can be tuned without changing
+lifecycle or enforcement.
 
 ## Tools
 
@@ -65,6 +65,38 @@ The default `inherit` uses the parent model. An explicit selection is stored in
 the global MyPi YAML. Existing children and follow-ups retain their pinned
 model. An unavailable explicit advisor model fails rather than silently falling
 back.
+
+Advisor first asks the caller model for a neutral no-tools briefing over the
+effective parent context. The configured advisor model receives only that
+brief, the caller hypothesis, a bounded exact evidence ledger exposed through
+`advisor_evidence`, workspace read/search, and sealed public web research. It
+does not receive parent assistant history. Advice is marked stale after new user
+context and marked arrived-after-mutation when the parent changes the workspace
+before advice completes.
+
+## Mandatory usage guidance
+
+Both policies default off:
+
+```yaml
+subagents:
+  advisorModel: inherit
+  requireAdvisor: false
+  requireReviewer: false
+```
+
+Use `/advisor [on|off]` and `/reviewer [on|off]`. A change updates this session
+and the global default for new sessions; other live sessions retain their own
+state. Off removes mandatory usage guidance but leaves the role callable.
+
+## Project review policy
+
+A trusted canonical project may provide `.mypi/REVIEW.md`. A safe non-empty
+regular UTF-8 file no larger than 32 KiB replaces the lean built-in reviewer
+rubric. The sealed read-only envelope and every tool/policy boundary remain.
+Unsafe present policy fails review admission. Reviewer evidence covers staged,
+unstaged, and untracked changes and completion is marked stale when the target
+changes during review.
 
 ## Model selection persistence
 

@@ -93,12 +93,12 @@ test("sealed subagent tools expose homogeneous async jobs and distinct barebones
 	} as unknown as ExtensionAPI;
 	subagentsExtension(pi);
 	assert.deepEqual([...tools.keys()], [SUBAGENT_START_TOOL, SUBAGENT_FOLLOWUP_TOOL, SUBAGENT_CANCEL_TOOL, SUBAGENT_STATUS_TOOL]);
-	assert.ok(commands.has("advisor-model"));
+	assert.deepEqual([...commands.keys()], ["advisor-model", "advisor", "reviewer"]);
 	assert.match(tools.get(SUBAGENT_START_TOOL).description, /Mixed job roles are prohibited/);
 	assert.match(tools.get(SUBAGENT_START_TOOL).description, /blocks your edit, write, and Bash/);
 	assert.notEqual(SUBAGENT_ROLE_PROMPTS.advisor, SUBAGENT_ROLE_PROMPTS.review);
-	assert.match(SUBAGENT_ROLE_PROMPTS.advisor, /plan advisor/i);
-	assert.match(SUBAGENT_ROLE_PROMPTS.review, /code reviewer/i);
+	assert.match(SUBAGENT_ROLE_PROMPTS.advisor, /read-only MyPi advisor/i);
+	assert.match(SUBAGENT_ROLE_PROMPTS.review, /read-only MyPi code reviewer/i);
 
 	const schema = tools.get(SUBAGENT_START_TOOL).parameters;
 	assert.equal(schema.properties.jobs.items.properties.childId, undefined, "the model cannot supply child identity");
@@ -122,6 +122,58 @@ test("sealed subagent tools expose homogeneous async jobs and distinct barebones
 		}, undefined, undefined, ctx),
 		/Mixed subagent job roles are prohibited/,
 	);
+});
+
+test("advisor and reviewer mandatory prompts are independent and absent by default", () => {
+	const manager = new SubagentManager({
+		getActiveTools: () => [SUBAGENT_START_TOOL],
+		sendMessage() {},
+	} as unknown as ExtensionAPI);
+	assert.deepEqual(manager.parentPromptSections(), []);
+	manager.setRequirements(true, false);
+	assert.equal(manager.parentPromptSections().length, 1);
+	assert.match(manager.parentPromptSections()[0]!, /Mandatory advisor consultation/);
+	assert.doesNotMatch(manager.parentPromptSections()[0]!, /Mandatory final review/);
+	manager.setRequirements(false, true);
+	assert.equal(manager.parentPromptSections().length, 1);
+	assert.match(manager.parentPromptSections()[0]!, /Mandatory final review/);
+	manager.setRequirements(true, true);
+	assert.equal(manager.parentPromptSections().length, 2);
+});
+
+test("user commands persist and dynamically switch separate mandatory prompts", async () => {
+	const commands = new Map<string, any>();
+	const handlers = new Map<string, any[]>();
+	const entries: unknown[] = [];
+	const notices: string[] = [];
+	const pi = {
+		events: { on() { return () => {}; }, emit() {} },
+		registerTool() {},
+		registerCommand(name: string, command: any) { commands.set(name, command); },
+		on(name: string, handler: any) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
+		getActiveTools: () => [SUBAGENT_START_TOOL],
+		appendEntry(customType: string, data: unknown) { entries.push({ customType, data }); },
+		sendMessage() {},
+	} as unknown as ExtensionAPI;
+	subagentsExtension(pi);
+	const ctx = {
+		ui: { notify(message: string) { notices.push(message); } },
+		isIdle: () => true,
+	} as any;
+	await commands.get("advisor").handler("on", ctx);
+	const advisorPrompt = await handlers.get("before_agent_start")?.[0]({ systemPrompt: "base" }, ctx);
+	assert.match(advisorPrompt.systemPrompt, /Mandatory advisor consultation/);
+	assert.doesNotMatch(advisorPrompt.systemPrompt, /Mandatory final review/);
+	await commands.get("reviewer").handler("on", ctx);
+	const both = await handlers.get("before_agent_start")?.[0]({ systemPrompt: "base" }, ctx);
+	assert.match(both.systemPrompt, /Mandatory advisor consultation/);
+	assert.match(both.systemPrompt, /Mandatory final review/);
+	await commands.get("advisor").handler("off", ctx);
+	const reviewerOnly = await handlers.get("before_agent_start")?.[0]({ systemPrompt: "base" }, ctx);
+	assert.doesNotMatch(reviewerOnly.systemPrompt, /Mandatory advisor consultation/);
+	assert.match(reviewerOnly.systemPrompt, /Mandatory final review/);
+	assert.equal(entries.length, 3);
+	assert.equal(notices.length, 3);
 });
 
 test("subagent admission inherits trust, no-read, readonly, and planning restrictions", async () => {
