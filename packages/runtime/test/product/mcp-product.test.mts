@@ -33,6 +33,7 @@ function createHarness(options: { branch?: unknown[]; trusted?: boolean } = {}) 
 				return () => {};
 			},
 		},
+		registerCommand: () => {},
 		registerTool: (tool: any) => tools.set(tool.name, tool),
 		on: (name: string, handler: any) => handlers.set(name, [...(handlers.get(name) ?? []), handler]),
 		getSafetyState: () => ({ effective: "full", enabled: true }),

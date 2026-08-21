@@ -18,6 +18,7 @@ import type { McpPolicyState, McpSafetyMode } from "../core/mcp/policy.ts";
 import type { ConvertedMcpResult } from "../core/mcp/result.ts";
 import { McpError, type McpConfig, type McpConfigDiagnostic, type McpToolDescriptor } from "../core/mcp/types.ts";
 import { loadGlobalConfig } from "./global-config.ts";
+import { registerMcpCommand } from "./mcp-command.ts";
 
 export const MCP_SEARCH_TOOL = "mcp_search";
 export const MCP_LOAD_TOOL = "mcp_load";
@@ -147,6 +148,26 @@ export class McpProductRuntime {
 
 	async shutdown(): Promise<void> {
 		await this.manager?.shutdown().catch(() => undefined);
+	}
+
+	/** Re-read configuration and rebuild the live session state (used by /mcp). */
+	async reload(ctx: ExtensionContext): Promise<void> {
+		const { diagnostics } = await this.initialize(ctx);
+		for (const diagnostic of diagnostics.slice(0, 5)) {
+			ctx.ui.notify(`MCP configuration: ${diagnostic.serverId ? `${diagnostic.serverId}: ` : ""}${diagnostic.message}`, "warning");
+		}
+		this.syncActiveGatewayTools();
+		this.restoreFromBranch(ctx);
+	}
+
+	/** Bounded human-readable status lines for /mcp. */
+	statusLines(): string[] {
+		return (this.manager?.status() ?? []).slice(0, 32).map((entry) => {
+			const record = entry as { serverId?: unknown; scope?: unknown; enabled?: unknown; state?: unknown; tools?: unknown; resources?: unknown };
+			const flags = [record.enabled === false ? "disabled" : undefined, `scope=${String(record.scope)}`].filter(Boolean).join(", ");
+			const catalog = record.state === "cold" ? "catalog not loaded yet" : `${String(record.tools)} tool(s), ${String(record.resources)} resource(s)`;
+			return `${String(record.serverId)} [${String(record.state)}; ${flags}] ${catalog}`;
+		});
 	}
 
 	/** Keep the model-visible tool set aligned with gateway/dynamic state. */
@@ -300,6 +321,7 @@ function formatSearchRecords(records: readonly McpSearchRecord[], cursor?: strin
 
 export default function mcpExtension(pi: ExtensionAPI): void {
 	const runtime = new McpProductRuntime(pi);
+	registerMcpCommand(pi, runtime);
 
 	pi.events?.on?.("mypi:subagent-access-mode", (data) => {
 		runtime.setAccessMode((data as { mode?: unknown } | undefined)?.mode);

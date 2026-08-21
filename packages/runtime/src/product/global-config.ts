@@ -154,6 +154,35 @@ export async function updateSubagentRequirement(
 	});
 }
 
+/**
+ * Atomically create, replace, or remove one `mcp.servers` record while
+ * preserving every unrelated configuration byte. `record === undefined`
+ * removes the server. Validation is the caller's responsibility (the core
+ * MCP parser); this helper only owns safe persistence.
+ */
+export async function updateMcpServer(
+	serverId: string,
+	record: Record<string, unknown> | undefined,
+	path = resolveGlobalConfigPath(),
+): Promise<GlobalConfig> {
+	return withConfigLock(path, async () => {
+		const source = await readConfigSourceForMutation(path);
+		const mcp = isRecord(source.mcp) ? { ...source.mcp } : {};
+		const servers = isRecord(mcp.servers) ? { ...mcp.servers } : {};
+		if (record === undefined) delete servers[serverId];
+		else servers[serverId] = record;
+		mcp.servers = servers;
+		const next = { ...source, version: GLOBAL_CONFIG_VERSION, mcp };
+		if (record === undefined && Object.keys(servers).length === 0) {
+			delete (next as ConfigRecord).mcp;
+		}
+		const parsed = parseConfigRecord(stringify(next), path);
+		if ("diagnostic" in parsed) throw new Error(parsed.diagnostic.message);
+		await atomicWriteConfig(path, stringify(next, { lineWidth: 0 }));
+		return parsed.config;
+	});
+}
+
 export async function resetGlobalConfig(path = resolveGlobalConfigPath()): Promise<GlobalConfig> {
 	return withConfigLock(path, async () => {
 		await assertResetTargetSafe(path);
