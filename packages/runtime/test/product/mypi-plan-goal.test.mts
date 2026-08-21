@@ -390,15 +390,15 @@ test("active Goal parks continuation while asynchronous subagents are the sole d
 	assert.equal(latestState(harness).continuationPending, false);
 	const parkedTurns = latestState(harness).turnsUsed;
 
-	// Queued user work retains precedence over the park.
+	// Queued user work retains precedence over the park: the Goal yields the
+	// boundary without pausing and without a competing continuation.
 	harness.setPendingMessages(true);
 	await harness.emit("agent_settled", { outcome: { kind: "success" } });
-	assert.equal(latestState(harness).status, "paused");
-	assert.equal(latestState(harness).pauseReason, "user-interrupt");
+	assert.equal(latestState(harness).status, "active", "queued guidance never pauses the Goal");
+	assert.equal(continuations(), baseline, "the queued message owns the boundary");
 	harness.setPendingMessages(false);
 
 	// After children settle, the next boundary continues exactly once.
-	await harness.commands.get("goal").handler("--continue", harness.ctx);
 	harness.emitBus("mypi:subagent-wait-state", { active: 0 });
 	await harness.emit("agent_settled", { outcome: { kind: "success" } });
 	assert.equal(continuations(), baseline + 1);
@@ -421,4 +421,36 @@ test("Goal planning parks the correction resend while planning subagents run (BU
 	await harness.emit("agent_settled", { outcome: { kind: "success" } });
 	assert.equal(corrections(), 1, "the released boundary sends exactly one correction");
 	assert.equal(latestState(harness).workflow, "goal-planning");
+});
+
+test("typed user guidance steers an active Goal without pausing it", async () => {
+	const harness = createHarness(await mkdtemp(join(tmpdir(), "mypi-goal-v3-steer-")));
+	await activate(harness);
+	const continuations = () =>
+		harness.customMessages.filter((entry) => entry.message.customType === "mypi-goal-continuation").length;
+	const baseline = continuations();
+
+	// A steer message arrives mid-run: no takeover, no pause.
+	await harness.emit("input", { source: "interactive", text: "prefer the smaller refactor" });
+	assert.equal(latestState(harness).status, "active");
+	assert.equal(latestState(harness).deferred, false, "guidance never marks the Goal deferred");
+
+	// The guided run settles: the Goal continues automatically.
+	await harness.emit("agent_settled", { outcome: { kind: "success" } });
+	assert.equal(latestState(harness).status, "active");
+	assert.equal(continuations(), baseline + 1, "execution resumes after guided settlement");
+
+	// A queued follow-up yields exactly one boundary, then execution resumes.
+	harness.setPendingMessages(true);
+	await harness.emit("agent_settled", { outcome: { kind: "success" } });
+	assert.equal(latestState(harness).status, "active");
+	assert.equal(continuations(), baseline + 1, "no competing continuation while the queue owns the turn");
+	harness.setPendingMessages(false);
+	await harness.emit("agent_settled", { outcome: { kind: "success" } });
+	assert.equal(continuations(), baseline + 2);
+
+	// Esc/abort remains the explicit interrupt that pauses the Goal.
+	await harness.emit("agent_settled", { outcome: { kind: "aborted" } });
+	assert.equal(latestState(harness).status, "paused");
+	assert.equal(latestState(harness).pauseReason, "user-interrupt");
 });

@@ -177,7 +177,6 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 	let runStartedAt: number | undefined;
 	let providerLimit: ProviderLimit | undefined;
 	let createGoalConsent = false;
-	let userTakeover = false;
 	let pendingToolGoal: PendingGoalRequest | undefined;
 	let mutationQueue: Promise<void> = Promise.resolve();
 	// BUG-097: while session-owned asynchronous subagents are the sole progress
@@ -390,7 +389,6 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 		}
 		state = resumeGoal(state, request.budget, request.supplemental, now());
 		providerLimit = undefined;
-		userTakeover = false;
 		persist();
 		updateStatus(ctx);
 		try { pi.sendUserMessage("Continue the active structured Goal from its first open item and current evidence."); } catch (error) { stopAfterDispatchFailure(ctx, error); }
@@ -687,7 +685,6 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 	pi.on("agent_start", () => {
 		providerLimit = undefined;
 		if (state.workflow === "goal" && state.status === "active") {
-			userTakeover = false;
 			if (runStartedAt === undefined) runStartedAt = Date.now();
 			if (state.continuationPending) { state = { ...state, revision: state.revision + 1, continuationPending: false, updatedAt: now() }; persist(); }
 		}
@@ -716,7 +713,10 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 				return { action: "handled" };
 			}
 		}
-		if (state.workflow === "goal" && state.status === "active" && event.source !== "extension") { userTakeover = true; state = { ...state, revision: state.revision + 1, deferred: true, updatedAt: now() }; persist(); }
+		// Typed user input during an active Goal is steering guidance for the
+		// Goal, not a takeover: the guided turn runs under the Goal prompt and
+		// execution resumes at its settlement. Esc/abort and /goal --pause remain
+		// the explicit interrupts.
 		return undefined;
 	});
 
@@ -765,7 +765,7 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		if (state.status !== "active") { updateStatus(ctx); return; }
-		if (userTakeover || state.deferred) { pauseActiveGoal(ctx, "user-interrupt", "Goal paused because real user input took over this settlement boundary."); return; }
+		if (state.deferred) { pauseActiveGoal(ctx, "user-interrupt", "Goal paused; continue explicitly after the interrupted grant."); return; }
 		if (providerLimit) { transitionGoal(ctx, (goal) => ({ ...goal, revision: goal.revision + 1, status: "usage-limited", pauseReason: `error:provider-${providerLimit!.status}`, retryAfter: providerLimit!.retryAfter, continuationPending: false, updatedAt: now() }), `Goal stopped at provider usage limit ${providerLimit.status}. Explicit continue is required.`, "error"); return; }
 		const outcome = (event as typeof event & { outcome?: SettledOutcome }).outcome;
 		if (outcome?.kind === "aborted") { pauseActiveGoal(ctx, "user-interrupt", "Goal paused after the run was aborted."); return; }
@@ -785,7 +785,12 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 		state = auditSettledBlockers(state, validation, now());
 		persist();
 		if (state.blockedRuns >= 3 && state.blockerFingerprint) { transitionGoal(ctx, (goal) => ({ ...goal, revision: goal.revision + 1, status: "blocked", pauseReason: "error:blocked-audit", continuationPending: false, updatedAt: now() }), "Goal blocked after the same blocker repeated across three settled runs.", "warning"); return; }
-		if (ctx.hasPendingMessages()) { pauseActiveGoal(ctx, "user-interrupt", "Goal paused because another queued message owns the next turn."); return; }
+		if (ctx.hasPendingMessages()) {
+			// A queued user message owns the next boundary. The Goal yields this
+			// continuation and resumes automatically after the guided turn settles.
+			updateStatus(ctx);
+			return;
+		}
 		state = { ...state, revision: state.revision + 1, continuationPending: true, updatedAt: now() };
 		persist();
 		updateStatus(ctx);
