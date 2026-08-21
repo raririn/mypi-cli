@@ -21,7 +21,7 @@
     "test": "pnpm test:product && pnpm test:host && pnpm test:daemon && pnpm test:hosted && pnpm test:rpc-dialogs && pnpm test:preattach && pnpm test:distribution",
     "test:distribution": "node --test tests/distribution.test.mjs",
     "test:preattach": "node --test tests/preattach.test.mjs",
-    "test:host": "node --test tests/host.test.mjs tests/subagent-rpc.test.mjs",
+    "test:host": "node --test tests/host.test.mjs tests/subagent-rpc.test.mjs tests/mcp-rpc.test.mjs",
     "test:daemon": "node --test tests/daemon.test.mjs",
     "test:hosted": "node --test tests/hosted.test.mjs tests/ownership-conflict-ui.test.mjs",
     "test:rpc-dialogs": "node --test tests/rpc-dialogs.test.mjs",
