@@ -291,3 +291,56 @@ test("settle guidance appears only after consecutive status polls with live chil
 	(manager as any).active.clear();
 	assert.equal(manager.pollGuidance(), undefined);
 });
+
+test("/advisor-model searches with bounded fuzzy results instead of one giant selector", async () => {
+	const commands = new Map<string, any>();
+	const pi = {
+		events: { on() { return () => {}; }, emit() {} },
+		registerTool() {},
+		registerCommand(name: string, command: any) { commands.set(name, command); },
+		on() {},
+		sendMessage() {},
+	} as unknown as ExtensionAPI;
+	subagentsExtension(pi);
+	const command = commands.get("advisor-model");
+	assert.ok(command);
+
+	const models = Array.from({ length: 300 }, (_, index) => ({
+		provider: index % 2 ? "openai" : "anthropic",
+		id: `catalog-model-${index}`,
+	}));
+	models.push({ provider: "openai", id: "gpt-5-nano" });
+	const selects: string[][] = [];
+	const notices: string[] = [];
+	const makeCtx = (inputValue: string | undefined) => ({
+		modelRegistry: { refresh: async () => {}, getAvailable: () => models },
+		ui: {
+			input: async () => inputValue,
+			select: async (_title: string, options: string[]) => { selects.push(options); return options[0]; },
+			notify: (message: string) => notices.push(message),
+		},
+	}) as any;
+
+	// Bare invocation: search prompt, then one bounded fuzzy-ranked selector.
+	await command.handler("", makeCtx("gpt-5"));
+	assert.equal(selects.length, 1);
+	assert.ok(selects[0]!.length <= 20, `bounded selector, got ${selects[0]!.length}`);
+	assert.equal(selects[0]![0], "openai/gpt-5-nano", "best fuzzy match ranks first");
+	assert.match(notices.at(-1) ?? "", /Advisor\/reviewer model: openai\/gpt-5-nano/u);
+
+	// A broad search term stays bounded, never the whole catalog.
+	await command.handler("catalog-model", makeCtx(undefined));
+	assert.equal(selects.length, 2);
+	assert.ok(selects[1]!.length <= 20, `bounded selector, got ${selects[1]!.length}`);
+
+	// Argument completions are fuzzy and bounded like /model.
+	const completions = await command.getArgumentCompletions("gpt");
+	assert.ok(completions.length <= 50);
+	assert.ok(completions.some((item: any) => item.value === "openai/gpt-5-nano"));
+	const bare = await command.getArgumentCompletions("");
+	assert.equal(bare[0].value, "inherit");
+
+	// Exact values and inherit still apply directly.
+	await command.handler("inherit", makeCtx(undefined));
+	assert.match(notices.at(-1) ?? "", /Advisor\/reviewer model: inherit/u);
+});

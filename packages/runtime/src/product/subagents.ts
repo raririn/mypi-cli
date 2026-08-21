@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { isAbsolute, relative, resolve } from "node:path";
+import { fuzzyFilter } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import type { AgentSessionEvent } from "../core/agent-session.ts";
 import type { ExtensionAPI, ExtensionContext } from "../core/extensions/types.ts";
@@ -36,6 +37,7 @@ import {
 	REVIEWER_ENVELOPE_PROMPT,
 	REVIEWER_REPLACEMENT_CONFIRMATION_PROMPT,
 } from "./subagent-prompts.ts";
+import { getModelSearchText } from "../modes/interactive/model-search.ts";
 import { reviewSnapshot, type WorkspaceSnapshot, workspaceSnapshot } from "./subagent-review.ts";
 
 export const SUBAGENT_START_TOOL = "subagent_start";
@@ -1266,24 +1268,38 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			const ctx = manager.getContext();
 			if (!ctx) return prefix ? null : [{ value: "inherit", label: "inherit" }];
 			await ctx.modelRegistry.refresh();
-			const values = ["inherit", ...ctx.modelRegistry.getAvailable().map((model) => `${model.provider}/${model.id}`)];
-			const matches = values.filter((value) => value.startsWith(prefix.trim())).slice(0, 200).map((value) => ({ value, label: value }));
-			return matches.length ? matches : null;
+			const matches = searchAdvisorModels(ctx.modelRegistry.getAvailable(), prefix).slice(0, 50);
+			return matches.length ? matches.map((value) => ({ value, label: value })) : null;
 		},
 		handler: async (args, ctx) => {
 			manager.setContext(ctx);
 			await ctx.modelRegistry.refresh();
 			const models = ctx.modelRegistry.getAvailable();
-			let selected = args.trim();
-			if (!selected) {
-				const options = ["inherit", ...models.map((model) => `${model.provider}/${model.id}`)];
-				selected = (await ctx.ui.select("Advisor/reviewer model", options)) ?? "";
+			const exact = new Set(["inherit", ...models.map((model) => `${model.provider}/${model.id}`)]);
+			let query = args.trim();
+			if (!query) {
+				const current = (await loadGlobalConfig()).config.subagents.advisorModel;
+				const typed = await ctx.ui.input(
+					`Advisor/reviewer model (currently ${current})`,
+					"type to search models; empty lists the top matches",
+				);
+				if (typed === undefined) return;
+				query = typed.trim();
 			}
-			if (!selected) return;
-			if (selected !== "inherit" && !models.some((model) => `${model.provider}/${model.id}` === selected)) {
-				ctx.ui.notify(`Advisor model is unavailable: ${selected}`, "warning");
-				return;
+			let selected: string | undefined;
+			if (exact.has(query)) {
+				selected = query;
+			} else {
+				// Search semantics matching /model: a term narrows to a bounded,
+				// fuzzy-ranked list instead of one giant selector.
+				const matches = searchAdvisorModels(models, query).slice(0, 20);
+				if (matches.length === 0) {
+					ctx.ui.notify(`No advisor model matches: ${query}`, "warning");
+					return;
+				}
+				selected = matches.length === 1 ? matches[0] : await ctx.ui.select("Advisor/reviewer model", matches);
 			}
+			if (!selected || !exact.has(selected)) return;
 			await updateAdvisorModel(selected);
 			ctx.ui.notify(`Advisor/reviewer model: ${selected}`, "info");
 		},
@@ -1291,6 +1307,21 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 
 	registerRequirementCommand(pi, manager, "advisor", "requireAdvisor");
 	registerRequirementCommand(pi, manager, "reviewer", "requireReviewer");
+}
+
+function searchAdvisorModels(
+	models: ReadonlyArray<{ provider: string; id: string; name?: string }>,
+	query: string,
+): string[] {
+	const trimmed = query.trim();
+	const values = models.map((model) => `${model.provider}/${model.id}`);
+	if (!trimmed) return ["inherit", ...values];
+	const matches = fuzzyFilter(
+		models as Array<{ provider: string; id: string; name?: string }>,
+		trimmed,
+		(model) => getModelSearchText(model),
+	).map((model) => `${model.provider}/${model.id}`);
+	return "inherit".startsWith(trimmed.toLowerCase()) ? ["inherit", ...matches] : matches;
 }
 
 function registerRequirementCommand(
