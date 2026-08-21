@@ -31,11 +31,15 @@ Mixed roles are rejected before admission. Results arrive automatically.
 assumptions, uncertainty, and decision requested. `ask_for_review` accepts one
 `request` describing the completed change, acceptance requirements,
 verification, and risks. Both return immediately and deliver their result
-automatically through the shared session-owned lifecycle.
+automatically through the shared session-owned lifecycle. One advisor and one
+reviewer may be active at a time.
 
-`subagent_followup` starts another asynchronous grant over one exact child owned
-by the current parent. Completed, failed, timed-out, owner-lost, and cancelled
-children can be revived while their parent history still exists.
+`subagent_followup` continues an exact explore/work child. `advisor_followup`
+continues the most recent advisor; `reviewer_followup` continues the most recent
+reviewer. Each starts another asynchronous grant over retained role and history.
+Starting a fresh advisor or reviewer after settlement makes that conversation
+the target of future role-specific follow-ups. Older histories stay available
+for manual inspection while model tools address the current conversation only.
 
 `subagent_cancel` cancels queued/running grants while retaining revivable
 history. `subagent_status` gives an explicit bounded snapshot; ordinary turns

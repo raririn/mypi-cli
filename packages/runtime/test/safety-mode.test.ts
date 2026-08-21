@@ -53,7 +53,7 @@ describe("safety modes", () => {
 
 	it("keeps subagent lifecycle tools only for sealed capability provenance", () => {
 		const source = { path: "<product:capability:subagents>", source: "product", scope: "temporary", origin: "top-level", productClass: "capability" } as const;
-		for (const name of ["subagent_start", "consult_advisor", "ask_for_review", "subagent_followup", "subagent_cancel", "subagent_status", "advisor_evidence"]) {
+		for (const name of ["subagent_start", "consult_advisor", "ask_for_review", "subagent_followup", "advisor_followup", "reviewer_followup", "subagent_cancel", "subagent_status", "advisor_evidence"]) {
 			expect(isTrustedSafetyTool(name, source), name).toBe(true);
 			expect(isTrustedSafetyTool(name, { ...source, path: "/tmp/spoof.ts", source: "extension" }), name).toBe(false);
 		}

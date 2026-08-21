@@ -13,8 +13,10 @@ import {
 	type SubagentChildRecord,
 } from "../../src/core/subagents/storage.ts";
 import subagentsExtension, {
+	ADVISOR_FOLLOWUP_TOOL,
 	ASK_FOR_REVIEW_TOOL,
 	CONSULT_ADVISOR_TOOL,
+	REVIEWER_FOLLOWUP_TOOL,
 	SUBAGENT_CANCEL_TOOL,
 	SUBAGENT_FOLLOWUP_TOOL,
 	SUBAGENT_ROLE_PROMPTS,
@@ -102,7 +104,7 @@ test("delegation, advisor, and reviewer expose distinct asynchronous tool calls"
 		on(name: string, handler: any) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
 	} as unknown as ExtensionAPI;
 	subagentsExtension(pi);
-	assert.deepEqual([...tools.keys()], [SUBAGENT_START_TOOL, CONSULT_ADVISOR_TOOL, ASK_FOR_REVIEW_TOOL, SUBAGENT_FOLLOWUP_TOOL, SUBAGENT_CANCEL_TOOL, SUBAGENT_STATUS_TOOL]);
+	assert.deepEqual([...tools.keys()], [SUBAGENT_START_TOOL, CONSULT_ADVISOR_TOOL, ASK_FOR_REVIEW_TOOL, SUBAGENT_FOLLOWUP_TOOL, ADVISOR_FOLLOWUP_TOOL, REVIEWER_FOLLOWUP_TOOL, SUBAGENT_CANCEL_TOOL, SUBAGENT_STATUS_TOOL]);
 	assert.deepEqual([...commands.keys()], ["advisor-model", "advisor", "reviewer"]);
 	assert.match(tools.get(SUBAGENT_START_TOOL).description, /explore or work/);
 	assert.match(tools.get(SUBAGENT_START_TOOL).description, /consult_advisor/);
@@ -119,6 +121,9 @@ test("delegation, advisor, and reviewer expose distinct asynchronous tool calls"
 	assert.deepEqual(schema.properties.jobs.items.properties.role.anyOf.map((entry: any) => entry.const), ["explore", "work"]);
 	assert.deepEqual(Object.keys(tools.get(CONSULT_ADVISOR_TOOL).parameters.properties), ["question"]);
 	assert.deepEqual(Object.keys(tools.get(ASK_FOR_REVIEW_TOOL).parameters.properties), ["request"]);
+	assert.deepEqual(Object.keys(tools.get(SUBAGENT_FOLLOWUP_TOOL).parameters.properties), ["childId", "prompt"]);
+	assert.deepEqual(Object.keys(tools.get(ADVISOR_FOLLOWUP_TOOL).parameters.properties), ["question"]);
+	assert.deepEqual(Object.keys(tools.get(REVIEWER_FOLLOWUP_TOOL).parameters.properties), ["request"]);
 
 	const ctx = {
 		cwd: process.cwd(),
@@ -136,6 +141,27 @@ test("delegation, advisor, and reviewer expose distinct asynchronous tool calls"
 		}, undefined, undefined, ctx),
 		/Route advice to consult_advisor and review to ask_for_review/,
 	);
+});
+
+test("follow-up calls enforce the stored child role", async () => {
+	const review = childRecord("parent-role-routing");
+	const manager = new SubagentManager({ sendMessage() {} } as unknown as ExtensionAPI);
+	(manager as any).initialize = async () => {};
+	(manager as any).store = {
+		get: (childId: string) => childId === review.childId ? review : undefined,
+		list: () => [review],
+	};
+	const ctx = {} as any;
+	await assert.rejects(manager.followup(review.childId, "Continue", ctx), /reviewer_followup/);
+	await assert.rejects(manager.advisorFollowup("Continue", ctx), /requires a previous consult_advisor/);
+	(manager as any).active.set(review.childId, { record: review });
+	await assert.rejects(manager.reviewerFollowup("Continue", ctx), /Reviewer conversation already active/);
+	await assert.rejects(manager.askForReview("Start fresh", ctx), /Reviewer consultation already active/);
+	review.role = "advisor";
+	await assert.rejects(manager.followup(review.childId, "Continue", ctx), /advisor_followup/);
+	await assert.rejects(manager.advisorFollowup("Continue", ctx), /Advisor conversation already active/);
+	await assert.rejects(manager.consultAdvisor("Start fresh", ctx), /Advisor consultation already active/);
+	await assert.rejects(manager.reviewerFollowup("Continue", ctx), /requires a previous ask_for_review/);
 });
 
 test("subagent prompt resources describe positive authority without negation directives", () => {

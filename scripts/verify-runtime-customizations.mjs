@@ -116,6 +116,8 @@ for (const fragment of [
   "consult_advisor",
   "ask_for_review",
   "subagent_followup",
+  "advisor_followup",
+  "reviewer_followup",
   "subagent_cancel",
   "subagent_status",
   "Route advice to consult_advisor and review to ask_for_review",

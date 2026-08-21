@@ -39,6 +39,8 @@ export const SUBAGENT_START_TOOL = "subagent_start";
 export const CONSULT_ADVISOR_TOOL = "consult_advisor";
 export const ASK_FOR_REVIEW_TOOL = "ask_for_review";
 export const SUBAGENT_FOLLOWUP_TOOL = "subagent_followup";
+export const ADVISOR_FOLLOWUP_TOOL = "advisor_followup";
+export const REVIEWER_FOLLOWUP_TOOL = "reviewer_followup";
 export const SUBAGENT_CANCEL_TOOL = "subagent_cancel";
 export const SUBAGENT_STATUS_TOOL = "subagent_status";
 export const SUBAGENT_PARENT_ABORT_EVENT = "mypi:subagent-parent-abort";
@@ -81,6 +83,14 @@ const ReviewSchema = Type.Object({
 const FollowupSchema = Type.Object({
 	childId: Type.String({ minLength: 35, maxLength: 35 }),
 	prompt: Type.String({ minLength: 1, maxLength: 16_384 }),
+});
+
+const AdvisorFollowupSchema = Type.Object({
+	question: Type.String({ minLength: 1, maxLength: 16_384 }),
+});
+
+const ReviewerFollowupSchema = Type.Object({
+	request: Type.String({ minLength: 1, maxLength: 16_384 }),
 });
 
 const ChildIdsSchema = Type.Object({
@@ -274,6 +284,10 @@ export class SubagentManager {
 		const roles = new Set(jobs.map((job) => job.role));
 		if (roles.size !== 1) throw new Error("Mixed subagent job roles are prohibited.");
 		const role = jobs[0]!.role;
+		if ((role === "advisor" || role === "review")
+			&& [...this.active.values()].some((running) => running.record.role === role)) {
+			throw new Error(`${role === "advisor" ? "Advisor" : "Reviewer"} consultation already active. Its result will be delivered automatically.`);
+		}
 		this.assertRoleAllowed(role, ctx);
 		const model = await this.resolveModel(role, ctx);
 		const batchId = createSubagentBatchId();
@@ -325,7 +339,37 @@ export class SubagentManager {
 	async followup(childId: string, prompt: string, ctx: ExtensionContext): Promise<unknown> {
 		await this.initialize(ctx);
 		const record = this.requireOwned(childId);
-		if (this.active.has(childId)) throw new Error("Subagent child already has an active grant.");
+		if (record.role !== "explore" && record.role !== "work") {
+			throw new Error("subagent_followup accepts explore or work children. Route advisor history to advisor_followup and reviewer history to reviewer_followup.");
+		}
+		return this.followupRecord(record, prompt, ctx);
+	}
+
+	async advisorFollowup(question: string, ctx: ExtensionContext): Promise<unknown> {
+		return this.followupLatestRole("advisor", question, ctx);
+	}
+
+	async reviewerFollowup(request: string, ctx: ExtensionContext): Promise<unknown> {
+		return this.followupLatestRole("review", request, ctx);
+	}
+
+	private async followupLatestRole(
+		role: "advisor" | "review",
+		prompt: string,
+		ctx: ExtensionContext,
+	): Promise<unknown> {
+		await this.initialize(ctx);
+		const record = this.store!.list()
+			.filter((candidate) => candidate.role === role)
+			.sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+			.at(-1);
+		if (!record) throw new Error(`${role === "advisor" ? "advisor_followup" : "reviewer_followup"} requires a previous ${role === "advisor" ? "consult_advisor" : "ask_for_review"} result.`);
+		return this.followupRecord(record, prompt, ctx);
+	}
+
+	private async followupRecord(record: SubagentChildRecord, prompt: string, ctx: ExtensionContext): Promise<unknown> {
+		const childId = record.childId;
+		if (this.active.has(childId)) throw new Error(`${record.role === "advisor" ? "Advisor" : record.role === "review" ? "Reviewer" : "Subagent"} conversation already active. Its result will be delivered automatically.`);
 		this.assertRoleAllowed(record.role, ctx);
 		await assertReusableSession(this.store!.childSessionPath(childId));
 		const batchId = createSubagentBatchId();
@@ -882,9 +926,10 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const result = await manager.consultAdvisor(params.question, ctx);
+			const details = consultationAdmission(result);
 			return {
-				content: [{ type: "text", text: `Advisor consultation ${result.batchId} accepted. The result will be delivered automatically.` }],
-				details: result,
+				content: [{ type: "text", text: "Advisor consultation accepted. The result will be delivered automatically; advisor_followup continues this advisor after completion." }],
+				details,
 			};
 		},
 	});
@@ -902,9 +947,10 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const result = await manager.askForReview(params.request, ctx);
+			const details = consultationAdmission(result);
 			return {
-				content: [{ type: "text", text: `Code review ${result.batchId} accepted. The result will be delivered automatically.` }],
-				details: result,
+				content: [{ type: "text", text: "Code review accepted. The result will be delivered automatically; reviewer_followup continues this reviewer after completion." }],
+				details,
 			};
 		},
 	});
@@ -912,19 +958,43 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: SUBAGENT_FOLLOWUP_TOOL,
 		label: "Follow Up Subagent",
-		description: "Start an asynchronous follow-up grant on an exact child owned by this session. Completed, failed, timed-out, owner-lost, and cancelled children can be revived. Results are delivered automatically.",
+		description: "Continue one exact explore or work child owned by this session. Completed, failed, timed-out, owner-lost, and cancelled children can be revived. Advisor history uses advisor_followup; reviewer history uses reviewer_followup. Results are delivered automatically.",
 		parameters: FollowupSchema,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const result = await manager.followup(params.childId, params.prompt, ctx);
-			return { content: [{ type: "text", text: "Follow-up accepted. Results will be delivered automatically; do not poll." }], details: result };
+			return { content: [{ type: "text", text: "Explore/work follow-up accepted. Results will be delivered automatically." }], details: result };
+		},
+	});
+
+	pi.registerTool({
+		name: ADVISOR_FOLLOWUP_TOOL,
+		label: "Advisor Follow-up",
+		description: "Continue the most recent advisor conversation for clarification, evidence reconciliation, or a revised decision question. A fresh caller-model brief and evidence ledger accompany the retained advisor history. The result is delivered automatically.",
+		parameters: AdvisorFollowupSchema,
+		executionMode: "sequential",
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const result = await manager.advisorFollowup(params.question, ctx);
+			return { content: [{ type: "text", text: "Advisor follow-up accepted. The result will be delivered automatically." }], details: consultationResult(result) };
+		},
+	});
+
+	pi.registerTool({
+		name: REVIEWER_FOLLOWUP_TOOL,
+		label: "Reviewer Follow-up",
+		description: "Continue the most recent reviewer conversation for finding clarification or focused review of a correction with retained review history. The reviewer receives a fresh working-tree snapshot and staleness fingerprint. The result is delivered automatically.",
+		parameters: ReviewerFollowupSchema,
+		executionMode: "sequential",
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const result = await manager.reviewerFollowup(params.request, ctx);
+			return { content: [{ type: "text", text: "Reviewer follow-up accepted. The result will be delivered automatically." }], details: consultationResult(result) };
 		},
 	});
 
 	pi.registerTool({
 		name: SUBAGENT_CANCEL_TOOL,
 		label: "Cancel Subagents",
-		description: "Cancel exact owned queued or running subagents. Their retained child histories remain revivable through subagent_followup.",
+		description: "Cancel exact owned queued or running background children. Retained explore/work history is revivable through subagent_followup, advisor history through advisor_followup, and reviewer history through reviewer_followup.",
 		parameters: ChildIdsSchema,
 		executionMode: "sequential",
 		async execute(_toolCallId, params) {
@@ -1014,6 +1084,25 @@ function registerRequirementCommand(
 			ctx.ui.notify(`${name}: ${enabled ? "on" : "off"}. The mandatory prompt changes at the next parent turn; the tool remains available.`, "info");
 		},
 	});
+}
+
+function consultationAdmission(result: { batchId: string; jobs: unknown[] }): Record<string, unknown> {
+	const job = result.jobs[0] as Record<string, unknown> | undefined;
+	if (!job || typeof job.childId !== "string") throw new Error("Consultation admission returned no managed identity.");
+	return {
+		batchId: result.batchId,
+		grantId: job.grantId,
+		role: job.role,
+		status: job.status,
+		delivery: "automatic",
+	};
+}
+
+function consultationResult(result: unknown): Record<string, unknown> {
+	const value = result as Record<string, unknown>;
+	if (typeof value.childId !== "string") throw new Error("Consultation follow-up returned no managed identity.");
+	const { childId, ...rest } = value;
+	return rest;
 }
 
 function installChildOwnerWatch(pi: ExtensionAPI): void {

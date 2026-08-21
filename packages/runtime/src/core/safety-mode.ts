@@ -125,6 +125,8 @@ const TRUSTED_PRODUCT_TOOLS = new Set([
 	"consult_advisor",
 	"ask_for_review",
 	"subagent_followup",
+	"advisor_followup",
+	"reviewer_followup",
 	"subagent_cancel",
 	"subagent_status",
 	"advisor_evidence",

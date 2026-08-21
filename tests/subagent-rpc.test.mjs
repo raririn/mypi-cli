@@ -290,9 +290,9 @@ test("advisor uses a caller-model neutral brief and evidence ledger without forw
     request.on("end", () => {
       requestBodies.push(body);
       requestCount += 1;
-      if (requestCount === 1) {
+      if (requestCount === 1 || requestCount === 4) {
         writeCompletion(response, JSON.stringify({
-          objective: "Choose a safe implementation",
+          objective: requestCount === 1 ? "Choose a safe implementation" : "Reconcile the advisor follow-up",
           userConstraints: [{ statement: "preserve sessions", evidenceIds: ["U1"] }],
           establishedObservations: [],
           callerProposal: { approach: "proposal", assumptions: [] },
@@ -303,8 +303,10 @@ test("advisor uses a caller-model neutral brief and evidence ledger without forw
         }));
       } else if (requestCount === 2) {
 		writeFunctionToolCall(response, "advisor_evidence", { ids: ["U1"], limit: 5 }, "call_evidence");
-	  } else {
+	  } else if (requestCount === 3) {
         writeCompletion(response, "advisor-ok");
+	  } else {
+		writeCompletion(response, "advisor-followup-ok");
       }
     });
   });
@@ -372,6 +374,12 @@ test("advisor uses a caller-model neutral brief and evidence ledger without forw
     assert.ok(evidenceFile, `missing advisor evidence in ${advisorFiles.join(", ")}`);
     assert.match(await readFile(join(childDir, briefFile), "utf8"), /Choose a safe implementation/);
     assert.match(await readFile(join(childDir, evidenceFile), "utf8"), /Preserve sessions/);
+    await assert.rejects(manager.followup(childId, "Reconcile the advice.", ctx), /advisor_followup/);
+    await assert.rejects(manager.reviewerFollowup("Review it.", ctx), /requires a previous ask_for_review/);
+    await manager.advisorFollowup("Reconcile the advice against the preserved-session evidence.", ctx);
+    await waitFor(() => deliveries.some((entry) => String(entry.message.content).includes("advisor-followup-ok")), 20_000);
+    assert.equal(requestBodies.length, 5);
+    assert.match(requestBodies[4], /advisor-ok/, "advisor_followup retains the exact advisor conversation");
   } finally {
     await manager.shutdown("test_complete");
     await new Promise((resolvePromise) => server.close(resolvePromise));
@@ -436,13 +444,16 @@ test("reviewer uses project policy, complete working-tree evidence, and marks a 
   };
   const manager = new SubagentManager(pi);
   try {
-    await manager.askForReview("Review the implementation for lifecycle defects.", ctx);
+    const accepted = await manager.askForReview("Review the implementation for lifecycle defects.", ctx);
+    const reviewerId = accepted.jobs[0].childId;
     await waitFor(() => deliveries.some((entry) => String(entry.message.content).includes("review-ok")), 20_000);
     assert.match(requestBody, /Review persistence and cancellation invariants first/);
     assert.match(requestBody, /unstaged-change/);
     assert.match(requestBody, /staged-change/);
     assert.match(requestBody, /untracked\.txt/);
     assert.match(String(deliveries.at(-1).message.content), /Staleness: stale/);
+    await assert.rejects(manager.followup(reviewerId, "Clarify the finding.", ctx), /reviewer_followup/);
+    await assert.rejects(manager.advisorFollowup("Advise on it.", ctx), /requires a previous consult_advisor/);
   } finally {
     await manager.shutdown("test_complete");
     await new Promise((resolvePromise) => server.close(resolvePromise));

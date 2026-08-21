@@ -82,7 +82,7 @@ test("trusts sealed compaction recall only as a required product session read", 
 
 test("trusts sealed subagent admission in readonly and only lifecycle controls in no-read", () => {
 	const sourceInfo = productSource("capability", "subagents");
-	for (const name of ["subagent_start", "consult_advisor", "ask_for_review", "subagent_followup", "subagent_cancel", "subagent_status", "advisor_evidence"]) {
+	for (const name of ["subagent_start", "consult_advisor", "ask_for_review", "subagent_followup", "advisor_followup", "reviewer_followup", "subagent_cancel", "subagent_status", "advisor_evidence"]) {
 		const pi = toolHarness(name, sourceInfo);
 		assert.equal(isTrustedReadOnlyTool(pi, name), true);
 		assert.equal(isTrustedUserInteractionTool(pi, name), name === "subagent_cancel" || name === "subagent_status");
