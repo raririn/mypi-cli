@@ -1369,6 +1369,13 @@ export interface ExtensionAPI {
 	/** Set the host-global safety default for subsequently created sessions only. */
 	setGlobalSafetyMode(mode: SafetyMode): void;
 
+	/**
+	 * Report whether this session currently owns still-running background children.
+	 * While true, code-owned automatic continuation (for example proactive
+	 * post-compaction continuation) parks instead of waking the provider.
+	 */
+	setBackgroundWait?(active: boolean): void;
+
 	// =========================================================================
 	// Provider Registration
 	// =========================================================================
@@ -1605,6 +1612,9 @@ export type RequestSafetyModeHandler = (mode: SafetyMode) => void;
 
 export type SetGlobalSafetyModeHandler = (mode: SafetyMode) => void;
 
+/** Reports whether this session owns still-running background children (for example subagents). */
+export type SetBackgroundWaitHandler = (active: boolean) => void;
+
 export type SetLabelHandler = (entryId: string, label: string | undefined) => void;
 
 /**
@@ -1655,6 +1665,8 @@ export interface ExtensionActions {
 	getSafetyState: GetSafetyStateHandler;
 	requestSafetyMode: RequestSafetyModeHandler;
 	setGlobalSafetyMode: SetGlobalSafetyModeHandler;
+	/** Optional: report session-owned background child activity so code-owned continuation can park. */
+	setBackgroundWait?: SetBackgroundWaitHandler;
 }
 
 /**

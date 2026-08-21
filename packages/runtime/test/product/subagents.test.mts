@@ -175,6 +175,8 @@ test("fresh consultation replacement requires an exact repeated objective", asyn
 		admitted.push(jobs);
 		return { batchId: "sb_replacement", jobs: [{ childId: "sa_replacement", grantId: "sg_replacement", role: "advisor", status: "queued" }] };
 	};
+	// Confirmed replacement preflights availability before touching the predecessor.
+	(manager as any).resolveModel = async () => ({ provider: "test", id: "model" });
 	const ctx = {} as any;
 	const first = await manager.consultAdvisor("New objective A", ctx);
 	assert.equal(first.confirmationRequired, true);
@@ -218,6 +220,7 @@ test("confirmed replacement settles the running consultation before admission", 
 		(manager as any).active.delete(advisor.childId);
 	};
 	(manager as any).startJobs = async () => ({ batchId: "sb_new", jobs: [{ childId: "sa_new", grantId: "sg_new", role: "advisor", status: "queued" }] });
+	(manager as any).resolveModel = async () => ({ provider: "test", id: "model" });
 	const ctx = {} as any;
 	assert.equal((await manager.consultAdvisor("Replace active advisor", ctx)).confirmationRequired, true);
 	assert.equal((await manager.consultAdvisor("Replace active advisor", ctx)).confirmationRequired, false);

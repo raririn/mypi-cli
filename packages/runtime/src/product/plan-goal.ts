@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext, RegisteredCommand } from "../core/extensions/types.ts";
 import { goalPlanningPrompt, renderGoalContinuationPrompt } from "./goal-prompts.ts";
+import { SUBAGENT_WAIT_STATE_EVENT } from "./subagents.ts";
 import {
 	type ActiveGoalState,
 	auditSettledBlockers,
@@ -179,6 +180,15 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 	let userTakeover = false;
 	let pendingToolGoal: PendingGoalRequest | undefined;
 	let mutationQueue: Promise<void> = Promise.resolve();
+	// BUG-097: while session-owned asynchronous subagents are the sole progress
+	// dependency, code parks Goal/Plan continuation instead of waking the
+	// provider; the authoritative completion delivery releases the park.
+	let activeSubagents = 0;
+	pi.events?.on?.(SUBAGENT_WAIT_STATE_EVENT, (data) => {
+		const value = (data as { active?: unknown } | undefined)?.active;
+		activeSubagents = typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+	});
+	const parkedOnSubagents = (hasPendingMessages: () => boolean): boolean => activeSubagents > 0 && !hasPendingMessages();
 
 	const now = () => new Date().toISOString();
 	const enqueueMutation = <T>(operation: () => T | Promise<T>): Promise<T> => {
@@ -734,6 +744,11 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 			return;
 		}
 		if (state.workflow === "goal-planning") {
+			if (parkedOnSubagents(() => ctx.hasPendingMessages())) {
+				// Waiting on admitted planning subagents: their result delivery wakes
+				// exactly one planning turn; this settle consumes no plan attempt.
+				return;
+			}
 			const attempts = state.planAgentEnds + 1;
 			if (attempts >= MAX_PLAN_AGENT_ENDS) { restoreTools(state.toolsBeforePlan); setState(createIdleGoalState(now())); updateStatus(ctx); ctx.ui.notify("Goal planning aborted because set_goal_plan was not called after two settled attempts.", "error"); return; }
 			state = { ...state, planAgentEnds: attempts, updatedAt: now() };
@@ -757,6 +772,14 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 		if (outcome?.kind === "error" || outcome?.kind === "compaction-error") {
 			const kind = outcome.kind === "compaction-error" ? "compaction" : "runtime";
 			transitionGoal(ctx, (goal) => ({ ...goal, revision: goal.revision + 1, status: "blocked", pauseReason: `error:${kind}`, continuationPending: false, updatedAt: now() }), `Goal blocked after a non-retryable ${kind} failure${outcome.errorMessage ? `: ${outcome.errorMessage}` : "."}`, "error");
+			return;
+		}
+		if (parkedOnSubagents(() => ctx.hasPendingMessages())) {
+			// Lifecycle yield: leave the Goal active without another provider request.
+			// Subagent completion, cancellation, failure, or new user input releases
+			// the park through one coalesced safe-boundary continuation, and this
+			// settle inflates no turn, blocker, or continuation counter.
+			updateStatus(ctx);
 			return;
 		}
 		state = auditSettledBlockers(state, validation, now());

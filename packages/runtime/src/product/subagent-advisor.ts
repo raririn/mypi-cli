@@ -209,17 +209,22 @@ function normalizeBrief(value: string): string {
 }
 
 function emptyUsage(): SubagentUsage {
-	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 };
 }
 
 function addUsage(total: SubagentUsage, usage: unknown): SubagentUsage {
 	const value = (usage ?? {}) as Record<string, unknown>;
 	const number = (key: string): number => typeof value[key] === "number" && Number.isFinite(value[key]) ? value[key] as number : 0;
+	const cost = value.cost && typeof value.cost === "object" && typeof (value.cost as Record<string, unknown>).total === "number"
+		&& Number.isFinite((value.cost as Record<string, unknown>).total)
+		? (value.cost as { total: number }).total
+		: 0;
 	return {
 		input: total.input + number("input"),
 		output: total.output + number("output"),
 		cacheRead: total.cacheRead + number("cacheRead"),
 		cacheWrite: total.cacheWrite + number("cacheWrite"),
 		total: total.total + number("totalTokens"),
+		cost: (total.cost ?? 0) + cost,
 	};
 }

@@ -337,6 +337,7 @@ export class ExtensionRunner {
 		this.runtime.getSafetyState = actions.getSafetyState;
 		this.runtime.requestSafetyMode = actions.requestSafetyMode;
 		this.runtime.setGlobalSafetyMode = actions.setGlobalSafetyMode;
+		if (actions.setBackgroundWait) this.runtime.setBackgroundWait = actions.setBackgroundWait;
 
 		// Context actions (required)
 		this.getModel = contextActions.getModel;

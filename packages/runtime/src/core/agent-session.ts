@@ -142,7 +142,7 @@ import {
 	normalizeLegacyToolNames,
 } from "./tools/index.ts";
 import { createToolDefinitionFromAgentTool } from "./tools/tool-definition-wrapper.ts";
-import { addUsageToTotals, createUsageTotals, getStructuredOutputUsage } from "./usage-totals.ts";
+import { addUsageToTotals, createUsageTotals, getStructuredOutputUsage, getSubagentGrantUsage } from "./usage-totals.ts";
 
 const MYPI_PROACTIVE_CONTINUATION_TEXT =
 	"Continue the unfinished work described by the active compaction summary. Do not repeat completed work. Preserve the current request and all active MyPi policies.";
@@ -160,6 +160,8 @@ interface MyPiCompactionContinuationInput {
 	aborted: boolean;
 	errorMessage?: string;
 	hasQueuedMessages: boolean;
+	/** True while session-owned background children are still running; continuation must park. */
+	backgroundWait?: boolean;
 	budgetRemaining: number;
 	compactionId?: string;
 	summary: string;
@@ -215,6 +217,9 @@ function summaryHasStructuredUnfinishedWork(summary: string): boolean {
 export function mypiShouldContinueAfterThresholdCompaction(input: MyPiCompactionContinuationInput): boolean {
 	if (input.reason !== "threshold" || input.willRetry || input.aborted || input.errorMessage) return false;
 	if (!input.compactionId || input.hasQueuedMessages || input.budgetRemaining < 1) return false;
+	// Waiting on background children is a lifecycle yield: their completion
+	// delivery owns the wake, so proactive continuation must not poll.
+	if (input.backgroundWait) return false;
 	const goalState = latestMyPiGoalState(input.branchEntries);
 	if (goalState?.schemaVersion === 3) {
 		if (goalState.workflow === "planning" || goalState.workflow === "goal-planning") return false;
@@ -490,6 +495,8 @@ export class AgentSession {
 	private _overflowRecoveryAttempted = false;
 	private _mypiProactiveContinuationBudget = 0;
 	private _mypiProactiveContinuationTokens = new Set<string>();
+	/** True while an extension reports still-running session-owned background children. */
+	private _mypiBackgroundWait = false;
 	private _mypiSettledOutcome: AgentSettledOutcome = { kind: "success" };
 	private _mypiSettlementEpoch = 0;
 	private _structuredOutputAbortController: AbortController | undefined;
@@ -2931,6 +2938,7 @@ export class AgentSession {
 				aborted: false,
 				errorMessage: undefined,
 				hasQueuedMessages: this.agent.hasQueuedMessages(),
+				backgroundWait: this._mypiBackgroundWait,
 				budgetRemaining: this._mypiProactiveContinuationBudget,
 				compactionId,
 				summary,
@@ -3181,6 +3189,9 @@ export class AgentSession {
 				}),
 				requestSafetyMode: (mode) => this.requestSafetyMode(mode),
 				setGlobalSafetyMode: (mode) => this.setGlobalSafetyMode(mode),
+				setBackgroundWait: (active) => {
+					this._mypiBackgroundWait = active;
+				},
 			},
 			{
 				getModel: () => this.model,
@@ -3936,6 +3947,8 @@ export class AgentSession {
 			}
 			const structuredUsage = getStructuredOutputUsage(entry);
 			if (structuredUsage) addUsageToTotals(usageTotals, structuredUsage);
+			const subagentUsage = getSubagentGrantUsage(entry);
+			if (subagentUsage) addUsageToTotals(usageTotals, subagentUsage);
 			if (entry.type !== "message") continue;
 			totalMessages++;
 			const message = entry.message;

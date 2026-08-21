@@ -26,6 +26,8 @@ export interface SubagentUsage {
 	cacheRead: number;
 	cacheWrite: number;
 	total: number;
+	/** Provider-reported cost total in USD. Absent on records written before usage attribution. */
+	cost?: number;
 }
 
 export interface SubagentGrantRecord {

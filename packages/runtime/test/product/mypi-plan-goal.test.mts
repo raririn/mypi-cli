@@ -41,9 +41,16 @@ function createHarness(cwd: string, initialEntries: any[] = []) {
       editor: async (title: string, content: string) => { editors.push({ title, content }); },
     },
   };
+  const busHandlers = new Map<string, Array<(data: any) => void>>();
   const pi = {
     appendEntry: (customType: string, data: unknown) => persisted.push({ customType, data }),
-    events: { emit: () => undefined },
+    events: {
+      emit: (channel: string, data: any) => { for (const handler of busHandlers.get(channel) ?? []) handler(data); },
+      on: (channel: string, handler: (data: any) => void) => {
+        busHandlers.set(channel, [...(busHandlers.get(channel) ?? []), handler]);
+        return () => {};
+      },
+    },
     getActiveTools: () => [...activeTools],
     getAllTools: () => ["read", "write", "edit", "bash", "web_search", "web_fetch", "subagent_start", "subagent_followup", "subagent_cancel", "subagent_status", ...tools.keys()].map((name) => ({ name })),
     setActiveTools: (next: string[]) => { activeTools = [...next]; },
@@ -75,9 +82,13 @@ function createHarness(cwd: string, initialEntries: any[] = []) {
     return value ? JSON.parse(value) : undefined;
   }
 
+  function emitBus(channel: string, data: any): void {
+    for (const handler of busHandlers.get(channel) ?? []) handler(data);
+  }
+
   return {
     commands, tools, ctx, emit, executeTool, snapshot, persisted, sent, customMessages,
-    notices, editors, statuses,
+    notices, editors, statuses, emitBus,
     setPendingMessages(value: boolean) { pendingMessages = value; },
     setIdle(value: boolean) { idle = value; },
     setInputValue(value: string | undefined) { inputValue = value; },
@@ -360,4 +371,54 @@ test("project planning files are ordinary workspace content while provider failu
   await harness.emit("agent_settled", { outcome: { kind: "success" } });
   assert.equal(harness.snapshot().status, "usage-limited");
   assert.equal(harness.snapshot().retryAfter, "30");
+});
+
+test("active Goal parks continuation while asynchronous subagents are the sole dependency (BUG-097)", async () => {
+	const harness = createHarness(await mkdtemp(join(tmpdir(), "mypi-goal-v3-subagent-park-")));
+	await activate(harness);
+	const continuations = () =>
+		harness.customMessages.filter((entry) => entry.message.customType === "mypi-goal-continuation").length;
+	const baseline = continuations();
+
+	// Waiting on a live child: repeated settles issue zero provider-waking continuations.
+	harness.emitBus("mypi:subagent-wait-state", { active: 1 });
+	await harness.emit("agent_settled", { outcome: { kind: "success" } });
+	await harness.emit("agent_settled", { outcome: { kind: "success" } });
+	await harness.emit("agent_settled", { outcome: { kind: "success" } });
+	assert.equal(continuations(), baseline, "parked settles issue no continuation");
+	assert.equal(latestState(harness).status, "active", "waiting is a lifecycle yield, not completion or blockage");
+	assert.equal(latestState(harness).continuationPending, false);
+	const parkedTurns = latestState(harness).turnsUsed;
+
+	// Queued user work retains precedence over the park.
+	harness.setPendingMessages(true);
+	await harness.emit("agent_settled", { outcome: { kind: "success" } });
+	assert.equal(latestState(harness).status, "paused");
+	assert.equal(latestState(harness).pauseReason, "user-interrupt");
+	harness.setPendingMessages(false);
+
+	// After children settle, the next boundary continues exactly once.
+	await harness.commands.get("goal").handler("--continue", harness.ctx);
+	harness.emitBus("mypi:subagent-wait-state", { active: 0 });
+	await harness.emit("agent_settled", { outcome: { kind: "success" } });
+	assert.equal(continuations(), baseline + 1);
+	assert.equal(latestState(harness).turnsUsed, parkedTurns, "parked settles inflate no turn counters");
+});
+
+test("Goal planning parks the correction resend while planning subagents run (BUG-097)", async () => {
+	const harness = createHarness(await mkdtemp(join(tmpdir(), "mypi-goal-v3-planning-park-")));
+	await harness.commands.get("goal").handler("ship it", harness.ctx);
+	const corrections = () =>
+		harness.customMessages.filter((entry) => entry.message.customType === "mypi-goal-plan-correction").length;
+
+	harness.emitBus("mypi:subagent-wait-state", { active: 2 });
+	await harness.emit("agent_settled", { outcome: { kind: "success" } });
+	await harness.emit("agent_settled", { outcome: { kind: "success" } });
+	assert.equal(corrections(), 0, "parked planning settles send no correction");
+	assert.equal(latestState(harness).workflow, "goal-planning", "parked settles consume no planning attempt");
+
+	harness.emitBus("mypi:subagent-wait-state", { active: 0 });
+	await harness.emit("agent_settled", { outcome: { kind: "success" } });
+	assert.equal(corrections(), 1, "the released boundary sends exactly one correction");
+	assert.equal(latestState(harness).workflow, "goal-planning");
 });

@@ -50,6 +50,30 @@ export function getStructuredOutputUsage(entry: SessionEntry): Usage | undefined
 	return candidate as Usage;
 }
 
+/** Read program-owned subagent grant usage without trusting arbitrary custom entry data. */
+export function getSubagentGrantUsage(entry: SessionEntry): Usage | undefined {
+	if (entry.type !== "custom" || entry.customType !== "mypi-subagent-usage") return undefined;
+	const data = entry.data;
+	if (!data || typeof data !== "object" || Array.isArray(data)) return undefined;
+	const record = data as Record<string, unknown>;
+	if (record.version !== 1) return undefined;
+	const usage = record.usage;
+	if (!usage || typeof usage !== "object" || Array.isArray(usage)) return undefined;
+	const candidate = usage as Record<string, unknown>;
+	const numbers = [candidate.input, candidate.output, candidate.cacheRead, candidate.cacheWrite, candidate.cost];
+	if (!numbers.every((value) => typeof value === "number" && Number.isFinite(value) && value >= 0)) return undefined;
+	return {
+		input: candidate.input as number,
+		output: candidate.output as number,
+		cacheRead: candidate.cacheRead as number,
+		cacheWrite: candidate.cacheWrite as number,
+		totalTokens: typeof candidate.total === "number" && Number.isFinite(candidate.total)
+			? candidate.total as number
+			: (candidate.input as number) + (candidate.output as number) + (candidate.cacheRead as number) + (candidate.cacheWrite as number),
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: candidate.cost as number },
+	};
+}
+
 export interface UsageCostBreakdownEntry {
 	key: string;
 	cost: number;
@@ -76,6 +100,12 @@ export function getUsageCostBreakdown(entries: SessionEntry[]): UsageCostBreakdo
 		} else if (structuredUsage) {
 			key = "Structured finalization";
 			usage = structuredUsage;
+		} else {
+			const subagentUsage = getSubagentGrantUsage(entry);
+			if (subagentUsage) {
+				key = "Subagents";
+				usage = subagentUsage;
+			}
 		}
 		if (!key || !usage) continue;
 

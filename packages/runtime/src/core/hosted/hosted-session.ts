@@ -62,7 +62,7 @@ import {
 	SessionManager,
 	type SessionHeader,
 } from "../session-manager.ts";
-import { addUsageToTotals, createUsageTotals } from "../usage-totals.ts";
+import { addUsageToTotals, createUsageTotals, getSubagentGrantUsage } from "../usage-totals.ts";
 import { createAllToolDefinitions } from "../tools/index.ts";
 import { bindHostedTuiChrome, runHostedResourceCommand } from "../../product/tui-hero/index.ts";
 import type { HostedDaemonClient } from "./daemon-client.ts";
@@ -1164,6 +1164,8 @@ export class HostedAgentSession implements InteractiveSessionSurface {
 			if ((entry.type === "branch_summary" || entry.type === "compaction") && entry.usage) {
 				addUsageToTotals(usageTotals, entry.usage);
 			}
+			const subagentUsage = getSubagentGrantUsage(entry);
+			if (subagentUsage) addUsageToTotals(usageTotals, subagentUsage);
 			if (entry.type !== "message") continue;
 			totalMessages++;
 			const message = entry.message;

@@ -8,7 +8,7 @@ import {
 	safetyModeFooterText,
 	type SafetyMode,
 } from "../../../core/safety-mode.ts";
-import { addUsageToTotals, createUsageTotals } from "../../../core/usage-totals.ts";
+import { addUsageToTotals, createUsageTotals, getSubagentGrantUsage } from "../../../core/usage-totals.ts";
 import { theme, type ThemeColor } from "../theme/theme.ts";
 
 const SAFETY_MODE_FOOTER_COLORS: Record<SafetyMode, ThemeColor> = {
@@ -118,6 +118,9 @@ export class FooterComponent implements Component {
 				addUsageToTotals(usageTotals, entry.message.usage);
 			} else if ((entry.type === "branch_summary" || entry.type === "compaction") && entry.usage) {
 				addUsageToTotals(usageTotals, entry.usage);
+			} else {
+				const subagentUsage = getSubagentGrantUsage(entry);
+				if (subagentUsage) addUsageToTotals(usageTotals, subagentUsage);
 			}
 		}
 

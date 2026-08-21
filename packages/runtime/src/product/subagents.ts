@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { lstat } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -48,6 +49,8 @@ export const SUBAGENT_STATUS_TOOL = "subagent_status";
 export const SUBAGENT_PARENT_ABORT_EVENT = "mypi:subagent-parent-abort";
 export const SUBAGENT_PARENT_DETACHED_EVENT = "mypi:subagent-parent-detached";
 export const SUBAGENT_ACCESS_MODE_EVENT = "mypi:subagent-access-mode";
+export const SUBAGENT_WAIT_STATE_EVENT = "mypi:subagent-wait-state";
+export const SUBAGENT_USAGE_ENTRY = "mypi-subagent-usage";
 
 const MAX_BATCH_JOBS = 8;
 const READ_CONCURRENCY = 4;
@@ -59,6 +62,44 @@ const MAX_CHILD_SESSION_BYTES = 16 * 1024 * 1024;
 const CONSULTATION_REPLACEMENT_CONFIRM_MS = 2 * 60_000;
 const SUBAGENT_REQUIREMENTS_ENTRY = "mypi-subagent-requirements";
 const CHILD_RUNTIME_MARKER = "MYPI_SUBAGENT_CHILD";
+const MAX_UNAVAILABLE_REASON_CHARS = 300;
+
+export type ConsultationFailurePhase = "model" | "auth" | "briefing" | "startup" | "provider" | "timeout";
+
+/** Typed preflight/terminal availability failure for advisor and reviewer consultations. */
+export class SubagentUnavailableError extends Error {
+	readonly role: "advisor" | "review";
+	readonly phase: ConsultationFailurePhase;
+	constructor(role: "advisor" | "review", phase: ConsultationFailurePhase, message: string) {
+		super(message);
+		this.name = "SubagentUnavailableError";
+		this.role = role;
+		this.phase = phase;
+	}
+}
+
+/** Exact bounded model-facing outcome for an unavailable advisor or reviewer. */
+export function consultationUnavailableOutcome(role: "advisor" | "review", phase: ConsultationFailurePhase, reason: string): {
+	content: [{ type: "text"; text: string }];
+	details: { unavailable: true; role: "advisor" | "review"; phase: ConsultationFailurePhase; reason: string };
+} {
+	const label = role === "advisor" ? "Advisor" : "Reviewer";
+	const text = `${label} is unavailable.\n\nThis outcome satisfies any mandatory ${label.toLowerCase()} requirement for this turn. Do not retry the consultation automatically; continue honestly and report this limitation to the user.`;
+	return {
+		content: [{ type: "text", text }],
+		details: { unavailable: true, role, phase, reason: sanitizeUnavailableReason(reason) },
+	};
+}
+
+/** Bounded, credential-free failure detail for structured clients. */
+export function sanitizeUnavailableReason(reason: string): string {
+	return reason
+		.replace(/(authorization\s*[:=]\s*)\S+/giu, "$1[REDACTED]")
+		.replace(/\b(?:sk|rk|pk)-[A-Za-z0-9_-]{16,}\b/gu, "[REDACTED]")
+		.replace(/\s+/gu, " ")
+		.trim()
+		.slice(0, MAX_UNAVAILABLE_REASON_CHARS);
+}
 
 const RoleSchema = Type.Union([
 	Type.Literal("explore"),
@@ -142,6 +183,7 @@ interface DeliveredResult {
 	changes?: { before: WorkspaceSnapshot; after: WorkspaceSnapshot };
 	stale?: boolean;
 	arrivedAfterMutation?: boolean;
+	unavailablePhase?: ConsultationFailurePhase;
 }
 
 type ConsultationStartResult =
@@ -166,6 +208,8 @@ export class SubagentManager {
 	private runningReads = 0;
 	private runningWork?: string;
 	private deliveryQueue: DeliveredResult[] = [];
+	private readonly inFlightDeliveries = new Map<string, DeliveredResult[]>();
+	private deliveryRetryStrikes = 0;
 	private deliveryTimer?: ReturnType<typeof setTimeout>;
 	private recent: DeliveredResult[] = [];
 	private shuttingDown = false;
@@ -195,7 +239,69 @@ export class SubagentManager {
 	markAttached(): void {
 		this.ownerAttached = true;
 		this.wakeAllowed = true;
+		this.deliveryRetryStrikes = 0;
 		if (this.deliveryQueue.length) this.scheduleDelivery();
+	}
+
+	/** Code-owned wait signal: active children mean parent continuation should park, not poll. */
+	hasActiveChildren(): boolean {
+		return this.active.size > 0;
+	}
+
+	private publishWaitState(): void {
+		const active = this.active.size;
+		this.pi.events?.emit?.(SUBAGENT_WAIT_STATE_EVENT, { active });
+		this.pi.setBackgroundWait?.(active > 0);
+	}
+
+	/** Parent settlement is a code-owned safe boundary: requeue unconfirmed deliveries and retry. */
+	notifyParentSettled(): void {
+		if (this.inFlightDeliveries.size) {
+			// A normal delivery is confirmed before its run settles, so an unconfirmed
+			// in-flight record here means the send failed. Requeue it durably.
+			this.deliveryRetryStrikes += 1;
+			for (const results of this.inFlightDeliveries.values()) this.deliveryQueue.unshift(...results);
+			this.inFlightDeliveries.clear();
+		}
+		// Bound automatic retries so a persistently failing boundary cannot loop;
+		// the queue stays durably pending and the next attach/user turn retries.
+		if (this.deliveryQueue.length && this.deliveryRetryStrikes < 3) this.scheduleDelivery();
+	}
+
+	/** Confirm one delivered results message by its code-owned nonce. */
+	confirmDelivery(details: unknown): void {
+		const nonce = (details as { nonce?: unknown } | undefined)?.nonce;
+		if (typeof nonce !== "string") return;
+		const results = this.inFlightDeliveries.get(nonce);
+		if (!results) return;
+		this.inFlightDeliveries.delete(nonce);
+		this.deliveryRetryStrikes = 0;
+		this.recent = this.recent.filter((recent) => !results.some((result) => result.grantId === recent.grantId));
+	}
+
+	/** Persist one typed, parent-accountable usage contribution per settled grant. */
+	private recordGrantUsage(record: SubagentChildRecord, grant: SubagentGrantRecord): void {
+		const usage = grant.usage ?? emptyUsage();
+		try {
+			this.pi.appendEntry(SUBAGENT_USAGE_ENTRY, {
+				version: 1,
+				childId: record.childId,
+				grantId: grant.grantId,
+				batchId: grant.batchId,
+				role: record.role,
+				status: grant.status,
+				usage: {
+					input: usage.input,
+					output: usage.output,
+					cacheRead: usage.cacheRead,
+					cacheWrite: usage.cacheWrite,
+					total: usage.total,
+					cost: usage.cost ?? 0,
+				},
+			});
+		} catch {
+			// Usage attribution must never break grant settlement or delivery.
+		}
 	}
 
 	async interrupt(): Promise<void> {
@@ -259,6 +365,7 @@ export class SubagentManager {
 			this.recent.push(result);
 			this.deliveryQueue.push(result);
 		}
+		this.publishWaitState();
 	}
 
 	async restoreRequirements(ctx: ExtensionContext): Promise<boolean> {
@@ -314,6 +421,9 @@ export class SubagentManager {
 			};
 		}
 		this.replacementConfirmations.delete(role);
+		// A confirmed replacement must preflight availability before the current
+		// conversation is cancelled; preflight failure preserves it untouched.
+		await this.resolveModel(role, ctx);
 		const running = this.active.get(current.childId);
 		if (running) {
 			await this.cancelRunning(running, role === "advisor" ? "replaced_by_new_advisor" : "replaced_by_new_reviewer");
@@ -382,6 +492,7 @@ export class SubagentManager {
 			admitted.push({ childId, grantId, label: record.label, role, status: "queued" });
 		}
 		this.schedule();
+		this.publishWaitState();
 		return { batchId, jobs: admitted };
 	}
 
@@ -455,6 +566,7 @@ export class SubagentManager {
 		this.active.set(childId, running);
 		(record.role === "work" ? this.workQueue : this.readQueue).push(running);
 		this.schedule();
+		this.publishWaitState();
 		return { batchId, childId, grantId: grant.grantId, role: record.role, status: "queued", delivery: "automatic" };
 	}
 
@@ -547,8 +659,11 @@ export class SubagentManager {
 		const id = configured.slice(slash + 1);
 		await ctx.modelRegistry.refresh();
 		const model = ctx.modelRegistry.find(provider, id);
-		if (!model || !ctx.modelRegistry.hasConfiguredAuth(model)) {
-			throw new Error(`ADVISOR_MODEL_UNAVAILABLE: ${configured}. Use /advisor-model inherit or select an available model.`);
+		if (!model) {
+			throw new SubagentUnavailableError(role as "advisor" | "review", "model", `Configured advisor model is unavailable: ${configured}. Use /advisor-model inherit or select an available model.`);
+		}
+		if (!ctx.modelRegistry.hasConfiguredAuth(model)) {
+			throw new SubagentUnavailableError(role as "advisor" | "review", "auth", `Configured advisor model has no usable authentication: ${configured}. Use /advisor-model inherit or select an available model.`);
 		}
 		return { provider, id };
 	}
@@ -733,9 +848,12 @@ export class SubagentManager {
 			grant.settledAt = new Date().toISOString();
 			grant.lastEventAt = new Date(running.lastEventAt).toISOString();
 			grant.stderrTail = running.stderrTail || undefined;
+			grant.usage = usage;
 			record.updatedAt = grant.settledAt;
 			await this.store!.update(record);
 			this.active.delete(record.childId);
+			this.publishWaitState();
+			this.recordGrantUsage(record, grant);
 			const result = this.resultFrom(record, grant);
 			if (record.role === "work" && running.baseline) {
 				result.changes = { before: running.baseline, after: await workspaceSnapshot(record.cwd) };
@@ -760,6 +878,8 @@ export class SubagentManager {
 		running.record.updatedAt = running.grant.settledAt;
 		await this.store!.update(running.record);
 		this.active.delete(running.record.childId);
+		this.publishWaitState();
+		this.recordGrantUsage(running.record, running.grant);
 		const result = this.resultFrom(running.record, running.grant);
 		this.recent.push(result);
 		this.deliveryQueue.push(result);
@@ -783,6 +903,8 @@ export class SubagentManager {
 			running.record.updatedAt = running.grant.settledAt;
 			await this.store!.update(running.record);
 			this.active.delete(running.record.childId);
+			this.publishWaitState();
+			this.recordGrantUsage(running.record, running.grant);
 			const result = this.resultFrom(running.record, running.grant);
 			this.recent.push(result);
 			this.deliveryQueue.push(result);
@@ -802,6 +924,8 @@ export class SubagentManager {
 	}
 
 	private resultFrom(record: SubagentChildRecord, grant: SubagentGrantRecord): DeliveredResult {
+		const consultation = record.role === "advisor" || record.role === "review";
+		const unavailable = consultation && (grant.status === "failed" || grant.status === "timed_out");
 		return {
 			childId: record.childId,
 			grantId: grant.grantId,
@@ -809,9 +933,10 @@ export class SubagentManager {
 			role: record.role,
 			label: record.label,
 			status: grant.status,
-			reason: grant.reason,
+			reason: grant.reason === undefined ? undefined : consultation ? sanitizeUnavailableReason(grant.reason) : grant.reason,
 			answer: grant.answer,
 			usage: grant.usage,
+			...(unavailable ? { unavailablePhase: classifyConsultationFailure(grant.status, grant.reason) } : {}),
 		};
 	}
 
@@ -839,18 +964,24 @@ export class SubagentManager {
 			this.advisorBriefControllers.delete(batchId);
 		}
 		const text = formatDelivery(results).slice(0, MAX_BATCH_DELIVERY_CHARS);
+		// One code-owned safe-boundary delivery: an idle parent gets exactly one
+		// result-bearing turn; an active parent receives the results as a follow-up
+		// right after its current run settles, never spliced into a provider request
+		// and never parked until the next user message.
+		const nonce = randomUUID();
+		this.inFlightDeliveries.set(nonce, results);
 		try {
 			this.pi.sendMessage(
 				{
 					customType: "mypi-subagent-results",
 					content: text,
 					display: true,
-					details: { version: 1, results },
+					details: { version: 1, nonce, results },
 				},
-				this.ctx.isIdle() ? { triggerTurn: true } : { triggerTurn: true, deliverAs: "nextTurn" },
+				{ triggerTurn: true, deliverAs: "followUp" },
 			);
-			this.recent = this.recent.filter((recent) => !results.some((result) => result.grantId === recent.grantId));
 		} catch {
+			this.inFlightDeliveries.delete(nonce);
 			this.deliveryQueue.unshift(...results);
 		}
 	}
@@ -924,7 +1055,18 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			: undefined;
 	});
 	pi.on("agent_settled", (event) => {
-		if (event.outcome.kind === "aborted") void manager.interrupt();
+		if (event.outcome.kind === "aborted") {
+			void manager.interrupt();
+			return;
+		}
+		manager.notifyParentSettled();
+	});
+	pi.on("message_end", (event) => {
+		const message = event.message as { role?: string; customType?: string; details?: unknown };
+		if (message.role === "custom" && message.customType === "mypi-subagent-results") {
+			manager.confirmDelivery(message.details);
+		}
+		return undefined;
 	});
 	pi.on("session_before_tree", async () => {
 		await manager.cancelAll("parent_branch_changed");
@@ -961,7 +1103,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const result = await manager.start(params.jobs as SubmittedJob[], ctx);
 			return {
-				content: [{ type: "text", text: `Accepted async subagent batch ${result.batchId}. Results will be delivered automatically.` }],
+				content: [{ type: "text", text: `Accepted async subagent batch ${result.batchId}. Results will be delivered automatically and will wake you at a safe boundary. If your remaining progress depends on these results, settle now instead of polling.` }],
 				details: result,
 			};
 		},
@@ -979,13 +1121,19 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		parameters: AdvisorSchema,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const result = await manager.consultAdvisor(params.question, ctx);
+			let result: Awaited<ReturnType<typeof manager.consultAdvisor>>;
+			try {
+				result = await manager.consultAdvisor(params.question, ctx);
+			} catch (error) {
+				if (error instanceof SubagentUnavailableError) return consultationUnavailableOutcome("advisor", error.phase, error.message);
+				throw error;
+			}
 			if (result.confirmationRequired) {
 				return { content: [{ type: "text", text: result.message }], details: { confirmationRequired: true } };
 			}
 			const details = consultationAdmission(result);
 			return {
-				content: [{ type: "text", text: "Advisor consultation accepted. The result will be delivered automatically; advisor_followup continues this advisor after completion." }],
+				content: [{ type: "text", text: "Advisor consultation accepted. The result will be delivered automatically and will wake you at a safe boundary; settle now if your remaining progress depends on it. advisor_followup continues this advisor after completion." }],
 				details,
 			};
 		},
@@ -1003,13 +1151,19 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		parameters: ReviewSchema,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const result = await manager.askForReview(params.request, ctx);
+			let result: Awaited<ReturnType<typeof manager.askForReview>>;
+			try {
+				result = await manager.askForReview(params.request, ctx);
+			} catch (error) {
+				if (error instanceof SubagentUnavailableError) return consultationUnavailableOutcome("review", error.phase, error.message);
+				throw error;
+			}
 			if (result.confirmationRequired) {
 				return { content: [{ type: "text", text: result.message }], details: { confirmationRequired: true } };
 			}
 			const details = consultationAdmission(result);
 			return {
-				content: [{ type: "text", text: "Code review accepted. The result will be delivered automatically; reviewer_followup continues this reviewer after completion." }],
+				content: [{ type: "text", text: "Code review accepted. The result will be delivered automatically and will wake you at a safe boundary; settle now if your remaining progress depends on it. reviewer_followup continues this reviewer after completion." }],
 				details,
 			};
 		},
@@ -1023,7 +1177,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const result = await manager.followup(params.childId, params.prompt, ctx);
-			return { content: [{ type: "text", text: "Explore/work follow-up accepted. Results will be delivered automatically." }], details: result };
+			return { content: [{ type: "text", text: "Explore/work follow-up accepted. Results will be delivered automatically and will wake you at a safe boundary; settle now if your remaining progress depends on them." }], details: result };
 		},
 	});
 
@@ -1034,8 +1188,14 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		parameters: AdvisorFollowupSchema,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const result = await manager.advisorFollowup(params.question, ctx);
-			return { content: [{ type: "text", text: "Advisor follow-up accepted. The result will be delivered automatically." }], details: consultationResult(result) };
+			let result: unknown;
+			try {
+				result = await manager.advisorFollowup(params.question, ctx);
+			} catch (error) {
+				if (error instanceof SubagentUnavailableError) return consultationUnavailableOutcome("advisor", error.phase, error.message);
+				throw error;
+			}
+			return { content: [{ type: "text", text: "Advisor follow-up accepted. The result will be delivered automatically and will wake you at a safe boundary; settle now if your remaining progress depends on it." }], details: consultationResult(result) };
 		},
 	});
 
@@ -1046,8 +1206,14 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		parameters: ReviewerFollowupSchema,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const result = await manager.reviewerFollowup(params.request, ctx);
-			return { content: [{ type: "text", text: "Reviewer follow-up accepted. The result will be delivered automatically." }], details: consultationResult(result) };
+			let result: unknown;
+			try {
+				result = await manager.reviewerFollowup(params.request, ctx);
+			} catch (error) {
+				if (error instanceof SubagentUnavailableError) return consultationUnavailableOutcome("review", error.phase, error.message);
+				throw error;
+			}
+			return { content: [{ type: "text", text: "Reviewer follow-up accepted. The result will be delivered automatically and will wake you at a safe boundary; settle now if your remaining progress depends on it." }], details: consultationResult(result) };
 		},
 	});
 
@@ -1115,7 +1281,9 @@ function registerRequirementCommand(
 	key: "requireAdvisor" | "requireReviewer",
 ): void {
 	pi.registerCommand(name, {
-		description: `Turn mandatory ${name} usage guidance on or off for this and future sessions`,
+		description: name === "advisor"
+			? "Start an advisor consultation (/advisor <question>) or toggle mandatory guidance (on|off)"
+			: "Start a code review (/reviewer <request>) or toggle mandatory guidance (on|off)",
 		getArgumentCompletions: (prefix) => {
 			const values = ["on", "off"].filter((value) => value.startsWith(prefix.trim().toLowerCase()));
 			return values.length ? values.map((value) => ({ value, label: value })) : null;
@@ -1126,11 +1294,35 @@ function registerRequirementCommand(
 			if (!value) {
 				const effective = manager.getRequirements()[key];
 				const global = (await loadGlobalConfig()).config.subagents[key];
-				ctx.ui.notify(`${name}: ${effective ? "on" : "off"} for this session; global default ${global ? "on" : "off"}.`, "info");
+				ctx.ui.notify(`${name}: ${effective ? "on" : "off"} for this session; global default ${global ? "on" : "off"}. Use /${name} <${name === "advisor" ? "question" : "request"}> to start a consultation.`, "info");
 				return;
 			}
 			if (value !== "on" && value !== "off") {
-				ctx.ui.notify(`Usage: /${name} [on|off]`, "warning");
+				// Free text dispatches the matching consultation tool flow.
+				const prompt = args.trim();
+				const start = () => name === "advisor" ? manager.consultAdvisor(prompt, ctx) : manager.askForReview(prompt, ctx);
+				try {
+					let result = await start();
+					if (result.confirmationRequired) {
+						const replace = await ctx.ui.confirm(
+							`Replace the current ${name} conversation?`,
+							`A ${name} conversation already exists. Starting a new one replaces it; retained history stays inspectable.`,
+						);
+						if (!replace) return;
+						result = await start();
+						if (result.confirmationRequired) {
+							ctx.ui.notify(`${name} replacement still requires confirmation; retry the same /${name} text.`, "warning");
+							return;
+						}
+					}
+					ctx.ui.notify(`${name === "advisor" ? "Advisor consultation" : "Code review"} started. The result will be delivered automatically.`, "info");
+				} catch (error) {
+					if (error instanceof SubagentUnavailableError) {
+						ctx.ui.notify(error.role === "advisor" ? "Advisor is unavailable." : "Reviewer is unavailable.", "warning");
+						return;
+					}
+					ctx.ui.notify(`/${name} failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+				}
 				return;
 			}
 			const enabled = value === "on";
@@ -1238,19 +1430,34 @@ async function assertReusableSession(path: string): Promise<void> {
 }
 
 function emptyUsage(): SubagentUsage {
-	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0, cost: 0 };
 }
 
 function addUsage(total: SubagentUsage, usage: unknown): SubagentUsage {
 	const value = (usage ?? {}) as Record<string, unknown>;
 	const number = (key: string): number => typeof value[key] === "number" && Number.isFinite(value[key]) ? value[key] as number : 0;
+	const cost = value.cost && typeof value.cost === "object" && typeof (value.cost as Record<string, unknown>).total === "number"
+		&& Number.isFinite((value.cost as Record<string, unknown>).total)
+		? (value.cost as { total: number }).total
+		: 0;
 	return {
 		input: total.input + number("input"),
 		output: total.output + number("output"),
 		cacheRead: total.cacheRead + number("cacheRead"),
 		cacheWrite: total.cacheWrite + number("cacheWrite"),
 		total: total.total + number("totalTokens"),
+		cost: (total.cost ?? 0) + cost,
 	};
+}
+
+function classifyConsultationFailure(status: string, reason: string | undefined): ConsultationFailurePhase {
+	if (status === "timed_out") return "timeout";
+	const text = (reason ?? "").toLowerCase();
+	if (text.includes("briefing")) return "briefing";
+	if (text.includes("auth")) return "auth";
+	if (text.includes("model")) return "model";
+	if (text.includes("spawn") || text.includes("start") || text.includes("exit") || text.includes("eof") || text.includes("process")) return "startup";
+	return "provider";
 }
 
 function formatDelivery(results: readonly DeliveredResult[]): string {
@@ -1259,6 +1466,9 @@ function formatDelivery(results: readonly DeliveredResult[]): string {
 		`Role: ${result.role}`,
 		`Status: ${result.status}${result.reason ? ` (${result.reason})` : ""}`,
 		`Task: ${result.label}`,
+		result.unavailablePhase
+			? consultationUnavailableOutcome(result.role as "advisor" | "review", result.unavailablePhase, result.reason ?? "").content[0].text
+			: undefined,
 		result.answer ? `Answer:\n${result.answer}` : "Answer: unavailable",
 		result.changes ? `Workspace evidence:\n${JSON.stringify(result.changes)}` : undefined,
 		result.stale ? "Staleness: stale; parent context or reviewed workspace changed before completion." : undefined,

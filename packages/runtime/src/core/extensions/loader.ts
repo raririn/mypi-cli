@@ -198,6 +198,8 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		getSafetyState: notInitialized,
 		requestSafetyMode: notInitialized,
 		setGlobalSafetyMode: notInitialized,
+		// Background-wait reporting is a no-op until bindCore() supplies the session hook.
+		setBackgroundWait: () => {},
 		flagValues: new Map(),
 		pendingProviderRegistrations: [],
 		pendingNativeProviderRegistrations: [],
@@ -393,6 +395,11 @@ function createExtensionAPI(
 		setGlobalSafetyMode(mode) {
 			runtime.assertActive();
 			runtime.setGlobalSafetyMode(mode);
+		},
+
+		setBackgroundWait(active: boolean) {
+			runtime.assertActive();
+			runtime.setBackgroundWait?.(active);
 		},
 
 		registerProvider(providerOrName: Provider | string, config?: ProviderConfig) {
