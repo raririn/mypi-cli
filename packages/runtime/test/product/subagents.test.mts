@@ -13,6 +13,8 @@ import {
 	type SubagentChildRecord,
 } from "../../src/core/subagents/storage.ts";
 import subagentsExtension, {
+	ASK_FOR_REVIEW_TOOL,
+	CONSULT_ADVISOR_TOOL,
 	SUBAGENT_CANCEL_TOOL,
 	SUBAGENT_FOLLOWUP_TOOL,
 	SUBAGENT_ROLE_PROMPTS,
@@ -20,6 +22,14 @@ import subagentsExtension, {
 	SUBAGENT_STATUS_TOOL,
 	SubagentManager,
 } from "../../src/product/subagents.ts";
+import {
+	ADVISOR_BRIEF_PROMPT,
+	ADVISOR_PROMPT,
+	PARENT_ADVISOR_REQUIRED_PROMPT,
+	PARENT_REVIEWER_REQUIRED_PROMPT,
+	REVIEWER_DEFAULT_PROMPT,
+	REVIEWER_ENVELOPE_PROMPT,
+} from "../../src/product/subagent-prompts.ts";
 
 function childRecord(parentSessionId: string): SubagentChildRecord {
 	const now = new Date().toISOString();
@@ -81,7 +91,7 @@ test("subagent storage is structured, inspectable, contained, and symlink-safe",
 	}
 });
 
-test("sealed subagent tools expose homogeneous async jobs and distinct barebones advisor/reviewer roles", async () => {
+test("delegation, advisor, and reviewer expose distinct asynchronous tool calls", async () => {
 	const tools = new Map<string, any>();
 	const commands = new Map<string, any>();
 	const handlers = new Map<string, any[]>();
@@ -92,16 +102,23 @@ test("sealed subagent tools expose homogeneous async jobs and distinct barebones
 		on(name: string, handler: any) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
 	} as unknown as ExtensionAPI;
 	subagentsExtension(pi);
-	assert.deepEqual([...tools.keys()], [SUBAGENT_START_TOOL, SUBAGENT_FOLLOWUP_TOOL, SUBAGENT_CANCEL_TOOL, SUBAGENT_STATUS_TOOL]);
+	assert.deepEqual([...tools.keys()], [SUBAGENT_START_TOOL, CONSULT_ADVISOR_TOOL, ASK_FOR_REVIEW_TOOL, SUBAGENT_FOLLOWUP_TOOL, SUBAGENT_CANCEL_TOOL, SUBAGENT_STATUS_TOOL]);
 	assert.deepEqual([...commands.keys()], ["advisor-model", "advisor", "reviewer"]);
-	assert.match(tools.get(SUBAGENT_START_TOOL).description, /Mixed job roles are prohibited/);
+	assert.match(tools.get(SUBAGENT_START_TOOL).description, /explore or work/);
+	assert.match(tools.get(SUBAGENT_START_TOOL).description, /consult_advisor/);
+	assert.match(tools.get(SUBAGENT_START_TOOL).description, /ask_for_review/);
 	assert.match(tools.get(SUBAGENT_START_TOOL).description, /blocks your edit, write, and Bash/);
+	assert.match(tools.get(CONSULT_ADVISOR_TOOL).description, /advisor consultation/i);
+	assert.match(tools.get(ASK_FOR_REVIEW_TOOL).description, /code review/i);
 	assert.notEqual(SUBAGENT_ROLE_PROMPTS.advisor, SUBAGENT_ROLE_PROMPTS.review);
 	assert.match(SUBAGENT_ROLE_PROMPTS.advisor, /read-only MyPi advisor/i);
 	assert.match(SUBAGENT_ROLE_PROMPTS.review, /read-only MyPi code reviewer/i);
 
 	const schema = tools.get(SUBAGENT_START_TOOL).parameters;
 	assert.equal(schema.properties.jobs.items.properties.childId, undefined, "the model cannot supply child identity");
+	assert.deepEqual(schema.properties.jobs.items.properties.role.anyOf.map((entry: any) => entry.const), ["explore", "work"]);
+	assert.deepEqual(Object.keys(tools.get(CONSULT_ADVISOR_TOOL).parameters.properties), ["question"]);
+	assert.deepEqual(Object.keys(tools.get(ASK_FOR_REVIEW_TOOL).parameters.properties), ["request"]);
 
 	const ctx = {
 		cwd: process.cwd(),
@@ -115,30 +132,44 @@ test("sealed subagent tools expose homogeneous async jobs and distinct barebones
 	} as any;
 	await assert.rejects(
 		tools.get(SUBAGENT_START_TOOL).execute("call", {
-			jobs: [
-				{ role: "explore", label: "Explore", task: "Inspect A" },
-				{ role: "review", label: "Review", task: "Review B" },
-			],
+			jobs: [{ role: "review", label: "Review", task: "Review B" }],
 		}, undefined, undefined, ctx),
-		/Mixed subagent job roles are prohibited/,
+		/Route advice to consult_advisor and review to ask_for_review/,
 	);
 });
 
+test("subagent prompt resources describe positive authority without negation directives", () => {
+	const prompts = [
+		...Object.values(SUBAGENT_ROLE_PROMPTS),
+		ADVISOR_BRIEF_PROMPT,
+		ADVISOR_PROMPT,
+		PARENT_ADVISOR_REQUIRED_PROMPT,
+		PARENT_REVIEWER_REQUIRED_PROMPT,
+		REVIEWER_DEFAULT_PROMPT,
+		REVIEWER_ENVELOPE_PROMPT,
+	];
+	const negativeDirective = /\b(?:do not|don't|never|must not|cannot|can't|without|exclude|prohibit|forbid)\b/iu;
+	for (const prompt of prompts) assert.doesNotMatch(prompt, negativeDirective);
+});
+
 test("advisor and reviewer mandatory prompts are independent and absent by default", () => {
+	let activeTools = [SUBAGENT_START_TOOL, CONSULT_ADVISOR_TOOL, ASK_FOR_REVIEW_TOOL];
 	const manager = new SubagentManager({
-		getActiveTools: () => [SUBAGENT_START_TOOL],
+		getActiveTools: () => activeTools,
 		sendMessage() {},
 	} as unknown as ExtensionAPI);
 	assert.deepEqual(manager.parentPromptSections(), []);
 	manager.setRequirements(true, false);
 	assert.equal(manager.parentPromptSections().length, 1);
-	assert.match(manager.parentPromptSections()[0]!, /Mandatory advisor consultation/);
+	assert.match(manager.parentPromptSections()[0]!, /advisor consultation/i);
 	assert.doesNotMatch(manager.parentPromptSections()[0]!, /Mandatory final review/);
 	manager.setRequirements(false, true);
 	assert.equal(manager.parentPromptSections().length, 1);
 	assert.match(manager.parentPromptSections()[0]!, /Mandatory final review/);
 	manager.setRequirements(true, true);
 	assert.equal(manager.parentPromptSections().length, 2);
+	activeTools = [SUBAGENT_START_TOOL];
+	assert.deepEqual(manager.parentPromptSections(), [], "usage guidance follows the dedicated consultation tools");
 });
 
 test("user commands persist and dynamically switch separate mandatory prompts", async () => {
@@ -151,7 +182,7 @@ test("user commands persist and dynamically switch separate mandatory prompts", 
 		registerTool() {},
 		registerCommand(name: string, command: any) { commands.set(name, command); },
 		on(name: string, handler: any) { handlers.set(name, [...(handlers.get(name) ?? []), handler]); },
-		getActiveTools: () => [SUBAGENT_START_TOOL],
+		getActiveTools: () => [SUBAGENT_START_TOOL, CONSULT_ADVISOR_TOOL, ASK_FOR_REVIEW_TOOL],
 		appendEntry(customType: string, data: unknown) { entries.push({ customType, data }); },
 		sendMessage() {},
 	} as unknown as ExtensionAPI;
@@ -162,15 +193,15 @@ test("user commands persist and dynamically switch separate mandatory prompts", 
 	} as any;
 	await commands.get("advisor").handler("on", ctx);
 	const advisorPrompt = await handlers.get("before_agent_start")?.[0]({ systemPrompt: "base" }, ctx);
-	assert.match(advisorPrompt.systemPrompt, /Mandatory advisor consultation/);
+	assert.match(advisorPrompt.systemPrompt, /advisor consultation/i);
 	assert.doesNotMatch(advisorPrompt.systemPrompt, /Mandatory final review/);
 	await commands.get("reviewer").handler("on", ctx);
 	const both = await handlers.get("before_agent_start")?.[0]({ systemPrompt: "base" }, ctx);
-	assert.match(both.systemPrompt, /Mandatory advisor consultation/);
+	assert.match(both.systemPrompt, /advisor consultation/i);
 	assert.match(both.systemPrompt, /Mandatory final review/);
 	await commands.get("advisor").handler("off", ctx);
 	const reviewerOnly = await handlers.get("before_agent_start")?.[0]({ systemPrompt: "base" }, ctx);
-	assert.doesNotMatch(reviewerOnly.systemPrompt, /Mandatory advisor consultation/);
+	assert.doesNotMatch(reviewerOnly.systemPrompt, /advisor consultation/i);
 	assert.match(reviewerOnly.systemPrompt, /Mandatory final review/);
 	assert.equal(entries.length, 3);
 	assert.equal(notices.length, 3);
@@ -203,7 +234,7 @@ test("subagent admission inherits trust, no-read, readonly, and planning restric
 			getBranch: () => [{ type: "custom", customType: "mypi-goal", data: { workflow: "planning" } }],
 		},
 	}), /Planning mode/);
-	await assert.rejects(manager.start([{ role: "review", label: "Review", task: "Review" }], {
+	await assert.rejects(manager.askForReview("Review", {
 		...base,
 		isProjectTrusted: () => false,
 	}), /trusted project/);

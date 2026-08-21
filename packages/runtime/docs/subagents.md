@@ -15,15 +15,23 @@ completion delivery.
 - `review`: read-only review of supplied final code or changes, with a bounded
   current Git snapshot when available.
 
-Advisor and reviewer use separate packaged prompts. Their Markdown resources
-are intentionally modular so policy wording can be tuned without changing
-lifecycle or enforcement.
+Advisor and reviewer use separate first-class tool calls and packaged prompts.
+Their Markdown resources are intentionally modular so policy wording can be
+tuned without changing lifecycle or enforcement. Child prompts describe
+positive role, authority, evidence, and output; hard restrictions remain
+code-owned.
 
 ## Tools
 
-`subagent_start` accepts one homogeneous batch of one to eight jobs and returns
-opaque program-generated child/grant IDs immediately. Mixed roles are rejected
-before admission. Results arrive automatically; do not poll.
+`subagent_start` accepts one homogeneous batch of one to eight `explore` or
+`work` jobs and returns opaque program-generated child/grant IDs immediately.
+Mixed roles are rejected before admission. Results arrive automatically.
+
+`consult_advisor` accepts one `question` describing the tentative approach,
+assumptions, uncertainty, and decision requested. `ask_for_review` accepts one
+`request` describing the completed change, acceptance requirements,
+verification, and risks. Both return immediately and deliver their result
+automatically through the shared session-owned lifecycle.
 
 `subagent_followup` starts another asynchronous grant over one exact child owned
 by the current parent. Completed, failed, timed-out, owner-lost, and cancelled
@@ -87,7 +95,8 @@ subagents:
 
 Use `/advisor [on|off]` and `/reviewer [on|off]`. A change updates this session
 and the global default for new sessions; other live sessions retain their own
-state. Off removes mandatory usage guidance but leaves the role callable.
+state. Off removes mandatory usage guidance while `consult_advisor` and
+`ask_for_review` remain callable.
 
 ## Project review policy
 

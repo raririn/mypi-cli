@@ -356,7 +356,7 @@ test("advisor uses a caller-model neutral brief and evidence ledger without forw
   };
   const manager = new SubagentManager(pi);
   try {
-    const accepted = await manager.start([{ role: "advisor", label: "Boundary advice", task: "Challenge the proposal and recommend a safer boundary." }], ctx);
+    const accepted = await manager.consultAdvisor("Challenge the proposal and recommend a safer boundary.", ctx);
     const childId = accepted.jobs[0].childId;
     await waitFor(() => deliveries.some((entry) => String(entry.message.content).includes("advisor-ok")), 20_000);
 	assert.equal(requestBodies.length, 3);
@@ -436,7 +436,7 @@ test("reviewer uses project policy, complete working-tree evidence, and marks a 
   };
   const manager = new SubagentManager(pi);
   try {
-    await manager.start([{ role: "review", label: "Final review", task: "Review the implementation for lifecycle defects." }], ctx);
+    await manager.askForReview("Review the implementation for lifecycle defects.", ctx);
     await waitFor(() => deliveries.some((entry) => String(entry.message.content).includes("review-ok")), 20_000);
     assert.match(requestBody, /Review persistence and cancellation invariants first/);
     assert.match(requestBody, /unstaged-change/);

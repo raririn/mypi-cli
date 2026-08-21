@@ -113,10 +113,12 @@ for (const fragment of ['registerCommand("archive-cleanup"', "previewArchiveClea
 const subagents = await readFile(join(packageRoot, "dist", "product", "subagents.js"), "utf8");
 for (const fragment of [
   "subagent_start",
+  "consult_advisor",
+  "ask_for_review",
   "subagent_followup",
   "subagent_cancel",
   "subagent_status",
-  "Mixed job roles are prohibited",
+  "Route advice to consult_advisor and review to ask_for_review",
   "blocks your edit, write, and Bash",
   "MYPI_SUBAGENT_CHILD",
   "mypi-subagent-results",
@@ -145,6 +147,9 @@ for (const name of [
 ]) {
   const content = await readFile(join(packageRoot, "dist", "product", "subagent-prompts", name), "utf8");
   if (!content.trim()) throw new Error(`Installed Pi ${expectedVersion} has an empty subagent prompt: ${name}.`);
+	if (/\b(?:do not|don't|never|must not|cannot|can't|without|exclude|prohibit|forbid)\b/iu.test(content)) {
+		throw new Error(`Installed Pi ${expectedVersion} has a negation directive in subagent prompt: ${name}.`);
+	}
 }
 if (sessionMaintenance.includes('pi.on("input"')) {
   throw new Error(`Installed Pi ${expectedVersion} allows extension-origin messages to invoke archive cleanup.`);

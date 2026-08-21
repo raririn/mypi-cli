@@ -36,6 +36,8 @@ import {
 import { reviewSnapshot, type WorkspaceSnapshot, workspaceSnapshot } from "./subagent-review.ts";
 
 export const SUBAGENT_START_TOOL = "subagent_start";
+export const CONSULT_ADVISOR_TOOL = "consult_advisor";
+export const ASK_FOR_REVIEW_TOOL = "ask_for_review";
 export const SUBAGENT_FOLLOWUP_TOOL = "subagent_followup";
 export const SUBAGENT_CANCEL_TOOL = "subagent_cancel";
 export const SUBAGENT_STATUS_TOOL = "subagent_status";
@@ -56,8 +58,6 @@ const CHILD_RUNTIME_MARKER = "MYPI_SUBAGENT_CHILD";
 const RoleSchema = Type.Union([
 	Type.Literal("explore"),
 	Type.Literal("work"),
-	Type.Literal("advisor"),
-	Type.Literal("review"),
 ]);
 
 const JobSchema = Type.Object({
@@ -68,6 +68,14 @@ const JobSchema = Type.Object({
 
 const StartSchema = Type.Object({
 	jobs: Type.Array(JobSchema, { minItems: 1, maxItems: MAX_BATCH_JOBS }),
+});
+
+const AdvisorSchema = Type.Object({
+	question: Type.String({ minLength: 1, maxLength: 16_384 }),
+});
+
+const ReviewSchema = Type.Object({
+	request: Type.String({ minLength: 1, maxLength: 16_384 }),
 });
 
 const FollowupSchema = Type.Object({
@@ -124,8 +132,8 @@ interface DeliveredResult {
 }
 
 export const SUBAGENT_ROLE_PROMPTS: Record<SubagentRole, string> = {
-	explore: `You are a bounded MyPi exploration subagent. Investigate only the assigned task. Use read-only evidence, keep intermediate context in this child session, and return one concise self-contained answer with exact file or source references. Do not mutate files, manage sessions, or delegate to another agent.`,
-	work: `You are a bounded MyPi work subagent. Complete only the assigned workspace task using the available workspace-confined tools. Shell execution is mandatory-sandboxed. Never touch MyPi state, credentials, .git, .mypi, external paths, network services, release publication, or another agent. Report changed files, verification actually run, and any partial work honestly.`,
+	explore: `You are a bounded MyPi exploration subagent. Investigate the assigned task through read-only evidence. Keep intermediate context in this child session. Return one concise self-contained answer with exact file or source references. Your complete role is evidence gathering and reporting.`,
+	work: `You are a bounded MyPi work subagent. Complete the assigned workspace task using the available workspace-confined tools. Shell execution uses the mandatory sandbox. Your complete authority covers ordinary files inside the assigned workspace. Report changed files, verification actually run, and any partial work honestly.`,
 	advisor: ADVISOR_PROMPT,
 	review: REVIEWER_ENVELOPE_PROMPT,
 };
@@ -197,10 +205,9 @@ export class SubagentManager {
 
 	parentPromptSections(): string[] {
 		const active = new Set(this.pi.getActiveTools());
-		if (!active.has(SUBAGENT_START_TOOL)) return [];
 		return [
-			...(this.requireAdvisor ? [PARENT_ADVISOR_REQUIRED_PROMPT] : []),
-			...(this.requireReviewer ? [PARENT_REVIEWER_REQUIRED_PROMPT] : []),
+			...(this.requireAdvisor && active.has(CONSULT_ADVISOR_TOOL) ? [PARENT_ADVISOR_REQUIRED_PROMPT] : []),
+			...(this.requireReviewer && active.has(ASK_FOR_REVIEW_TOOL) ? [PARENT_REVIEWER_REQUIRED_PROMPT] : []),
 		];
 	}
 
@@ -247,6 +254,21 @@ export class SubagentManager {
 	}
 
 	async start(jobs: readonly SubmittedJob[], ctx: ExtensionContext): Promise<{ batchId: string; jobs: unknown[] }> {
+		if (jobs.some((job) => job.role !== "explore" && job.role !== "work")) {
+			throw new Error("subagent_start accepts explore or work jobs. Route advice to consult_advisor and review to ask_for_review.");
+		}
+		return this.startJobs(jobs, ctx);
+	}
+
+	async consultAdvisor(question: string, ctx: ExtensionContext): Promise<{ batchId: string; jobs: unknown[] }> {
+		return this.startJobs([{ role: "advisor", label: "Advisor consultation", task: question }], ctx);
+	}
+
+	async askForReview(request: string, ctx: ExtensionContext): Promise<{ batchId: string; jobs: unknown[] }> {
+		return this.startJobs([{ role: "review", label: "Code review", task: request }], ctx);
+	}
+
+	private async startJobs(jobs: readonly SubmittedJob[], ctx: ExtensionContext): Promise<{ batchId: string; jobs: unknown[] }> {
 		await this.initialize(ctx);
 		if (jobs.length < 1 || jobs.length > MAX_BATCH_JOBS) throw new Error(`subagent_start requires 1-${MAX_BATCH_JOBS} jobs.`);
 		const roles = new Set(jobs.map((job) => job.role));
@@ -829,18 +851,59 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: SUBAGENT_START_TOOL,
 		label: "Start Subagents",
-		description: "Submit one homogeneous asynchronous batch of explore, work, advisor, or review jobs. Mixed job roles are prohibited. Results are delivered automatically; do not poll. A work agent holds the workspace write lease and blocks your edit, write, and Bash calls until it settles or is cancelled.",
+		description: "Submit one homogeneous asynchronous batch of explore or work jobs. Use consult_advisor for approach consultation and ask_for_review for final code review. Results are delivered automatically. A work agent holds the workspace write lease and blocks your edit, write, and Bash calls until it settles or is cancelled.",
 		promptSnippet: "Submit one homogeneous async batch; results return automatically",
 		promptGuidelines: [
 			"Use one self-contained task per subagent job and keep each batch focused on one role.",
-			"After subagent_start returns, continue independent work or settle; do not poll because status and results are injected automatically.",
+			"Route explore and work jobs here. Route advice to consult_advisor and completed-change review to ask_for_review.",
+			"After subagent_start returns, continue independent work or settle; status and results are injected automatically.",
 		],
 		parameters: StartSchema,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const result = await manager.start(params.jobs as SubmittedJob[], ctx);
 			return {
-				content: [{ type: "text", text: `Accepted async subagent batch ${result.batchId}. Results will be delivered automatically; do not poll.` }],
+				content: [{ type: "text", text: `Accepted async subagent batch ${result.batchId}. Results will be delivered automatically.` }],
+				details: result,
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: CONSULT_ADVISOR_TOOL,
+		label: "Consult Advisor",
+		description: "Start one asynchronous read-only advisor consultation. State the tentative approach, assumptions, uncertainty, and decision requested. The advisor receives a caller-model neutral brief plus bounded exact evidence and can independently verify with workspace reads and sealed web research. The result is delivered automatically.",
+		promptSnippet: "Consult an independent advisor asynchronously",
+		promptGuidelines: [
+			"Use consult_advisor for approach, interpretation, uncertainty, repeated failure, or evidence conflicts.",
+			"Continue independent work or settle after acceptance; the consultation result is injected automatically.",
+		],
+		parameters: AdvisorSchema,
+		executionMode: "sequential",
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const result = await manager.consultAdvisor(params.question, ctx);
+			return {
+				content: [{ type: "text", text: `Advisor consultation ${result.batchId} accepted. The result will be delivered automatically.` }],
+				details: result,
+			};
+		},
+	});
+
+	pi.registerTool({
+		name: ASK_FOR_REVIEW_TOOL,
+		label: "Ask for Review",
+		description: "Start one asynchronous read-only code review of the current working-tree change. State the objective, acceptance requirements, changed scope, verification run, and known risks. The reviewer receives staged, unstaged, and untracked evidence plus the trusted project review policy. The result is delivered automatically.",
+		promptSnippet: "Request an independent final code review asynchronously",
+		promptGuidelines: [
+			"Use ask_for_review for a complete saved change after relevant verification.",
+			"Treat a fresh review as completion evidence; correct material findings and request another review when the change materially changes.",
+		],
+		parameters: ReviewSchema,
+		executionMode: "sequential",
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const result = await manager.askForReview(params.request, ctx);
+			return {
+				content: [{ type: "text", text: `Code review ${result.batchId} accepted. The result will be delivered automatically.` }],
 				details: result,
 			};
 		},
