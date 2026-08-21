@@ -36,7 +36,7 @@ async function startHttpFixture(options: HttpFixtureOptions = {}): Promise<HttpF
 			const url = new URL(request.url ?? "/", origin);
 			if (url.pathname === "/.well-known/oauth-protected-resource") {
 				response.writeHead(200, { "content-type": "application/json" });
-				response.end(JSON.stringify({ resource: `${origin}/mcp`, authorization_servers: [origin] }));
+				response.end(JSON.stringify({ resource: `${origin}/mcp`, authorization_servers: [origin], scopes_supported: ["internal"] }));
 				return;
 			}
 			if (url.pathname === "/.well-known/oauth-authorization-server") {
@@ -294,6 +294,44 @@ test("oauth discovery, registration, PKCE, token storage, and cached reuse", { t
 		await cached.shutdown();
 		await fixture.close();
 	}
+});
+
+test("oauth defaults to advertised scopes, reuses the registered client, and outlives the startup timeout", { timeout: 40_000 }, async () => {
+	const fixture = await startHttpFixture({ oauth: true });
+	const { rm } = await import("node:fs/promises");
+	const authorizations: string[] = [];
+	// The redirect follow is deliberately slower than the connection startup
+	// timeout: the interactive flow must run under the authorization budget.
+	const authorize = async (url: string) => {
+		authorizations.push(url);
+		await new Promise((resolve) => setTimeout(resolve, 2_600));
+		const response = await fetch(url, { redirect: "follow" });
+		assert.equal(response.status, 200);
+	};
+	const server = httpServerConfig(fixture.url, { serverId: "oauthreuse", oauth: { scopes: [] }, startupTimeoutMs: 1_500 });
+	const first = managerFor(server, { authorize });
+	try {
+		const catalog = await first.search({ server: "oauthreuse", kind: "tool" });
+		assert.deepEqual(catalog.records.map((record) => record.name), ["echo"], "slow authorization still beats the startup timeout");
+		assert.match(authorizations[0]!, /scope=internal/u, "unconfigured scopes default to the resource metadata");
+	} finally {
+		await first.shutdown();
+	}
+
+	// Drop only the tokens: the next acquisition reuses the persisted dynamic
+	// client and its registered redirect port instead of registering again.
+	await rm(join(getAgentDir(), "runtime", "mcp", "oauth", "oauthreuse.json"), { force: true });
+	const second = managerFor(server, { authorize });
+	try {
+		await second.search({ server: "oauthreuse", kind: "tool" });
+	} finally {
+		await second.shutdown();
+		await fixture.close();
+	}
+	assert.equal(fixture.issued.registrations, 1, "dynamic client registration happens once across acquisitions");
+	assert.equal(authorizations.length, 2);
+	const portOf = (url: string) => new URL(new URL(url).searchParams.get("redirect_uri")!).port;
+	assert.equal(portOf(authorizations[0]!), portOf(authorizations[1]!), "the registered redirect port is pinned and reused");
 });
 
 test("oauth without an authorization surface fails closed with MCP_AUTH_REQUIRED", async () => {

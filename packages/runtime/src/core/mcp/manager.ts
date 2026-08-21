@@ -357,6 +357,12 @@ export class McpManager {
 					...(this.options.authorize ? { authorize: this.options.authorize } : {}),
 				})
 			: undefined;
+		if (oauth) {
+			// Interactive OAuth must complete before initialize so the browser
+			// round-trip runs under the authorization budget, never the short
+			// connection startup timeout (BUG: initialize timed out mid sign-in).
+			await oauth.preflight();
+		}
 		connection = new McpConnection(server, this.options.workspaceCwd, this.options.clientInfo, oauth ? { oauth } : undefined);
 		this.connections.set(server.serverId, connection);
 		await connection.start();

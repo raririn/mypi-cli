@@ -42,15 +42,26 @@ export interface McpOAuthProviderOptions {
 	readonly authorize?: (url: string) => Promise<void>;
 }
 
+interface McpOAuthClientRegistration {
+	readonly version: 1;
+	readonly serverId: string;
+	readonly issuer: string;
+	readonly clientId: string;
+	/** Loopback redirect port the client was registered with; reused when free. */
+	readonly redirectPort: number;
+}
+
 export class McpOAuthProvider {
 	private readonly options: McpOAuthProviderOptions;
 	private readonly storePath: string;
+	private readonly clientStorePath: string;
 	private tokens?: McpOAuthTokens;
 	private flight?: Promise<string>;
 
 	constructor(options: McpOAuthProviderOptions) {
 		this.options = options;
 		this.storePath = resolve(options.agentDir, "runtime", "mcp", "oauth", `${options.serverId}.json`);
+		this.clientStorePath = resolve(options.agentDir, "runtime", "mcp", "oauth", `${options.serverId}.client.json`);
 	}
 
 	/** Return a bearer token, refreshing when expired. Never starts a browser flow. */
@@ -79,6 +90,40 @@ export class McpOAuthProvider {
 	async forget(): Promise<void> {
 		this.tokens = undefined;
 		await rm(this.storePath, { force: true });
+		await rm(this.clientStorePath, { force: true });
+	}
+
+	/**
+	 * Ensure a usable token exists before the MCP initialize request, so the
+	 * interactive browser flow runs under the authorization budget instead of
+	 * the connection's short startup timeout. Returns false when the endpoint
+	 * answered the anonymous probe without a challenge.
+	 */
+	async preflight(): Promise<boolean> {
+		const cached = await this.cachedToken();
+		if (cached) return true;
+		let challenge: string | undefined;
+		try {
+			const response = await fetch(this.options.serverUrl, {
+				method: "POST",
+				headers: { "content-type": "application/json", accept: "application/json, text/event-stream" },
+				body: JSON.stringify({
+					jsonrpc: "2.0",
+					id: 1,
+					method: "initialize",
+					params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "MyPi", version: "1.0" } },
+				}),
+				signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
+			});
+			await response.body?.cancel().catch(() => undefined);
+			if (response.status !== 401 && response.status !== 403) return false;
+			challenge = response.headers.get("www-authenticate") ?? undefined;
+		} catch {
+			// Unreachable endpoints surface through the ordinary connection path.
+			return false;
+		}
+		await this.acquireToken(challenge);
+		return true;
 	}
 
 	/* ---------------------------------------------------------------- */
@@ -103,12 +148,27 @@ export class McpOAuthProvider {
 		const asMetadata = await this.fetchAuthServerMetadata(authServer);
 		const authorizationEndpoint = requireString(asMetadata, "authorization_endpoint", this.options.serverId);
 		const tokenEndpoint = requireString(asMetadata, "token_endpoint", this.options.serverId);
+		// Without configured scopes, request what the protected resource (or the
+		// authorization server) advertises; providers such as Robinhood reject
+		// authorization requests that omit their published scope.
+		const scopes = this.options.config.scopes.length
+			? [...this.options.config.scopes]
+			: advertisedScopes(resourceMetadata) ?? advertisedScopes(asMetadata) ?? [];
+		const issuer = typeof asMetadata.issuer === "string" ? asMetadata.issuer : authServer;
 
-		const { server, redirectUri, callback } = await this.startLoopbackListener();
+		const storedClient = this.options.config.clientId ? undefined : await this.loadClientRegistration(issuer);
+		const { server, redirectUri, port, callback } = await this.startLoopbackListener(storedClient?.redirectPort);
 		try {
-			const clientId = this.options.config.clientId
-				?? (await this.registerClient(asMetadata, redirectUri))
-				?? undefined;
+			// A persisted dynamic client is bound to its registered redirect port;
+			// when that port is unavailable this run, register a fresh client.
+			let clientId = this.options.config.clientId
+				?? (storedClient && storedClient.redirectPort === port ? storedClient.clientId : undefined);
+			if (!clientId) {
+				clientId = await this.registerClient(asMetadata, redirectUri) ?? undefined;
+				if (clientId && !this.options.config.clientId) {
+					await this.saveClientRegistration({ version: 1, serverId: this.options.serverId, issuer, clientId, redirectPort: port });
+				}
+			}
 			if (!clientId) {
 				throw new McpError("MCP_AUTH_FAILED", "no OAuth client ID is configured and the authorization server does not support dynamic client registration", this.options.serverId);
 			}
@@ -123,7 +183,7 @@ export class McpOAuthProvider {
 			authorizeUrl.searchParams.set("code_challenge_method", "S256");
 			authorizeUrl.searchParams.set("state", state);
 			authorizeUrl.searchParams.set("resource", resourceId);
-			if (this.options.config.scopes.length) authorizeUrl.searchParams.set("scope", this.options.config.scopes.join(" "));
+			if (scopes.length) authorizeUrl.searchParams.set("scope", scopes.join(" "));
 
 			await this.options.authorize(authorizeUrl.toString());
 			const result = await callback;
@@ -188,9 +248,10 @@ export class McpOAuthProvider {
 		return typeof body?.client_id === "string" ? body.client_id : undefined;
 	}
 
-	private startLoopbackListener(): Promise<{
+	private startLoopbackListener(preferredPort?: number): Promise<{
 		server: ReturnType<typeof createServer>;
 		redirectUri: string;
+		port: number;
 		callback: Promise<{ code: string; state: string }>;
 	}> {
 		return new Promise((resolveListener, rejectListener) => {
@@ -223,14 +284,23 @@ export class McpOAuthProvider {
 				}
 				settle({ code, state });
 			});
-			server.on("error", (error) => rejectListener(error));
-			server.listen(0, "127.0.0.1", () => {
+			let retried = false;
+			server.on("error", (error) => {
+				// Fall back to an ephemeral port when the preferred one is taken.
+				if (!retried && preferredPort && (error as NodeJS.ErrnoException).code === "EADDRINUSE") {
+					retried = true;
+					server.listen(0, "127.0.0.1");
+					return;
+				}
+				rejectListener(error);
+			});
+			server.listen(preferredPort ?? 0, "127.0.0.1", () => {
 				const address = server.address();
 				if (!address || typeof address !== "object") {
 					rejectListener(new McpError("MCP_AUTH_FAILED", "loopback redirect listener failed to bind", this.options.serverId));
 					return;
 				}
-				resolveListener({ server, redirectUri: `http://127.0.0.1:${address.port}/callback`, callback });
+				resolveListener({ server, redirectUri: `http://127.0.0.1:${address.port}/callback`, port: address.port, callback });
 			});
 		});
 	}
@@ -267,6 +337,30 @@ export class McpOAuthProvider {
 		await chmod(this.storePath, 0o600);
 	}
 
+	private async loadClientRegistration(issuer: string): Promise<McpOAuthClientRegistration | undefined> {
+		try {
+			const parsed = JSON.parse(await readFile(this.clientStorePath, "utf8")) as McpOAuthClientRegistration;
+			if (
+				parsed.version === 1 &&
+				parsed.serverId === this.options.serverId &&
+				parsed.issuer === issuer &&
+				typeof parsed.clientId === "string" &&
+				Number.isInteger(parsed.redirectPort)
+			) {
+				return parsed;
+			}
+		} catch {
+			// No stored registration.
+		}
+		return undefined;
+	}
+
+	private async saveClientRegistration(registration: McpOAuthClientRegistration): Promise<void> {
+		await mkdir(resolve(this.options.agentDir, "runtime", "mcp", "oauth"), { recursive: true, mode: 0o700 });
+		await writeFile(this.clientStorePath, `${JSON.stringify(registration, null, 2)}\n`, { mode: 0o600 });
+		await chmod(this.clientStorePath, 0o600);
+	}
+
 	private async loadStore(): Promise<void> {
 		if (this.tokens) return;
 		try {
@@ -278,6 +372,13 @@ export class McpOAuthProvider {
 			// No stored tokens.
 		}
 	}
+}
+
+function advertisedScopes(metadata: Record<string, unknown> | undefined): string[] | undefined {
+	const raw = metadata?.scopes_supported;
+	if (!Array.isArray(raw)) return undefined;
+	const scopes = raw.filter((scope): scope is string => typeof scope === "string" && scope.length > 0).slice(0, 16);
+	return scopes.length ? scopes : undefined;
 }
 
 function canonicalResource(serverUrl: string): string {
