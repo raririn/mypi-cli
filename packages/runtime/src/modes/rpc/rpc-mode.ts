@@ -963,6 +963,29 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 				return success(id, "get_commands", { commands });
 			}
 
+			case "get_command_completions": {
+				// Argument autocomplete for hosted surfaces: the engine owns the
+				// registered completion callbacks, so clients round-trip a prefix.
+				const registered = session.extensionRunner.getCommand(command.name);
+				if (!registered?.getArgumentCompletions) {
+					return success(id, "get_command_completions", { completions: null });
+				}
+				let items: Awaited<ReturnType<NonNullable<typeof registered.getArgumentCompletions>>>;
+				try {
+					items = await registered.getArgumentCompletions(String(command.prefix ?? ""));
+				} catch {
+					items = null;
+				}
+				const completions = items
+					? items.slice(0, 200).map((item) => ({
+							value: String(item.value),
+							label: String(item.label ?? item.value),
+							...(typeof item.description === "string" ? { description: item.description } : {}),
+						}))
+					: null;
+				return success(id, "get_command_completions", { completions });
+			}
+
 			// =================================================================
 			// Hosted-surface support (FEAT-061 Phase B)
 			// =================================================================

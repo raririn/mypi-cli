@@ -95,6 +95,7 @@ export type RpcCommand =
 
 	// Commands (available for invocation via prompt)
 	| { id?: string; type: "get_commands" }
+	| { id?: string; type: "get_command_completions"; name: string; prefix: string }
 
 	// Hosted-surface support (FEAT-061 Phase B). These give a daemon client —
 	// the hosted TUI foremost — wire forms for the remaining session
@@ -331,6 +332,13 @@ export type RpcResponse =
 			command: "get_commands";
 			success: true;
 			data: { commands: RpcSlashCommand[] };
+	  }
+	| {
+			id?: string;
+			type: "response";
+			command: "get_command_completions";
+			success: true;
+			data: { completions: Array<{ value: string; label: string; description?: string }> | null };
 	  }
 
 	// Hosted-surface support (FEAT-061 Phase B)

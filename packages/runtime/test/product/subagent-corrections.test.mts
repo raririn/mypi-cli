@@ -263,3 +263,31 @@ test("/advisor and /reviewer free text dispatches the matching consultation flow
 	await commands.get("reviewer").handler("Review the change", ctx);
 	assert.match(notices.at(-1)!.message, /^\/reviewer failed: Subagents require a persisted parent session\./u);
 });
+
+test("settle guidance appears only after consecutive status polls with live children (BUG-097 refinement)", () => {
+	const pi = { sendMessage() {} } as unknown as ExtensionAPI;
+	const manager = new SubagentManager(pi);
+	(manager as any).active.set("sa_live", {});
+
+	// Admission alone never mandates settling.
+	assert.equal(manager.pollGuidance(), undefined);
+
+	manager.recordToolCall("subagent_status");
+	manager.recordToolCall("subagent_status");
+	assert.equal(manager.pollGuidance(), undefined, "one or two polls draw no instruction");
+	manager.recordToolCall("subagent_status");
+	assert.match(manager.pollGuidance() ?? "", /settle now/u);
+	assert.match(manager.pollGuidance() ?? "", /3 times in a row/u);
+	assert.match(manager.pollGuidance() ?? "", /otherwise continue independent work/u);
+
+	// Any other tool call resets the streak; guidance is poll-conditional, not standing.
+	manager.recordToolCall("read");
+	assert.equal(manager.pollGuidance(), undefined);
+
+	// Without live children there is nothing to wait for.
+	manager.recordToolCall("subagent_status");
+	manager.recordToolCall("subagent_status");
+	manager.recordToolCall("subagent_status");
+	(manager as any).active.clear();
+	assert.equal(manager.pollGuidance(), undefined);
+});

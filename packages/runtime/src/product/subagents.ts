@@ -210,6 +210,7 @@ export class SubagentManager {
 	private deliveryQueue: DeliveredResult[] = [];
 	private readonly inFlightDeliveries = new Map<string, DeliveredResult[]>();
 	private deliveryRetryStrikes = 0;
+	private consecutiveStatusPolls = 0;
 	private deliveryTimer?: ReturnType<typeof setTimeout>;
 	private recent: DeliveredResult[] = [];
 	private shuttingDown = false;
@@ -592,6 +593,18 @@ export class SubagentManager {
 		this.replacementConfirmations.clear();
 		for (const controller of this.advisorBriefControllers.values()) controller.abort(new Error(reason));
 		await Promise.all([...this.active.values()].map((running) => this.cancelRunning(running, reason)));
+	}
+
+	/** Track consecutive status polls; any other tool call resets the streak. */
+	recordToolCall(toolName: string): void {
+		if (toolName === SUBAGENT_STATUS_TOOL) this.consecutiveStatusPolls += 1;
+		else this.consecutiveStatusPolls = 0;
+	}
+
+	/** After several consecutive polls with live children, name the wait explicitly. */
+	pollGuidance(): string | undefined {
+		if (this.consecutiveStatusPolls < 3 || !this.hasActiveChildren()) return undefined;
+		return `You have checked subagent status ${this.consecutiveStatusPolls} times in a row. Polling does not speed the children up: results are delivered automatically and wake you at a safe boundary. If this wait is blocking your remaining work, settle now; otherwise continue independent work.`;
 	}
 
 	status(childIds?: readonly string[]): unknown[] {
@@ -1031,7 +1044,10 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		return sections.length ? { systemPrompt } : undefined;
 	});
 	pi.on("input", (event) => {
-		if (event.source === "interactive" || event.source === "rpc") manager.recordUserEpoch();
+		if (event.source === "interactive" || event.source === "rpc") {
+			manager.recordUserEpoch();
+			manager.recordToolCall("");
+		}
 		return undefined;
 	});
 	pi.on("tool_result", (event) => {
@@ -1078,6 +1094,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		await manager.shutdown(`parent_${event.reason}`);
 	});
 	pi.on("tool_call", (event) => {
+		manager.recordToolCall(event.toolName);
 		if (!manager.hasWorkLease()) return undefined;
 		if (["edit", "write", "bash", "write_workspace"].includes(event.toolName)) {
 			return {
@@ -1103,7 +1120,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const result = await manager.start(params.jobs as SubmittedJob[], ctx);
 			return {
-				content: [{ type: "text", text: `Accepted async subagent batch ${result.batchId}. Results will be delivered automatically and will wake you at a safe boundary. If your remaining progress depends on these results, settle now instead of polling.` }],
+				content: [{ type: "text", text: `Accepted async subagent batch ${result.batchId}. Results will be delivered automatically and will wake you at a safe boundary; you can continue independent work meanwhile.` }],
 				details: result,
 			};
 		},
@@ -1133,7 +1150,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			}
 			const details = consultationAdmission(result);
 			return {
-				content: [{ type: "text", text: "Advisor consultation accepted. The result will be delivered automatically and will wake you at a safe boundary; settle now if your remaining progress depends on it. advisor_followup continues this advisor after completion." }],
+				content: [{ type: "text", text: "Advisor consultation accepted. The result will be delivered automatically and will wake you at a safe boundary; you can continue independent work meanwhile. advisor_followup continues this advisor after completion." }],
 				details,
 			};
 		},
@@ -1163,7 +1180,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 			}
 			const details = consultationAdmission(result);
 			return {
-				content: [{ type: "text", text: "Code review accepted. The result will be delivered automatically and will wake you at a safe boundary; settle now if your remaining progress depends on it. reviewer_followup continues this reviewer after completion." }],
+				content: [{ type: "text", text: "Code review accepted. The result will be delivered automatically and will wake you at a safe boundary; you can continue independent work meanwhile. reviewer_followup continues this reviewer after completion." }],
 				details,
 			};
 		},
@@ -1177,7 +1194,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const result = await manager.followup(params.childId, params.prompt, ctx);
-			return { content: [{ type: "text", text: "Explore/work follow-up accepted. Results will be delivered automatically and will wake you at a safe boundary; settle now if your remaining progress depends on them." }], details: result };
+			return { content: [{ type: "text", text: "Explore/work follow-up accepted. Results will be delivered automatically and will wake you at a safe boundary; you can continue independent work meanwhile." }], details: result };
 		},
 	});
 
@@ -1195,7 +1212,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				if (error instanceof SubagentUnavailableError) return consultationUnavailableOutcome("advisor", error.phase, error.message);
 				throw error;
 			}
-			return { content: [{ type: "text", text: "Advisor follow-up accepted. The result will be delivered automatically and will wake you at a safe boundary; settle now if your remaining progress depends on it." }], details: consultationResult(result) };
+			return { content: [{ type: "text", text: "Advisor follow-up accepted. The result will be delivered automatically and will wake you at a safe boundary; you can continue independent work meanwhile." }], details: consultationResult(result) };
 		},
 	});
 
@@ -1213,7 +1230,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 				if (error instanceof SubagentUnavailableError) return consultationUnavailableOutcome("review", error.phase, error.message);
 				throw error;
 			}
-			return { content: [{ type: "text", text: "Reviewer follow-up accepted. The result will be delivered automatically and will wake you at a safe boundary; settle now if your remaining progress depends on it." }], details: consultationResult(result) };
+			return { content: [{ type: "text", text: "Reviewer follow-up accepted. The result will be delivered automatically and will wake you at a safe boundary; you can continue independent work meanwhile." }], details: consultationResult(result) };
 		},
 	});
 
@@ -1237,7 +1254,9 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		executionMode: "parallel",
 		async execute(_toolCallId, params) {
 			const result = manager.status(params.childIds);
-			return { content: [{ type: "text", text: JSON.stringify(result) }], details: result };
+			const guidance = manager.pollGuidance();
+			const text = guidance ? `${JSON.stringify(result)}\n\n${guidance}` : JSON.stringify(result);
+			return { content: [{ type: "text", text }], details: result };
 		},
 	});
 

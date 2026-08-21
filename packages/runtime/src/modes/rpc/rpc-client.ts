@@ -559,6 +559,17 @@ export class RpcClient {
 		return this.getData<{ commands: RpcSlashCommand[] }>(response).commands;
 	}
 
+	/**
+	 * Get argument completions for one registered extension command.
+	 */
+	async getCommandCompletions(
+		name: string,
+		prefix: string,
+	): Promise<Array<{ value: string; label: string; description?: string }> | null> {
+		const response = await this.send({ type: "get_command_completions", name, prefix });
+		return this.getData<{ completions: Array<{ value: string; label: string; description?: string }> | null }>(response).completions;
+	}
+
 	// =========================================================================
 	// Helpers
 	// =========================================================================

@@ -364,18 +364,37 @@ class HostedExtensionSurface implements InteractiveExtensionSurface {
 		this.registry = new ModelRegistry(services.modelRuntime);
 	}
 
-	adoptCommands(commands: RpcSlashCommand[]): void {
+	adoptCommands(
+		commands: RpcSlashCommand[],
+		fetchCompletions?: (name: string, prefix: string) => Promise<Array<{ value: string; label: string; description?: string }> | null>,
+	): void {
 		this.commands = commands
 			.filter((command) => command.source === "extension")
-			.map((command) => ({
-				name: command.name,
-				invocationName: command.invocationName ?? command.name,
-				description: command.description,
-				sourceInfo: command.sourceInfo,
-				handler: async () => {
-					throw new Error("Hosted extension commands execute in the session engine, not in the TUI.");
-				},
-			}));
+			.map((command) => {
+				const invocationName = command.invocationName ?? command.name;
+				return {
+					name: command.name,
+					invocationName,
+					description: command.description,
+					sourceInfo: command.sourceInfo,
+					// Argument completion callbacks live engine-side; hosted surfaces
+					// round-trip the prefix so /goal-style option completion still works.
+					...(fetchCompletions
+						? {
+								getArgumentCompletions: async (prefix: string) => {
+									try {
+										return await fetchCompletions(invocationName, prefix);
+									} catch {
+										return null;
+									}
+								},
+							}
+						: {}),
+					handler: async () => {
+						throw new Error("Hosted extension commands execute in the session engine, not in the TUI.");
+					},
+				};
+			});
 	}
 
 	getRegisteredCommands(): ResolvedCommand[] {
@@ -897,7 +916,12 @@ export class HostedAgentSession implements InteractiveSessionSurface {
 	async refreshCommands(): Promise<void> {
 		try {
 			const response = await this.client.request<{ data: { commands: RpcSlashCommand[] } }>({ type: "get_commands" });
-			this.extensionRunner.adoptCommands(response.data.commands);
+			this.extensionRunner.adoptCommands(response.data.commands, async (name, prefix) => {
+				const completion = await this.client.request<{
+					data: { completions: Array<{ value: string; label: string; description?: string }> | null };
+				}>({ type: "get_command_completions", name, prefix });
+				return completion.data.completions;
+			});
 		} catch {
 			// Command autocomplete degrades; commands still work as prompt text.
 		}
