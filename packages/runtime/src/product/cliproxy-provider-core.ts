@@ -182,6 +182,9 @@ export function mapCliProxyCatalog(payload: unknown, endpoints: CliProxyEndpoint
         requiresChatGptAccountId: false,
         supportsCodexToolCallIds: true,
         supportsPriorityServiceTier: fastCapable,
+        // CLIProxy fronts thinking-mode models (DeepSeek/GLM families) that
+        // reject tool loops when a replayed step is missing its reasoning.
+        requiresReasoningItemReplay: true,
       },
     });
   }

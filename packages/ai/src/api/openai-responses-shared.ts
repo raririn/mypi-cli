@@ -222,6 +222,20 @@ export function convertResponsesMessages<TApi extends Api>(
 					if (block.thinkingSignature) {
 						const reasoningItem = JSON.parse(block.thinkingSignature) as ResponseReasoningItem;
 						output.push(reasoningItem);
+					} else if (
+						(model.compat as { requiresReasoningItemReplay?: boolean } | undefined)?.requiresReasoningItemReplay &&
+						!isDifferentModel &&
+						block.thinking.trim().length > 0
+					) {
+						// Thinking-mode gateways reject tool loops whose replay drops a
+						// step's reasoning. Without a captured provider signature,
+						// rebuild a plain reasoning item from the retained text.
+						output.push({
+							type: "reasoning",
+							id: `rs_pi_${msgIndex}_${output.length}`,
+							summary: [],
+							content: [{ type: "reasoning_text", text: sanitizeSurrogates(block.thinking) }],
+						} as unknown as ResponseReasoningItem);
 					}
 				} else if (block.type === "text") {
 					const textBlock = block as TextContent;

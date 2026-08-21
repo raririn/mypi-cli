@@ -73,6 +73,7 @@ test("catalog mapping is bounded, deduplicated, and carries Codex/Fast compatibi
       requiresChatGptAccountId: false,
       supportsCodexToolCallIds: true,
       supportsPriorityServiceTier: true,
+      requiresReasoningItemReplay: true,
     },
   });
   assert.throws(() => mapCliProxyCatalog({ models: [] }, endpoints), /no usable models/);

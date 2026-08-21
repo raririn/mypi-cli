@@ -597,6 +597,14 @@ export interface OpenAIResponsesCompat {
 	supportsOpenAIGrammarTools?: boolean;
 	/** Whether the model supports client-executed tool search for deferred tools. Default: false. */
 	supportsToolSearch?: boolean;
+	/**
+	 * Whether every replayed assistant step must carry its reasoning item even when no
+	 * provider signature was captured (thinking-mode gateways such as DeepSeek/GLM behind
+	 * Codex-compatible proxies reject tool loops with missing reasoning). When set, a
+	 * signature-less thinking block is replayed as a plain reasoning item rebuilt from the
+	 * retained thinking text. Default: false; first-party OpenAI rejects unsigned items.
+	 */
+	requiresReasoningItemReplay?: boolean;
 	/** Whether the model accepts `prompt_cache_options` (OpenAI GPT-5.6+ explicit prompt caching). Older OpenAI models reject the parameter. Default: false. */
 	supportsExplicitPromptCacheMode?: boolean;
 }
