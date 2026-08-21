@@ -13,11 +13,28 @@ export interface McpToolPolicyEntry {
 
 export type McpConfigScope = "global" | "project";
 
-/** One validated server record. `command`/`args` are argv, never a shell string. */
+export type McpTransportKind = "stdio" | "http";
+
+/** OAuth 2.1 client settings for one Streamable HTTP server (Slice B). */
+export interface McpOAuthConfig {
+	/** Static client ID; omitted when dynamic client registration is expected. */
+	readonly clientId?: string;
+	/** Requested scopes; the authorization server may narrow them. */
+	readonly scopes: readonly string[];
+}
+
+/** One validated server record. For stdio, `command`/`args` are argv, never a shell string. */
 export interface McpServerConfig {
 	readonly serverId: string;
 	readonly enabled: boolean;
 	readonly description: string;
+	readonly transport: McpTransportKind;
+	/** Streamable HTTP endpoint; https required except loopback. */
+	readonly url?: string;
+	/** Bearer-token indirection: host env var name holding the token. Never a literal. */
+	readonly authBearerEnv?: string;
+	/** OAuth 2.1 authorization-code + PKCE settings. */
+	readonly oauth?: McpOAuthConfig;
 	readonly command: string;
 	readonly args: readonly string[];
 	/** `"workspace"` or an absolute execution-host directory (global scope only). */
@@ -122,7 +139,9 @@ export type McpErrorCode =
 	| "MCP_NAME_COLLISION"
 	| "MCP_RESOURCE_BLOCKED"
 	| "MCP_LIMIT_EXCEEDED"
-	| "MCP_CREDENTIAL_BLOCKED";
+	| "MCP_CREDENTIAL_BLOCKED"
+	| "MCP_AUTH_REQUIRED"
+	| "MCP_AUTH_FAILED";
 
 export class McpError extends Error {
 	readonly code: McpErrorCode;

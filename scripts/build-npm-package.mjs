@@ -82,6 +82,12 @@ for (const { manifest } of packageManifests) {
 for (const name of requiredDependencies.keys()) optionalDependencies.delete(name);
 for (const [name, packageVersion] of customVersions) requiredDependencies.set(name, packageVersion);
 
+// FEAT-067: the MCP client is an owned implementation. Any
+// @modelcontextprotocol/* dependency is a packaging error.
+for (const name of [...requiredDependencies.keys(), ...optionalDependencies.keys()]) {
+  assert(!name.startsWith("@modelcontextprotocol/"), `forbidden MCP SDK dependency: ${name}`);
+}
+
 const finalManifest = {
   name: "@raririn/mypi",
   version,

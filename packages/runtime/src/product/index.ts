@@ -23,6 +23,7 @@ import planGoalExtension from "./plan-goal.ts";
 import { defineProductModule, type ProductModule } from "./registry.ts";
 import safetyExtension from "./safety.ts";
 import sessionMaintenanceExtension from "./session-maintenance.ts";
+import mcpExtension from "./mcp.ts";
 import subagentsExtension from "./subagents.ts";
 import pizzaHeroExtension from "./tui-hero/index.ts";
 import webSearchExtension from "./web/index.ts";
@@ -38,6 +39,7 @@ export const productModules: readonly ProductModule[] = [
 	defineProductModule("global-config", "required", globalConfigExtension),
 	defineProductModule("session-maintenance", "required", sessionMaintenanceExtension),
 	defineProductModule("subagents", "capability", subagentsExtension),
+	defineProductModule("mcp", "capability", mcpExtension),
 	defineProductModule("hooks", "capability", hooksExtension),
 	defineProductModule("archive", "capability", archiveManageExtension),
 	defineProductModule("compaction-recall", "required", compactionRecallExtension),

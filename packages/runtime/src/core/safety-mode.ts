@@ -133,8 +133,20 @@ const TRUSTED_PRODUCT_TOOLS = new Set([
 ]);
 const TRUSTED_PASSIVE_BUILTIN_TOOLS = new Set(["commentary"]);
 
+/**
+ * MCP gateway and loaded tools registered by the sealed product module.
+ * Generic safety recognizes their provenance and delegates enforcement to the
+ * code-owned MCP policy gate, which blocks live interaction in safe/sandbox
+ * and owns approvals in ask modes (no double approval). Same-name extension
+ * tools cannot spoof this: product authority is required.
+ */
+export function isMcpProductTool(name: string, sourceInfo: SourceInfo | undefined): boolean {
+	return name.startsWith("mcp_") && hasProductAuthority(sourceInfo, ["capability"]);
+}
+
 export function isTrustedSafetyTool(name: string, sourceInfo: SourceInfo | undefined): boolean {
 	if (!sourceInfo) return false;
+	if (isMcpProductTool(name, sourceInfo)) return true;
 	if (TRUSTED_PASSIVE_BUILTIN_TOOLS.has(name)) {
 		return sourceInfo.source === "builtin" && sourceInfo.path === `<builtin:${name}>`;
 	}

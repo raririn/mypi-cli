@@ -5,6 +5,7 @@
  */
 
 import { McpConnection, type McpClientInfo, type RawMcpTool } from "./connection.ts";
+import { McpOAuthProvider } from "./oauth.ts";
 import { evaluateMcpAction, classifyTool, resourceRuleAllows, toolRuleAllows, type McpPolicyState } from "./policy.ts";
 import { convertCallResult, redactMcpText, untrustedFrame, type ConvertedMcpResult } from "./result.ts";
 import { catalogFingerprint, exposedToolName, normalizeToolSchema, schemaFingerprint } from "./schema.ts";
@@ -57,6 +58,8 @@ export interface McpManagerOptions {
 	readonly policyState: () => McpPolicyState;
 	/** Absent approval capability fails closed for approval-requiring modes. */
 	readonly approve?: (summary: string) => Promise<boolean>;
+	/** Present an OAuth authorization URL; absent capability fails closed. */
+	readonly authorize?: (url: string) => Promise<void>;
 	/** Exposed names that already exist (built-in/SDK/extension tools). */
 	readonly takenToolNames?: () => ReadonlySet<string>;
 	readonly onLoadedToolsChanged?: () => void;
@@ -87,6 +90,32 @@ export class McpManager {
 
 	loadedTools(): McpToolDescriptor[] {
 		return [...this.loaded.values()].map((entry) => entry.descriptor);
+	}
+
+	/**
+	 * Reconstruct loaded definitions from persisted load snapshots without
+	 * starting servers. The empty load-instance marker forces a live schema
+	 * fingerprint comparison before the first call executes.
+	 */
+	restoreLoaded(descriptors: readonly McpToolDescriptor[]): McpToolDescriptor[] {
+		const restored: McpToolDescriptor[] = [];
+		for (const descriptor of descriptors) {
+			if (!this.config.servers.get(descriptor.serverId)) continue;
+			if (this.loaded.has(descriptor.exposedName)) continue;
+			if (this.options.takenToolNames?.().has(descriptor.exposedName)) continue;
+			if (this.loaded.size >= MCP_LIMITS.maxActiveTools) break;
+			this.loaded.set(descriptor.exposedName, { descriptor, loadInstanceId: "" });
+			restored.push(descriptor);
+		}
+		if (restored.length) this.options.onLoadedToolsChanged?.();
+		return restored;
+	}
+
+	/** Drop loaded definitions (branch navigation before their load). */
+	clearLoaded(): void {
+		if (!this.loaded.size) return;
+		this.loaded.clear();
+		this.options.onLoadedToolsChanged?.();
 	}
 
 	/** Startup preflight: initialize and collect catalogs for required servers. */
@@ -313,12 +342,26 @@ export class McpManager {
 			this.connections.delete(server.serverId);
 			this.catalogs.delete(server.serverId);
 		}
-		await this.gate("start", server, undefined, `Start MCP server ${server.serverId} (${server.command})`);
-		connection = new McpConnection(server, this.options.workspaceCwd, this.options.clientInfo);
+		await this.gate(
+			"start",
+			server,
+			undefined,
+			`Start MCP server ${server.serverId} (${server.transport === "http" ? server.url : server.command})`,
+		);
+		const oauth = server.transport === "http" && server.oauth && server.url && this.options.agentDir
+			? new McpOAuthProvider({
+					agentDir: this.options.agentDir,
+					serverId: server.serverId,
+					serverUrl: server.url,
+					config: server.oauth,
+					...(this.options.authorize ? { authorize: this.options.authorize } : {}),
+				})
+			: undefined;
+		connection = new McpConnection(server, this.options.workspaceCwd, this.options.clientInfo, oauth ? { oauth } : undefined);
 		this.connections.set(server.serverId, connection);
 		await connection.start();
-		if (this.supervisor) {
-			const pid = (connection as unknown as { transport?: { pid?: number } }).transport?.pid;
+		if (this.supervisor && server.transport === "stdio") {
+			const pid = connection.serverPid;
 			// Lease bookkeeping is best-effort; connection teardown remains exact.
 			if (typeof pid === "number") {
 				this.leases.set(server.serverId, await this.supervisor.writeLease(server.serverId, pid).catch(() => ""));

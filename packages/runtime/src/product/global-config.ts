@@ -28,6 +28,8 @@ export interface GlobalConfig {
 	readonly version: 1;
 	readonly history: HistoryConfig;
 	readonly subagents: SubagentsConfig;
+	/** Raw `mcp` section; validated separately by the core MCP config parser. */
+	readonly mcp?: unknown;
 }
 
 export interface GlobalConfigDiagnostic {
@@ -266,6 +268,7 @@ function parseConfigRecord(
 				requireAdvisor: readBoolean(subagents.requireAdvisor, DEFAULT_GLOBAL_CONFIG.subagents.requireAdvisor),
 				requireReviewer: readBoolean(subagents.requireReviewer, DEFAULT_GLOBAL_CONFIG.subagents.requireReviewer),
 			},
+			...(source.mcp !== undefined ? { mcp: source.mcp } : {}),
 		};
 		if (
 			(history.autoArchive !== undefined && typeof history.autoArchive !== "boolean") ||

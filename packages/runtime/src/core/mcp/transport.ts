@@ -18,7 +18,16 @@ export interface McpTransportEvents {
 	onExit: (info: { code: number | null; signal: NodeJS.Signals | null }) => void;
 }
 
-export class McpStdioTransport {
+/** Common transport surface shared by STDIO (Slice A) and Streamable HTTP (Slice B). */
+export interface McpTransport {
+	readonly alive: boolean;
+	readonly stderrTail: string;
+	readonly pid?: number;
+	send(message: JsonRpcMessage): void;
+	stop(): Promise<void>;
+}
+
+export class McpStdioTransport implements McpTransport {
 	private readonly config: McpServerConfig;
 	private readonly child: ChildProcess;
 	private readonly reader: JsonRpcReader;

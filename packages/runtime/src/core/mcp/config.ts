@@ -74,6 +74,10 @@ export function redactServerConfig(config: McpServerConfig): Record<string, unkn
 		configScope: config.configScope,
 		enabled: config.enabled,
 		description: config.description,
+		transport: config.transport,
+		...(config.url ? { url: config.url } : {}),
+		...(config.authBearerEnv ? { authBearerEnv: config.authBearerEnv } : {}),
+		...(config.oauth ? { oauth: { scopes: [...config.oauth.scopes] } } : {}),
 		command: config.command,
 		argCount: config.args.length,
 		cwd: config.cwd,
@@ -100,9 +104,62 @@ function parseServer(
 	if (!value || typeof value !== "object" || Array.isArray(value)) return fail("server record must be an object");
 	const record = value as Record<string, unknown>;
 
-	const command = record.command;
-	if (typeof command !== "string" || !command.trim()) return fail("command must be a non-empty string");
-	if (/[\0\r\n]/u.test(command)) return fail("command contains control characters");
+	const transport = record.transport === undefined ? "stdio" : record.transport;
+	if (transport !== "stdio" && transport !== "http") return fail('transport must be "stdio" or "http"');
+
+	let url: string | undefined;
+	let authBearerEnv: string | undefined;
+	let oauth: { clientId?: string; scopes: string[] } | undefined;
+	if (transport === "http") {
+		if (typeof record.url !== "string" || record.url.length > 2_048) return fail("http transport requires a bounded url string");
+		let parsedUrl: URL;
+		try {
+			parsedUrl = new URL(record.url);
+		} catch {
+			return fail("url is not a valid URL");
+		}
+		const loopback = ["localhost", "127.0.0.1", "[::1]", "::1"].includes(parsedUrl.hostname);
+		if (parsedUrl.protocol !== "https:" && !(parsedUrl.protocol === "http:" && loopback)) {
+			return fail("http transport requires https, or http on loopback only");
+		}
+		if (parsedUrl.username || parsedUrl.password) return fail("url must not embed credentials");
+		url = record.url;
+		if (record.authBearerEnv !== undefined) {
+			if (typeof record.authBearerEnv !== "string" || !ENV_NAME_PATTERN.test(record.authBearerEnv)) {
+				return fail("authBearerEnv must be a valid environment variable name");
+			}
+			authBearerEnv = record.authBearerEnv;
+		}
+		if (record.oauth !== undefined) {
+			if (record.oauth === true) oauth = { scopes: [] };
+			else if (record.oauth && typeof record.oauth === "object" && !Array.isArray(record.oauth)) {
+				const raw = record.oauth as Record<string, unknown>;
+				if (raw.clientId !== undefined && (typeof raw.clientId !== "string" || raw.clientId.length > 256)) return fail("oauth.clientId must be a bounded string");
+				const scopes: string[] = [];
+				if (raw.scopes !== undefined) {
+					if (!Array.isArray(raw.scopes) || raw.scopes.length > 16) return fail("oauth.scopes must be an array of at most 16 scopes");
+					for (const scope of raw.scopes) {
+						if (typeof scope !== "string" || !/^[\x21\x23-\x5B\x5D-\x7E]{1,128}$/u.test(scope)) return fail("oauth scopes must be printable tokens");
+						scopes.push(scope);
+					}
+				}
+				oauth = { ...(typeof raw.clientId === "string" ? { clientId: raw.clientId } : {}), scopes };
+			} else return fail("oauth must be true or an object");
+		}
+		if (authBearerEnv && oauth) return fail("configure either authBearerEnv or oauth, not both");
+		if (record.command !== undefined) return fail("http transport does not accept a command");
+	}
+
+	let command = "";
+	if (transport === "stdio") {
+		const rawCommand = record.command;
+		if (typeof rawCommand !== "string" || !rawCommand.trim()) return fail("command must be a non-empty string");
+		if (/[\0\r\n]/u.test(rawCommand)) return fail("command contains control characters");
+		if (record.url !== undefined || record.authBearerEnv !== undefined || record.oauth !== undefined) {
+			return fail("url, authBearerEnv, and oauth apply only to http transport");
+		}
+		command = rawCommand;
+	}
 
 	const args: string[] = [];
 	if (record.args !== undefined) {
@@ -217,6 +274,10 @@ function parseServer(
 		serverId,
 		enabled,
 		description,
+		transport,
+		...(url !== undefined ? { url } : {}),
+		...(authBearerEnv !== undefined ? { authBearerEnv } : {}),
+		...(oauth !== undefined ? { oauth } : {}),
 		command,
 		args,
 		cwd,

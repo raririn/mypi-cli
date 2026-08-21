@@ -17,7 +17,9 @@ import {
 	type JsonRpcRequest,
 	type JsonRpcResponse,
 } from "./protocol.ts";
-import { McpStdioTransport } from "./transport.ts";
+import { McpStdioTransport, type McpTransport } from "./transport.ts";
+import { McpHttpTransport } from "./transport-http.ts";
+import type { McpOAuthProvider } from "./oauth.ts";
 import { MCP_LIMITS, McpError, type McpConnectionState, type McpServerConfig } from "./types.ts";
 
 export interface McpClientInfo {
@@ -71,7 +73,8 @@ export class McpConnection {
 	readonly config: McpServerConfig;
 	private readonly clientInfo: McpClientInfo;
 	private readonly workspaceCwd: string;
-	private transport?: McpStdioTransport;
+	private transport?: McpTransport;
+	private readonly oauth?: McpOAuthProvider;
 	private readonly pending = new Map<JsonRpcId, PendingRequest>();
 	private nextId = 1;
 	private stateValue: McpConnectionState = "cold";
@@ -85,10 +88,11 @@ export class McpConnection {
 	catalogStale = false;
 	private lastExit?: { code: number | null; signal: NodeJS.Signals | null };
 
-	constructor(config: McpServerConfig, workspaceCwd: string, clientInfo: McpClientInfo) {
+	constructor(config: McpServerConfig, workspaceCwd: string, clientInfo: McpClientInfo, options?: { oauth?: McpOAuthProvider }) {
 		this.config = config;
 		this.workspaceCwd = workspaceCwd;
 		this.clientInfo = clientInfo;
+		this.oauth = options?.oauth;
 	}
 
 	get state(): McpConnectionState {
@@ -99,14 +103,18 @@ export class McpConnection {
 		return this.transport?.stderrTail ?? "";
 	}
 
+	get serverPid(): number | undefined {
+		return this.transport?.pid;
+	}
+
 	async start(): Promise<void> {
 		if (this.stateValue === "ready" || this.stateValue === "starting") return;
 		this.stateValue = "starting";
 		const cwd = this.config.cwd === "workspace" ? this.workspaceCwd : this.config.cwd;
-		this.transport = McpStdioTransport.start(this.config, cwd, {
-			onMessage: (message) => this.handleMessage(message),
-			onProtocolError: (error) => this.failAllPending(error),
-			onExit: (info) => {
+		const events = {
+			onMessage: (message: JsonRpcMessage) => this.handleMessage(message),
+			onProtocolError: (error: McpError) => this.failAllPending(error),
+			onExit: (info: { code: number | null; signal: NodeJS.Signals | null }) => {
 				this.lastExit = info;
 				const wasStopping = this.stateValue === "stopping";
 				this.stateValue = wasStopping ? "cold" : "crashed";
@@ -116,7 +124,10 @@ export class McpConnection {
 					this.config.serverId,
 				));
 			},
-		});
+		};
+		this.transport = this.config.transport === "http"
+			? new McpHttpTransport(this.config, events, this.oauth ? { oauth: this.oauth } : {})
+			: McpStdioTransport.start(this.config, cwd, events);
 		try {
 			const result = await this.request(
 				"initialize",
@@ -368,7 +379,12 @@ export class McpConnection {
 		const entry = this.pending.get(message.id);
 		if (!entry) return;
 		if (message.error) {
-			const code = message.error.code === JSONRPC_METHOD_NOT_FOUND ? "MCP_UNSUPPORTED" : "MCP_PROTOCOL_ERROR";
+			const mypiCode = (message.error.data as { mypiCode?: unknown } | undefined)?.mypiCode;
+			const code = typeof mypiCode === "string" && mypiCode.startsWith("MCP_")
+				? mypiCode as McpError["code"]
+				: message.error.code === JSONRPC_METHOD_NOT_FOUND
+					? "MCP_UNSUPPORTED"
+					: "MCP_PROTOCOL_ERROR";
 			entry.reject(new McpError(code, `MCP server error ${message.error.code}: ${message.error.message}`.slice(0, 500), this.config.serverId));
 			return;
 		}
