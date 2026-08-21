@@ -14,5 +14,7 @@ export const PARENT_ADVISOR_REQUIRED_PROMPT = loadPrompt("parent-advisor-require
 export const PARENT_REVIEWER_REQUIRED_PROMPT = loadPrompt("parent-reviewer-required.md");
 export const ADVISOR_PROMPT = loadPrompt("advisor.md");
 export const ADVISOR_BRIEF_PROMPT = loadPrompt("advisor-brief.md");
+export const ADVISOR_REPLACEMENT_CONFIRMATION_PROMPT = loadPrompt("advisor-replacement-confirmation.md");
 export const REVIEWER_ENVELOPE_PROMPT = loadPrompt("reviewer-envelope.md");
 export const REVIEWER_DEFAULT_PROMPT = loadPrompt("reviewer-default.md");
+export const REVIEWER_REPLACEMENT_CONFIRMATION_PROMPT = loadPrompt("reviewer-replacement-confirmation.md");

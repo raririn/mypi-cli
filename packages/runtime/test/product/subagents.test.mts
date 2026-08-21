@@ -27,10 +27,12 @@ import subagentsExtension, {
 import {
 	ADVISOR_BRIEF_PROMPT,
 	ADVISOR_PROMPT,
+	ADVISOR_REPLACEMENT_CONFIRMATION_PROMPT,
 	PARENT_ADVISOR_REQUIRED_PROMPT,
 	PARENT_REVIEWER_REQUIRED_PROMPT,
 	REVIEWER_DEFAULT_PROMPT,
 	REVIEWER_ENVELOPE_PROMPT,
+	REVIEWER_REPLACEMENT_CONFIRMATION_PROMPT,
 } from "../../src/product/subagent-prompts.ts";
 
 function childRecord(parentSessionId: string): SubagentChildRecord {
@@ -156,12 +158,70 @@ test("follow-up calls enforce the stored child role", async () => {
 	await assert.rejects(manager.advisorFollowup("Continue", ctx), /requires a previous consult_advisor/);
 	(manager as any).active.set(review.childId, { record: review });
 	await assert.rejects(manager.reviewerFollowup("Continue", ctx), /Reviewer conversation already active/);
-	await assert.rejects(manager.askForReview("Start fresh", ctx), /Reviewer consultation already active/);
 	review.role = "advisor";
 	await assert.rejects(manager.followup(review.childId, "Continue", ctx), /advisor_followup/);
 	await assert.rejects(manager.advisorFollowup("Continue", ctx), /Advisor conversation already active/);
-	await assert.rejects(manager.consultAdvisor("Start fresh", ctx), /Advisor consultation already active/);
 	await assert.rejects(manager.reviewerFollowup("Continue", ctx), /requires a previous ask_for_review/);
+});
+
+test("fresh consultation replacement requires an exact repeated objective", async () => {
+	const advisor = childRecord("parent-replacement-routing");
+	advisor.role = "advisor";
+	const manager = new SubagentManager({ sendMessage() {} } as unknown as ExtensionAPI);
+	(manager as any).initialize = async () => {};
+	(manager as any).store = { list: () => [advisor] };
+	const admitted: unknown[] = [];
+	(manager as any).startJobs = async (jobs: unknown[]) => {
+		admitted.push(jobs);
+		return { batchId: "sb_replacement", jobs: [{ childId: "sa_replacement", grantId: "sg_replacement", role: "advisor", status: "queued" }] };
+	};
+	const ctx = {} as any;
+	const first = await manager.consultAdvisor("New objective A", ctx);
+	assert.equal(first.confirmationRequired, true);
+	assert.equal((first as any).message, ADVISOR_REPLACEMENT_CONFIRMATION_PROMPT);
+	const changed = await manager.consultAdvisor("New objective B", ctx);
+	assert.equal(changed.confirmationRequired, true, "a changed objective requires its own confirmation");
+	const confirmed = await manager.consultAdvisor("New objective B", ctx);
+	assert.equal(confirmed.confirmationRequired, false);
+	assert.equal(admitted.length, 1);
+	const epochFirst = await manager.consultAdvisor("New objective C", ctx);
+	assert.equal(epochFirst.confirmationRequired, true);
+	manager.recordUserEpoch();
+	const epochReset = await manager.consultAdvisor("New objective C", ctx);
+	assert.equal(epochReset.confirmationRequired, true, "new user input clears replacement confirmation");
+	assert.equal(admitted.length, 1);
+	const originalNow = Date.now;
+	let now = originalNow();
+	Date.now = () => now;
+	try {
+		await manager.consultAdvisor("New objective D", ctx);
+		now += 120_001;
+		const expired = await manager.consultAdvisor("New objective D", ctx);
+		assert.equal(expired.confirmationRequired, true, "expired confirmation requires another exact call");
+		assert.equal(admitted.length, 1);
+	} finally {
+		Date.now = originalNow;
+	}
+});
+
+test("confirmed replacement settles the running consultation before admission", async () => {
+	const advisor = childRecord("parent-active-replacement");
+	advisor.role = "advisor";
+	const manager = new SubagentManager({ sendMessage() {} } as unknown as ExtensionAPI);
+	(manager as any).initialize = async () => {};
+	(manager as any).store = { list: () => [advisor] };
+	const running = { record: advisor };
+	(manager as any).active.set(advisor.childId, running);
+	const reasons: string[] = [];
+	(manager as any).cancelRunning = async (_running: unknown, reason: string) => {
+		reasons.push(reason);
+		(manager as any).active.delete(advisor.childId);
+	};
+	(manager as any).startJobs = async () => ({ batchId: "sb_new", jobs: [{ childId: "sa_new", grantId: "sg_new", role: "advisor", status: "queued" }] });
+	const ctx = {} as any;
+	assert.equal((await manager.consultAdvisor("Replace active advisor", ctx)).confirmationRequired, true);
+	assert.equal((await manager.consultAdvisor("Replace active advisor", ctx)).confirmationRequired, false);
+	assert.deepEqual(reasons, ["replaced_by_new_advisor"]);
 });
 
 test("subagent prompt resources describe positive authority without negation directives", () => {
@@ -169,10 +229,12 @@ test("subagent prompt resources describe positive authority without negation dir
 		...Object.values(SUBAGENT_ROLE_PROMPTS),
 		ADVISOR_BRIEF_PROMPT,
 		ADVISOR_PROMPT,
+		ADVISOR_REPLACEMENT_CONFIRMATION_PROMPT,
 		PARENT_ADVISOR_REQUIRED_PROMPT,
 		PARENT_REVIEWER_REQUIRED_PROMPT,
 		REVIEWER_DEFAULT_PROMPT,
 		REVIEWER_ENVELOPE_PROMPT,
+		REVIEWER_REPLACEMENT_CONFIRMATION_PROMPT,
 	];
 	const negativeDirective = /\b(?:do not|don't|never|must not|cannot|can't|without|exclude|prohibit|forbid)\b/iu;
 	for (const prompt of prompts) assert.doesNotMatch(prompt, negativeDirective);

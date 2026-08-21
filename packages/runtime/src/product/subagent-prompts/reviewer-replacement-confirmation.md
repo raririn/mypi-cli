@@ -1,0 +1,1 @@
+A reviewer is active. Call `ask_for_review` again with the same request if you are reviewing a new objective requested by the user and need a fresh review. Use `reviewer_followup` to continue the current reviewer.

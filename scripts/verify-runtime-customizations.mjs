@@ -144,8 +144,10 @@ for (const name of [
   "parent-reviewer-required.md",
   "advisor.md",
   "advisor-brief.md",
+  "advisor-replacement-confirmation.md",
   "reviewer-envelope.md",
   "reviewer-default.md",
+  "reviewer-replacement-confirmation.md",
 ]) {
   const content = await readFile(join(packageRoot, "dist", "product", "subagent-prompts", name), "utf8");
   if (!content.trim()) throw new Error(`Installed Pi ${expectedVersion} has an empty subagent prompt: ${name}.`);

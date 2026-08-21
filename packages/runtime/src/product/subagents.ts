@@ -28,10 +28,12 @@ import {
 	writeAdvisorArtifacts,
 } from "./subagent-advisor.ts";
 import {
+	ADVISOR_REPLACEMENT_CONFIRMATION_PROMPT,
 	ADVISOR_PROMPT,
 	PARENT_ADVISOR_REQUIRED_PROMPT,
 	PARENT_REVIEWER_REQUIRED_PROMPT,
 	REVIEWER_ENVELOPE_PROMPT,
+	REVIEWER_REPLACEMENT_CONFIRMATION_PROMPT,
 } from "./subagent-prompts.ts";
 import { reviewSnapshot, type WorkspaceSnapshot, workspaceSnapshot } from "./subagent-review.ts";
 
@@ -54,6 +56,7 @@ const WORK_TIMEOUT_MS = 15 * 60_000;
 const MAX_RESULT_CHARS = 24_000;
 const MAX_BATCH_DELIVERY_CHARS = 64_000;
 const MAX_CHILD_SESSION_BYTES = 16 * 1024 * 1024;
+const CONSULTATION_REPLACEMENT_CONFIRM_MS = 2 * 60_000;
 const SUBAGENT_REQUIREMENTS_ENTRY = "mypi-subagent-requirements";
 const CHILD_RUNTIME_MARKER = "MYPI_SUBAGENT_CHILD";
 
@@ -141,6 +144,10 @@ interface DeliveredResult {
 	arrivedAfterMutation?: boolean;
 }
 
+type ConsultationStartResult =
+	| { confirmationRequired: true; message: string }
+	| { confirmationRequired: false; batchId: string; jobs: unknown[] };
+
 export const SUBAGENT_ROLE_PROMPTS: Record<SubagentRole, string> = {
 	explore: `You are a bounded MyPi exploration subagent. Investigate the assigned task through read-only evidence. Keep intermediate context in this child session. Return one concise self-contained answer with exact file or source references. Your complete role is evidence gathering and reporting.`,
 	work: `You are a bounded MyPi work subagent. Complete the assigned workspace task using the available workspace-confined tools. Shell execution uses the mandatory sandbox. Your complete authority covers ordinary files inside the assigned workspace. Report changed files, verification actually run, and any partial work honestly.`,
@@ -170,6 +177,7 @@ export class SubagentManager {
 	private userEpoch = 0;
 	private readonly advisorBriefs = new Map<string, Promise<AdvisorBriefPackage>>();
 	private readonly advisorBriefControllers = new Map<string, AbortController>();
+	private readonly replacementConfirmations = new Map<"advisor" | "review", { prompt: string; userEpoch: number; createdAt: number }>();
 	private effectiveParentSystemPrompt?: string;
 
 	constructor(pi: ExtensionAPI) {
@@ -227,6 +235,7 @@ export class SubagentManager {
 
 	recordUserEpoch(): void {
 		this.userEpoch += 1;
+		this.replacementConfirmations.clear();
 	}
 
 	recordMutation(toolName: string, isError: boolean): void {
@@ -270,12 +279,52 @@ export class SubagentManager {
 		return this.startJobs(jobs, ctx);
 	}
 
-	async consultAdvisor(question: string, ctx: ExtensionContext): Promise<{ batchId: string; jobs: unknown[] }> {
-		return this.startJobs([{ role: "advisor", label: "Advisor consultation", task: question }], ctx);
+	async consultAdvisor(question: string, ctx: ExtensionContext): Promise<ConsultationStartResult> {
+		return this.startConsultation("advisor", question, ctx);
 	}
 
-	async askForReview(request: string, ctx: ExtensionContext): Promise<{ batchId: string; jobs: unknown[] }> {
-		return this.startJobs([{ role: "review", label: "Code review", task: request }], ctx);
+	async askForReview(request: string, ctx: ExtensionContext): Promise<ConsultationStartResult> {
+		return this.startConsultation("review", request, ctx);
+	}
+
+	private async startConsultation(
+		role: "advisor" | "review",
+		prompt: string,
+		ctx: ExtensionContext,
+	): Promise<ConsultationStartResult> {
+		await this.initialize(ctx);
+		const current = this.latestRoleRecord(role);
+		if (!current) {
+			const admission = await this.startJobs([{ role, label: role === "advisor" ? "Advisor consultation" : "Code review", task: prompt }], ctx);
+			return { confirmationRequired: false, ...admission };
+		}
+		const normalized = prompt.trim();
+		const pending = this.replacementConfirmations.get(role);
+		const confirmed = pending
+			&& pending.prompt === normalized
+			&& pending.userEpoch === this.userEpoch
+			&& Date.now() - pending.createdAt <= CONSULTATION_REPLACEMENT_CONFIRM_MS;
+		if (!confirmed) {
+			this.replacementConfirmations.set(role, { prompt: normalized, userEpoch: this.userEpoch, createdAt: Date.now() });
+			return {
+				confirmationRequired: true,
+				message: role === "advisor"
+					? ADVISOR_REPLACEMENT_CONFIRMATION_PROMPT
+					: REVIEWER_REPLACEMENT_CONFIRMATION_PROMPT,
+			};
+		}
+		this.replacementConfirmations.delete(role);
+		const running = this.active.get(current.childId);
+		if (running) {
+			await this.cancelRunning(running, role === "advisor" ? "replaced_by_new_advisor" : "replaced_by_new_reviewer");
+			const deadline = Date.now() + 5_000;
+			while (this.active.has(current.childId) && Date.now() < deadline) {
+				await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+			}
+			if (this.active.has(current.childId)) throw new Error(`${role === "advisor" ? "Advisor" : "Reviewer"} replacement is still settling. Retry after its cancellation result arrives.`);
+		}
+		const admission = await this.startJobs([{ role, label: role === "advisor" ? "Advisor consultation" : "Code review", task: normalized }], ctx);
+		return { confirmationRequired: false, ...admission };
 	}
 
 	private async startJobs(jobs: readonly SubmittedJob[], ctx: ExtensionContext): Promise<{ batchId: string; jobs: unknown[] }> {
@@ -359,12 +408,16 @@ export class SubagentManager {
 		ctx: ExtensionContext,
 	): Promise<unknown> {
 		await this.initialize(ctx);
-		const record = this.store!.list()
+		const record = this.latestRoleRecord(role);
+		if (!record) throw new Error(`${role === "advisor" ? "advisor_followup" : "reviewer_followup"} requires a previous ${role === "advisor" ? "consult_advisor" : "ask_for_review"} result.`);
+		return this.followupRecord(record, prompt, ctx);
+	}
+
+	private latestRoleRecord(role: "advisor" | "review"): SubagentChildRecord | undefined {
+		return this.store!.list()
 			.filter((candidate) => candidate.role === role)
 			.sort((left, right) => left.createdAt.localeCompare(right.createdAt))
 			.at(-1);
-		if (!record) throw new Error(`${role === "advisor" ? "advisor_followup" : "reviewer_followup"} requires a previous ${role === "advisor" ? "consult_advisor" : "ask_for_review"} result.`);
-		return this.followupRecord(record, prompt, ctx);
 	}
 
 	private async followupRecord(record: SubagentChildRecord, prompt: string, ctx: ExtensionContext): Promise<unknown> {
@@ -424,6 +477,7 @@ export class SubagentManager {
 	}
 
 	async cancelAll(reason: string): Promise<void> {
+		this.replacementConfirmations.clear();
 		for (const controller of this.advisorBriefControllers.values()) controller.abort(new Error(reason));
 		await Promise.all([...this.active.values()].map((running) => this.cancelRunning(running, reason)));
 	}
@@ -926,6 +980,9 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const result = await manager.consultAdvisor(params.question, ctx);
+			if (result.confirmationRequired) {
+				return { content: [{ type: "text", text: result.message }], details: { confirmationRequired: true } };
+			}
 			const details = consultationAdmission(result);
 			return {
 				content: [{ type: "text", text: "Advisor consultation accepted. The result will be delivered automatically; advisor_followup continues this advisor after completion." }],
@@ -947,6 +1004,9 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const result = await manager.askForReview(params.request, ctx);
+			if (result.confirmationRequired) {
+				return { content: [{ type: "text", text: result.message }], details: { confirmationRequired: true } };
+			}
 			const details = consultationAdmission(result);
 			return {
 				content: [{ type: "text", text: "Code review accepted. The result will be delivered automatically; reviewer_followup continues this reviewer after completion." }],

@@ -32,7 +32,11 @@ assumptions, uncertainty, and decision requested. `ask_for_review` accepts one
 `request` describing the completed change, acceptance requirements,
 verification, and risks. Both return immediately and deliver their result
 automatically through the shared session-owned lifecycle. One advisor and one
-reviewer may be active at a time.
+reviewer may be active at a time. When a current conversation exists, the first
+fresh admission returns a packaged confirmation prompt. Repeating the exact
+same question/request within the same user epoch and two-minute window confirms
+replacement; a changed objective starts a new confirmation. A running
+conversation is cancelled and settled before confirmed replacement starts.
 
 `subagent_followup` continues an exact explore/work child. `advisor_followup`
 continues the most recent advisor; `reviewer_followup` continues the most recent
