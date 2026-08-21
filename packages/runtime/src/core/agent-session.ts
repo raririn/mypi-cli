@@ -3246,8 +3246,18 @@ export class AgentSession {
 		const previousActiveToolNames = this._requestedActiveToolNames ?? this.getActiveToolNames();
 		const allowedToolNames = this._allowedToolNames;
 		const excludedToolNames = this._excludedToolNames;
-		const isAllowedTool = (name: string): boolean =>
-			(!allowedToolNames || allowedToolNames.has(name)) && !excludedToolNames?.has(name);
+		const isAllowedTool = (name: string): boolean => {
+			if (excludedToolNames?.has(name)) return false;
+			if (!allowedToolNames || allowedToolNames.has(name)) return true;
+			// Bounded safety modes substitute the workspace tools for the broad
+			// read/write tools at the model boundary. An explicit --tools allowlist
+			// that names the broad tools must keep their substitutes registered, or
+			// a sandboxed/safe session launched with --tools loses all file access
+			// (BUG: sandboxed explore subagents reported no read tools).
+			if (name === "read_workspace") return ["read", "grep", "find", "ls"].some((broad) => allowedToolNames.has(broad));
+			if (name === "write_workspace") return ["write", "edit"].some((broad) => allowedToolNames.has(broad));
+			return false;
+		};
 
 		const registeredTools = this._extensionRunner.getAllRegisteredTools();
 		const allCustomTools = [

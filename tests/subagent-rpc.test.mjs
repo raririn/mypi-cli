@@ -464,3 +464,59 @@ test("reviewer uses project policy, complete working-tree evidence, and marks a 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+// BUG (2026-08-21, installed test 1): an explore child launched with
+// `--tools read,grep,find,ls,...` under a sandboxed *global default* safety
+// mode lost every file tool, because the --tools allowlist kept the
+// workspace substitutes (read_workspace/write_workspace) out of the registry
+// while bounded safety substituted the broad tools away. The substitutes must
+// ride the allowlisted originals.
+test("a sandboxed-default child launched with --tools keeps workspace read access", { timeout: 30_000 }, async () => {
+  const { spawn } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  const MYPI = fileURLToPath(new URL("../scripts/mypi.mjs", import.meta.url));
+  const root = await mkdtemp(join(tmpdir(), "mypi-sandbox-tools-"));
+  const agentDir = join(root, "agent");
+  await mkdir(agentDir, { recursive: true, mode: 0o700 });
+  await writeFile(join(agentDir, "settings.json"), JSON.stringify({ safety: { defaultMode: "sandbox" } }), { mode: 0o600 });
+  let child;
+  try {
+    child = spawn(process.execPath, [MYPI, "--mode", "rpc", "--tools", "read,grep,find,ls,web_search,web_fetch", "--approve"], {
+      cwd: root,
+      env: { ...process.env, MYPI_AGENT_DIR: agentDir, MYPI_CODING_AGENT_DIR: agentDir },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (d) => { stderr += d.toString(); });
+    const frames = [];
+    let buffer = "";
+    child.stdout.on("data", (d) => {
+      buffer += d.toString();
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try { frames.push(JSON.parse(line)); } catch { /* banners */ }
+      }
+    });
+    const waitFor = (predicate, label) => new Promise((resolvePromise, rejectPromise) => {
+      const deadline = Date.now() + 20_000;
+      const tick = () => {
+        const match = frames.find(predicate);
+        if (match) return resolvePromise(match);
+        if (Date.now() > deadline) return rejectPromise(new Error(`Timed out waiting for ${label}. stderr: ${stderr.slice(-1500)}`));
+        setTimeout(tick, 25);
+      };
+      tick();
+    });
+    child.stdin.write('{"id":"s1","type":"get_state"}\n{"id":"sp","type":"get_system_prompt"}\n');
+    const state = await waitFor((f) => f.id === "s1" && f.type === "response", "state");
+    assert.equal(state.data.safetyMode, "sandbox", "child adopted the sandboxed global default");
+    const prompt = await waitFor((f) => f.id === "sp" && f.type === "response", "system prompt");
+    const text = JSON.stringify(prompt.data);
+    assert.match(text, /read_workspace/u, "the workspace read substitute stays available under a --tools allowlist");
+  } finally {
+    child?.kill("SIGKILL");
+    await rm(root, { recursive: true, force: true });
+  }
+});
