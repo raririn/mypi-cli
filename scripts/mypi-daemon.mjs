@@ -32,6 +32,9 @@
 //       it under the native session id once the child reports it, and the
 //       `attached` frame carries that id for the client to adopt.
 //     {type:"detach", sessionId}
+//       `attach` also accepts profile:"chat" — create/resume a MyPi Chat
+//       engine (sealed chat tools, chat-sessions root); persisted listings
+//       carry `profile` so clients know which attach shape to use.
 //     {type:"release", sessionId, force?}             native takeover support
 //     {type:"request_handoff", targetSessionId,
 //       expectedOwnerId, force?, hard?, confirmationToken?}
@@ -93,6 +96,7 @@ import {
   listDaemonSkills,
   listPersistedSessions,
   loadGlobalConfig,
+  prepareChatEngineLaunch,
   readPersistedSession,
   runNewSessionMaintenance,
 } from "@earendil-works/pi-coding-agent";
@@ -350,14 +354,20 @@ function removeOwnFiles() {
 function engineCommand(session) {
   if (process.env.MYPI_DAEMON_ENGINE_CMD) {
     const base = JSON.parse(process.env.MYPI_DAEMON_ENGINE_CMD);
-    return [...base, ...(session.sessionId ? ["--session", session.sessionId] : []), ...(session.model ? ["--model", session.model] : [])];
+    return [
+      ...base,
+      ...(session.launchArgs ?? []),
+      ...(session.sessionArg ? ["--session", session.sessionArg] : session.sessionId ? ["--session", session.sessionId] : []),
+      ...(session.model ? ["--model", session.model] : []),
+    ];
   }
   return [
     process.execPath,
     process.argv[1],
     "--mode",
     "rpc",
-    ...(session.sessionId ? ["--session", session.sessionId] : []),
+    ...(session.launchArgs ?? []),
+    ...(session.sessionArg ? ["--session", session.sessionArg] : session.sessionId ? ["--session", session.sessionId] : []),
     ...(session.model ? ["--model", session.model] : []),
   ];
 }
@@ -373,7 +383,8 @@ function normalizeSessionStart(value) {
   };
 }
 
-function startSession({ sessionId, cwd, model, sessionStart }) {
+function startSession({ sessionId, cwd, model, sessionStart, profile, launchArgs, launchEnv, sessionArg }) {
+  // (joined by joinSessionAsClient below)
   const session = {
     sessionId: sessionId || null,
     // Fresh sessions have no id until the engine reports one; they are keyed
@@ -381,6 +392,10 @@ function startSession({ sessionId, cwd, model, sessionStart }) {
     key: sessionId || `__new_${(newSessionCounter += 1)}`,
     cwd: cwd || process.cwd(),
     model: model || null,
+    profile: profile === "chat" ? "chat" : "coding",
+    launchArgs: launchArgs ?? null,
+    launchEnv: launchEnv ?? null,
+    sessionArg: sessionArg ?? null,
     sessionFile: null,
     child: null,
     clients: new Set(),
@@ -406,6 +421,7 @@ function startSession({ sessionId, cwd, model, sessionStart }) {
     stdio: ["pipe", "pipe", "pipe"],
     env: {
       ...process.env,
+      ...(session.launchEnv ?? {}),
       MYPI_DAEMON_ENGINE: "1",
       ...(sessionStart ? { MYPI_DAEMON_SESSION_START: JSON.stringify(sessionStart) } : {}),
     },
@@ -450,6 +466,31 @@ function sendToEngine(session, frame) {
   session.child.stdin.write(`${JSON.stringify(frame)}\n`);
 }
 
+/** Shared attach bookkeeping: membership, grace-timer cancel, and the
+ *  attached/outstanding-UI replay for already-ready engines. */
+function joinSessionAsClient(client, session) {
+  if (session.graceTimer) {
+    clearTimeout(session.graceTimer);
+    session.graceTimer = null;
+  }
+  session.clients.add(client);
+  client.sessions.add(session.key);
+  if (session.ready) {
+    sendToClient(client, {
+      type: "attached",
+      sessionId: session.sessionId ?? session.key,
+      nativeSessionId: session.nativeSessionId ?? null,
+      sessionFile: session.sessionFile,
+      cwd: session.cwd,
+      clients: session.clients.size,
+      profile: session.profile ?? "coding",
+    });
+    for (const pendingFrame of session.outstandingUi.values()) {
+      sendToClient(client, pendingFrame);
+    }
+  }
+}
+
 function handleEngineFrame(session, line) {
   let frame;
   try {
@@ -477,6 +518,7 @@ function handleEngineFrame(session, line) {
           sessionFile: session.sessionFile,
           cwd: session.cwd,
           clients: session.clients.size,
+          profile: session.profile ?? "coding",
         });
         if (!session.persistedAnnounced && session.sessionFile) {
           session.persistedAnnounced = true;
@@ -1134,6 +1176,7 @@ function handleClientFrame(client, frame) {
       agentDir: daemonAgentDir,
       ...(typeof frame.cwd === "string" ? { cwd: frame.cwd } : {}),
       includeArchived: frame.includeArchived === true,
+      ...(frame.profile === "chat" || frame.profile === "coding" ? { profile: frame.profile } : {}),
       ...(Number.isInteger(frame.offset) ? { offset: frame.offset } : {}),
       ...(Number.isInteger(frame.limit) ? { limit: frame.limit } : {}),
     }));
@@ -1292,6 +1335,42 @@ function handleClientFrame(client, frame) {
     // No sessionId creates a fresh engine session; the daemon re-keys it and
     // broadcasts `attached` once the child reports its native id.
     let session = sessionId ? sessions.get(sessionId) : undefined;
+    if (!session && frame.profile === "chat") {
+      // Chat engines need their sealed launch recipe (asset cwd, restricted
+      // tools, chat session root) resolved before spawn; the recipe lookup is
+      // asynchronous, so chat attaches join through this deferred path.
+      void prepareChatEngineLaunch({ agentDir: daemonAgentDir, ...(sessionId ? { sessionId } : {}) }).then(
+        (launch) => {
+          if (draining) {
+            sendToClient(client, {
+              type: "daemon_draining",
+              reason: "The MyPi session daemon is restarting; retry in a moment.",
+            });
+            return;
+          }
+          const raced = sessionId ? sessions.get(sessionId) : undefined;
+          const chatSession = raced ?? startSession({
+            sessionId,
+            cwd: launch.cwd,
+            model: frame.model,
+            sessionStart: null,
+            profile: "chat",
+            launchArgs: launch.args,
+            launchEnv: launch.env,
+            sessionArg: launch.sessionPath ?? null,
+          });
+          joinSessionAsClient(client, chatSession);
+        },
+        (error) => {
+          sendToClient(client, {
+            type: "error",
+            sessionId,
+            error: `Chat attach failed: ${error instanceof Error ? error.message : String(error)}`,
+          });
+        },
+      );
+      return;
+    }
     if (!session) {
       const preparedFresh = sessionId ? preparedFreshSessionIds.delete(sessionId) : false;
       session = startSession({
@@ -1301,27 +1380,7 @@ function handleClientFrame(client, frame) {
         sessionStart: normalizeSessionStart(frame.sessionStart) ?? (preparedFresh ? { reason: "new" } : null),
       });
     }
-    if (session.graceTimer) {
-      clearTimeout(session.graceTimer);
-      session.graceTimer = null;
-    }
-    session.clients.add(client);
-    client.sessions.add(session.key);
-    if (session.ready) {
-      sendToClient(client, {
-        type: "attached",
-        sessionId: session.sessionId ?? session.key,
-        nativeSessionId: session.nativeSessionId ?? null,
-        sessionFile: session.sessionFile,
-        cwd: session.cwd,
-        clients: session.clients.size,
-      });
-      // Late joiners receive the prompts still waiting for an answer, in
-      // full, so they can render and answer them like any other client.
-      for (const pendingFrame of session.outstandingUi.values()) {
-        sendToClient(client, pendingFrame);
-      }
-    }
+    joinSessionAsClient(client, session);
     return;
   }
 

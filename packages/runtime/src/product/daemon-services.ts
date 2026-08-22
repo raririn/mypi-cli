@@ -10,6 +10,10 @@ import { SettingsManager } from "../core/settings-manager.ts";
 import { removeSubagentParentStorage } from "../core/subagents/storage.ts";
 import type { SourceInfo } from "../core/source-info.ts";
 import { ProjectTrustStore } from "../core/trust-manager.ts";
+import { resolveChatPaths } from "./mypi-chat-storage.ts";
+import { CHAT_TOOL_NAMES } from "./mypi-chat.ts";
+import { randomUUID } from "node:crypto";
+import { writeFile } from "node:fs/promises";
 import { loadGlobalConfig, type GlobalConfigDiagnostic, type HistoryConfig } from "./global-config.ts";
 
 const MAX_DISCOVERED_FILES = 10_000;
@@ -29,6 +33,9 @@ export interface PersistedSessionSummary {
 	readonly id: string;
 	readonly sessionFile: string;
 	readonly cwd: string;
+	/** Product profile that owns this session: ordinary coding sessions live
+	 *  under sessions/, MyPi Chat sessions under the chat root. */
+	readonly profile: "coding" | "chat";
 	readonly name?: string;
 	readonly firstUserText: string;
 	readonly createdAt: string;
@@ -71,6 +78,8 @@ export interface DaemonResourceInventoryEntry {
 export interface PersistedSessionListOptions {
 	readonly cwd?: string;
 	readonly includeArchived?: boolean;
+	/** Restrict to one product profile; omitted lists both. */
+	readonly profile?: "coding" | "chat";
 	readonly offset?: number;
 	readonly limit?: number;
 	readonly agentDir?: string;
@@ -113,10 +122,65 @@ export interface ArchiveCleanupPreview {
 	readonly configDiagnostic?: GlobalConfigDiagnostic;
 }
 
+/** Everything a daemon needs to spawn one MyPi Chat engine child: the chat
+ *  asset directory as cwd, the sealed chat tool/extension flags, and the
+ *  profile environment. A missing sessionId allocates a fresh chat. */
+export interface ChatEngineLaunch {
+	readonly cwd: string;
+	readonly args: readonly string[];
+	readonly env: Readonly<Record<string, string>>;
+	/** Session file path to resume; absent for a fresh chat. */
+	readonly sessionPath?: string;
+}
+
+export async function prepareChatEngineLaunch(options: { agentDir?: string; sessionId?: string } = {}): Promise<ChatEngineLaunch> {
+	const chat = resolveChatPaths(options.agentDir);
+	await mkdir(chat.activeHistory, { recursive: true });
+	await mkdir(chat.activeAssets, { recursive: true });
+	const env = {
+		MYPI_RUNTIME_PROFILE: "chat",
+		MYPI_CHAT_ROOT: chat.root,
+		PI_GUI_CHAT_ROOT: chat.root,
+	};
+	const baseArgs = [
+		"--no-extensions",
+		"--no-skills",
+		"--no-prompt-templates",
+		"--no-context-files",
+		"--tools",
+		CHAT_TOOL_NAMES.join(","),
+		"--session-dir",
+		chat.activeHistory,
+	];
+	if (options.sessionId) {
+		const summaries = await scanSessionRoot(chat.activeHistory, false, "chat");
+		const match = summaries.find((session) => session.id === options.sessionId);
+		if (!match) throw new Error("Chat session was not found among active chats");
+		const cwd = match.cwd || join(chat.activeAssets, options.sessionId);
+		await mkdir(cwd, { recursive: true });
+		return { cwd, args: baseArgs, env, sessionPath: match.sessionFile };
+	}
+	const cwd = join(chat.activeAssets, randomUUID());
+	await mkdir(cwd, { recursive: true });
+	await writeFile(join(cwd, "canvas.md"), "", { flag: "wx" }).catch(() => undefined);
+	return { cwd, args: baseArgs, env };
+}
+
 export async function listPersistedSessions(options: PersistedSessionListOptions = {}): Promise<PersistedSessionPage> {
 	const roots = resolveSessionRoots(options.agentDir);
-	const active = await scanSessionRoot(roots.sessionsRoot, false);
-	const archived = options.includeArchived ? await scanSessionRoot(roots.archiveRoot, true) : [];
+	const chat = resolveChatPaths(options.agentDir);
+	const wantCoding = options.profile !== "chat";
+	const wantChat = options.profile !== "coding";
+	const active = [
+		...(wantCoding ? await scanSessionRoot(roots.sessionsRoot, false) : []),
+		...(wantChat ? await scanSessionRoot(chat.activeHistory, false, "chat") : []),
+	];
+	const archived = options.includeArchived
+		? [
+				...(wantCoding ? await scanSessionRoot(roots.archiveRoot, true) : []),
+				...(wantChat ? await scanSessionRoot(chat.archiveHistory, true, "chat") : []),
+			]
+		: [];
 	const cwd = options.cwd ? await canonicalPath(options.cwd) : undefined;
 	const sessions = [...active, ...archived]
 		.filter((session) => !cwd || session.cwd === cwd)
@@ -130,9 +194,12 @@ export async function listPersistedSessions(options: PersistedSessionListOptions
 export async function readPersistedSession(options: PersistedSessionReadOptions): Promise<PersistedSessionReadResult> {
 	if (!options.id && !options.sessionFile) throw new Error("read_session requires id or sessionFile");
 	const roots = resolveSessionRoots(options.agentDir);
+	const chat = resolveChatPaths(options.agentDir);
 	const candidates = [
 		...(await scanSessionRoot(roots.sessionsRoot, false)),
 		...(options.includeArchived === false ? [] : await scanSessionRoot(roots.archiveRoot, true)),
+		...(await scanSessionRoot(chat.activeHistory, false, "chat")),
+		...(options.includeArchived === false ? [] : await scanSessionRoot(chat.archiveHistory, true, "chat")),
 	];
 	const matches = candidates.filter((session) =>
 		(options.id ? session.id === options.id : true) &&
@@ -142,7 +209,10 @@ export async function readPersistedSession(options: PersistedSessionReadOptions)
 	const session = matches[0]!;
 	const limit = boundedInteger(options.limit, 1, MAX_READ_LIMIT, DEFAULT_READ_LIMIT);
 	const maxBytes = boundedInteger(options.maxBytes, 1_024, MAX_READ_BYTES, DEFAULT_READ_BYTES);
-	const handle = await openSafeSessionFile(session.sessionFile, session.archived ? roots.archiveRoot : roots.sessionsRoot);
+	const containmentRoot = session.profile === "chat"
+		? (session.archived ? chat.archiveHistory : chat.activeHistory)
+		: (session.archived ? roots.archiveRoot : roots.sessionsRoot);
+	const handle = await openSafeSessionFile(session.sessionFile, containmentRoot);
 	const entries: unknown[] = [];
 	let cursorSeen = options.since === undefined;
 	let bytes = 0;
@@ -199,9 +269,12 @@ export async function readPersistedSession(options: PersistedSessionReadOptions)
 
 export async function getPersistedSessionStats(options: PersistedSessionReadOptions): Promise<Record<string, unknown>> {
 	const roots = resolveSessionRoots(options.agentDir);
+	const chat = resolveChatPaths(options.agentDir);
 	const candidates = [
 		...(await scanSessionRoot(roots.sessionsRoot, false)),
 		...(options.includeArchived === false ? [] : await scanSessionRoot(roots.archiveRoot, true)),
+		...(await scanSessionRoot(chat.activeHistory, false, "chat")),
+		...(options.includeArchived === false ? [] : await scanSessionRoot(chat.archiveHistory, true, "chat")),
 	];
 	const matches = candidates.filter((session) =>
 		(options.id ? session.id === options.id : true) &&
@@ -385,12 +458,12 @@ async function daemonServices(cwd: string, agentDir: string): Promise<AgentSessi
 	return pending;
 }
 
-async function scanSessionRoot(root: string, archived: boolean): Promise<PersistedSessionSummary[]> {
+async function scanSessionRoot(root: string, archived: boolean, profile: "coding" | "chat" = "coding"): Promise<PersistedSessionSummary[]> {
 	const files: string[] = [];
 	await collectSessionFiles(root, root, 0, files);
 	const sessions: PersistedSessionSummary[] = [];
 	for (let index = 0; index < files.length; index += 8) {
-		const page = await Promise.all(files.slice(index, index + 8).map((file) => summarizeSessionFile(file, root, archived)));
+		const page = await Promise.all(files.slice(index, index + 8).map((file) => summarizeSessionFile(file, root, archived, profile)));
 		for (const session of page) if (session) sessions.push(session);
 	}
 	return sessions;
@@ -513,7 +586,7 @@ async function collectSessionFiles(root: string, directory: string, depth: numbe
 	}
 }
 
-async function summarizeSessionFile(file: string, root: string, archived: boolean): Promise<PersistedSessionSummary | undefined> {
+async function summarizeSessionFile(file: string, root: string, archived: boolean, profile: "coding" | "chat" = "coding"): Promise<PersistedSessionSummary | undefined> {
 	let handle;
 	try {
 		handle = await openSafeSessionFile(file, root);
@@ -558,6 +631,7 @@ async function summarizeSessionFile(file: string, root: string, archived: boolea
 			id: String(header.id),
 			sessionFile: await canonicalPath(file),
 			cwd: typeof header.cwd === "string" ? await canonicalPath(header.cwd) : "",
+			profile,
 			...(name ? { name } : {}),
 			firstUserText,
 			createdAt,

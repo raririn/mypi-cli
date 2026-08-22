@@ -1304,3 +1304,58 @@ test("restart waits for an active turn, refuses new attaches while draining, the
     await daemon.cleanup();
   }
 });
+
+test("chat sessions list with profile and attach through the sealed chat recipe", async () => {
+  const daemon = await startDaemon();
+  try {
+    const cwd = join(daemon.daemonDir, "workspace");
+    const sessionDir = join(daemon.agentDir, "sessions", "workspace");
+    const chatAssets = join(daemon.agentDir, "chat-sessions", "assets", "chat-asset-1");
+    const chatHistory = join(daemon.agentDir, "chat-sessions", "history");
+    await Promise.all([
+      mkdir(cwd, { recursive: true }),
+      mkdir(sessionDir, { recursive: true }),
+      mkdir(chatAssets, { recursive: true }),
+      mkdir(chatHistory, { recursive: true }),
+    ]);
+    await writeFile(join(sessionDir, "coding.jsonl"), persistedSession({ id: "coding-1", cwd }));
+    await writeFile(
+      join(chatHistory, "chat.jsonl"),
+      persistedSession({ id: "chat-1", cwd: chatAssets, name: "A chat" }),
+    );
+
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    const response = (id) => client.frames.find((frame) => frame.type === "response" && frame.id === id);
+
+    // Listing carries the profile marker for both roots.
+    client.send({ id: "all", type: "list_persisted_sessions" });
+    await waitFor(() => response("all"), 5_000, "combined listing");
+    const all = response("all").data.sessions;
+    assert.equal(all.find((s) => s.id === "chat-1")?.profile, "chat");
+    assert.equal(all.find((s) => s.id === "coding-1")?.profile, "coding");
+
+    // Profile filter narrows to chats only.
+    client.send({ id: "chats", type: "list_persisted_sessions", profile: "chat" });
+    await waitFor(() => response("chats"), 5_000, "chat-only listing");
+    assert.deepEqual(response("chats").data.sessions.map((s) => s.id), ["chat-1"]);
+
+    // read_session serves the chat transcript from the chat root.
+    client.send({ id: "read", type: "read_session", sessionId: "chat-1", limit: 2 });
+    await waitFor(() => response("read"), 5_000, "chat read");
+    assert.equal(response("read").success, true);
+    assert.equal(response("read").data.entries.length, 2);
+
+    // A fresh chat attach spawns the sealed recipe: asset cwd + canvas.md.
+    client.send({ type: "attach", profile: "chat" });
+    await waitFor(() => client.ofType("attached").length === 1, 10_000, "chat attached");
+    const attached = client.ofType("attached")[0];
+    assert.equal(attached.profile, "chat");
+    assert.ok(attached.cwd.includes(join("chat-sessions", "assets")), `chat cwd is an asset dir: ${attached.cwd}`);
+    assert.ok(existsSync(join(attached.cwd, "canvas.md")), "fresh chat owns a canvas.md");
+    client.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});

@@ -28,7 +28,11 @@ export interface ChatMutationOwnership {
 }
 
 export function resolveChatPaths(agentDir = process.env.MYPI_AGENT_DIR || process.env.MYPI_CODING_AGENT_DIR || join(homedir(), ".mypi", "agent")): ChatPaths {
-  const configuredRoot = resolve(process.env.PI_GUI_CHAT_ROOT || join(agentDir, "chat-sessions"));
+  // MYPI_CHAT_ROOT is the product-facing override; PI_GUI_CHAT_ROOT remains
+  // readable for compatibility with the historical desktop line.
+  const configuredRoot = resolve(
+    process.env.MYPI_CHAT_ROOT || process.env.PI_GUI_CHAT_ROOT || join(agentDir, "chat-sessions"),
+  );
   const root = canonicalizePath(configuredRoot);
   return {
     root,
