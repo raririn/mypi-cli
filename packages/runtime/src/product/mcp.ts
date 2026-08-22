@@ -20,6 +20,7 @@ import { McpError, type McpConfig, type McpConfigDiagnostic, type McpToolDescrip
 import { loadGlobalConfig } from "./global-config.ts";
 import { registerMcpCommand } from "./mcp-command.ts";
 import { openBrowser } from "../utils/open-browser.ts";
+import { copyToClipboard } from "../utils/clipboard.ts";
 
 export const MCP_SEARCH_TOOL = "mcp_search";
 export const MCP_LOAD_TOOL = "mcp_load";
@@ -105,11 +106,21 @@ export class McpProductRuntime {
 			authorize: async (url) => {
 				const context = this.ctx;
 				if (!context) throw new McpError("MCP_AUTH_REQUIRED", "no interactive surface can open the authorization URL");
-				// Launch the browser directly: terminal-wrapped URLs lose their
-				// tail parameters when copied, which authorization servers
-				// reject in confusing ways (silent bounce, no consent screen).
-				if (/^https?:\/\//u.test(url)) openBrowser(url);
-				context.ui.notify(`MCP authorization required. A browser window should open; if it does not, open this URL manually: ${url}`, "warning");
+				// Never rely on hand-copying the URL from the transcript: the TUI
+				// hard-wraps long lines, and a truncated authorize URL makes
+				// servers bounce without a consent screen.
+				const choice = await context.ui
+					.select("MCP authorization required", ["Open in browser", "Copy URL to clipboard"])
+					.catch(() => undefined);
+				if (choice?.startsWith("Copy")) {
+					await copyToClipboard(url).catch(() => {});
+					context.ui.notify("Authorization URL copied. Paste it into your browser to continue.", "info");
+				} else if (choice?.startsWith("Open") && /^https?:\/\//u.test(url)) {
+					openBrowser(url);
+					context.ui.notify("Waiting for authorization in your browser...", "info");
+				} else {
+					context.ui.notify(`Authorization URL: ${url}`, "warning");
+				}
 			},
 			takenToolNames: () => {
 				const taken = new Set(this.pi.getAllTools().map((tool) => tool.name));
