@@ -311,6 +311,7 @@ export class TUI extends Container {
 	private hardwareCursorRow = 0; // Actual terminal cursor row (may differ due to IME positioning)
 	private showHardwareCursor = process.env.PI_HARDWARE_CURSOR === "1";
 	private clearOnShrink = process.env.PI_CLEAR_ON_SHRINK === "1"; // Clear empty rows when content shrinks (default: off)
+	private preserveScrollback = process.env.MYPI_PRESERVE_SCROLLBACK !== "0"; // Freeze scrollback instead of clearing it on above-viewport changes (default: on)
 	private maxLinesRendered = 0; // Track terminal's working area (max lines ever rendered)
 	private previousViewportTop = 0; // Track previous viewport top for resize-aware cursor moves
 	private fullRedrawCount = 0;
@@ -363,6 +364,21 @@ export class TUI extends Container {
 	 */
 	setClearOnShrink(enabled: boolean): void {
 		this.clearOnShrink = enabled;
+	}
+
+	getPreserveScrollback(): boolean {
+		return this.preserveScrollback;
+	}
+
+	/**
+	 * Set whether terminal scrollback is preserved when lines above the visible
+	 * viewport change. When true (default), the diff is clamped to the visible
+	 * region and history keeps its originally rendered form, so the user's
+	 * scrollback reading position is never destroyed mid-turn. When false,
+	 * above-viewport changes trigger a full clear-and-repaint (legacy behavior).
+	 */
+	setPreserveScrollback(enabled: boolean): void {
+		this.preserveScrollback = enabled;
 	}
 
 	setFocus(component: Component | null): void {
@@ -1456,11 +1472,34 @@ export class TUI extends Container {
 		}
 
 		// Differential rendering can only touch what was actually visible.
-		// If the first changed line is above the previous viewport, we need a full redraw.
+		// If the first changed line is above the previous viewport, that content
+		// lives in terminal scrollback and cannot be edited in place. Repainting
+		// it requires wiping screen and scrollback, which destroys the user's
+		// reading position on every above-viewport change. While content grows
+		// or holds its length (streaming), freeze the scrollback by clamping
+		// the diff to the visible region. Shrinking content (branch switches,
+		// transient component teardown) keeps the full repaint so no stale rows
+		// stay visible. setPreserveScrollback(false) restores the legacy
+		// always-repaint behavior.
 		if (firstChanged < prevViewportTop) {
-			logRedraw(`firstChanged < viewportTop (${firstChanged} < ${prevViewportTop})`);
-			fullRender(true);
-			return;
+			if (!this.preserveScrollback || newLines.length < this.previousLines.length) {
+				logRedraw(`firstChanged < viewportTop (${firstChanged} < ${prevViewportTop})`);
+				fullRender(true);
+				return;
+			}
+			firstChanged = prevViewportTop;
+			if (lastChanged < firstChanged && newLines.length === this.previousLines.length) {
+				// Every change is above the viewport and nothing was appended or
+				// deleted; there is nothing visible to repaint.
+				this.positionHardwareCursor(cursorPos, newLines.length);
+				this.previousLines = newLines;
+				this.previousKittyImageIds = this.collectKittyImageIds(newLines);
+				this.previousWidth = width;
+				this.previousHeight = height;
+				this.previousViewportTop = prevViewportTop;
+				return;
+			}
+			lastChanged = Math.max(lastChanged, firstChanged);
 		}
 
 		// Render from first changed line to end

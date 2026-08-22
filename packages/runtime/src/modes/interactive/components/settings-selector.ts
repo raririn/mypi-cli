@@ -78,6 +78,7 @@ export interface SettingsConfig {
 	quietStartup: boolean;
 	defaultProjectTrust: DefaultProjectTrust;
 	clearOnShrink: boolean;
+	preserveScrollback: boolean;
 	showTerminalProgress: boolean;
 	warnings: WarningSettings;
 }
@@ -109,6 +110,7 @@ export interface SettingsCallbacks {
 	onQuietStartupChange: (enabled: boolean) => void;
 	onDefaultProjectTrustChange: (defaultProjectTrust: DefaultProjectTrust) => void;
 	onClearOnShrinkChange: (enabled: boolean) => void;
+	onPreserveScrollbackChange: (enabled: boolean) => void;
 	onShowTerminalProgressChange: (enabled: boolean) => void;
 	onWarningsChange: (warnings: WarningSettings) => void;
 	onCancel: () => void;
@@ -714,6 +716,16 @@ export class SettingsSelectorComponent extends Container {
 		// Terminal progress toggle (insert after clear-on-shrink)
 		const clearOnShrinkIndex = items.findIndex((item) => item.id === "clear-on-shrink");
 		items.splice(clearOnShrinkIndex + 1, 0, {
+			id: "preserve-scrollback",
+			label: "Preserve scrollback",
+			description: "Keep terminal scrollback intact during streaming instead of clearing it to repaint history",
+			currentValue: config.preserveScrollback ? "true" : "false",
+			values: ["true", "false"],
+		});
+
+		// Terminal progress toggle (insert after preserve-scrollback)
+		const preserveScrollbackIndex = items.findIndex((item) => item.id === "preserve-scrollback");
+		items.splice(preserveScrollbackIndex + 1, 0, {
 			id: "terminal-progress",
 			label: "Terminal progress",
 			description: "Show OSC 9;4 progress indicators in the terminal tab bar",
@@ -808,6 +820,9 @@ export class SettingsSelectorComponent extends Container {
 						break;
 					case "clear-on-shrink":
 						callbacks.onClearOnShrinkChange(newValue === "true");
+						break;
+					case "preserve-scrollback":
+						callbacks.onPreserveScrollbackChange(newValue === "true");
 						break;
 					case "terminal-progress":
 						callbacks.onShowTerminalProgressChange(newValue === "true");

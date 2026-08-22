@@ -81,6 +81,7 @@ export async function createStartupTui(settingsManager: SettingsManager): Promis
 	setKeybindings(KeybindingsManager.create());
 	const ui = new TUI(new ProcessTerminal(), settingsManager.getShowHardwareCursor(), getAgentDir());
 	ui.setClearOnShrink(settingsManager.getClearOnShrink());
+	ui.setPreserveScrollback(settingsManager.getPreserveScrollback());
 	return ui;
 }
 

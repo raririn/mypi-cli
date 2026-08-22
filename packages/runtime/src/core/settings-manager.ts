@@ -37,6 +37,7 @@ export interface TerminalSettings {
 	showImages?: boolean; // default: true (only relevant if terminal supports images)
 	imageWidthCells?: number; // default: 60 (preferred inline image width in terminal cells)
 	clearOnShrink?: boolean; // default: false (clear empty rows when content shrinks)
+	preserveScrollback?: boolean; // default: true (freeze scrollback instead of clearing it on above-viewport changes)
 	showTerminalProgress?: boolean; // default: false (OSC 9;4 terminal progress indicators)
 }
 
@@ -1147,6 +1148,23 @@ export class SettingsManager {
 		}
 		this.globalSettings.terminal.clearOnShrink = enabled;
 		this.markModified("terminal", "clearOnShrink");
+		this.save();
+	}
+
+	getPreserveScrollback(): boolean {
+		// Settings takes precedence, then env var, then default true
+		if (this.settings.terminal?.preserveScrollback !== undefined) {
+			return this.settings.terminal.preserveScrollback;
+		}
+		return process.env.MYPI_PRESERVE_SCROLLBACK !== "0";
+	}
+
+	setPreserveScrollback(enabled: boolean): void {
+		if (!this.globalSettings.terminal) {
+			this.globalSettings.terminal = {};
+		}
+		this.globalSettings.terminal.preserveScrollback = enabled;
+		this.markModified("terminal", "preserveScrollback");
 		this.save();
 	}
 
