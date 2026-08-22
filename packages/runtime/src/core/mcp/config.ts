@@ -77,7 +77,15 @@ export function redactServerConfig(config: McpServerConfig): Record<string, unkn
 		transport: config.transport,
 		...(config.url ? { url: config.url } : {}),
 		...(config.authBearerEnv ? { authBearerEnv: config.authBearerEnv } : {}),
-		...(config.oauth ? { oauth: { scopes: [...config.oauth.scopes] } } : {}),
+		...(config.oauth
+			? {
+				oauth: {
+					...(config.oauth.clientName ? { clientName: config.oauth.clientName } : {}),
+					...(config.oauth.redirectPort ? { redirectPort: config.oauth.redirectPort } : {}),
+					scopes: [...config.oauth.scopes],
+				},
+			}
+			: {}),
 		command: config.command,
 		argCount: config.args.length,
 		cwd: config.cwd,
@@ -109,7 +117,7 @@ function parseServer(
 
 	let url: string | undefined;
 	let authBearerEnv: string | undefined;
-	let oauth: { clientId?: string; scopes: string[] } | undefined;
+	let oauth: { clientId?: string; clientName?: string; redirectPort?: number; scopes: string[] } | undefined;
 	if (transport === "http") {
 		if (typeof record.url !== "string" || record.url.length > 2_048) return fail("http transport requires a bounded url string");
 		let parsedUrl: URL;
@@ -136,6 +144,7 @@ function parseServer(
 				const raw = record.oauth as Record<string, unknown>;
 				if (raw.clientId !== undefined && (typeof raw.clientId !== "string" || raw.clientId.length > 256)) return fail("oauth.clientId must be a bounded string");
 				if (raw.clientName !== undefined && (typeof raw.clientName !== "string" || raw.clientName.length === 0 || raw.clientName.length > 64 || /[\0\r\n]/u.test(raw.clientName))) return fail("oauth.clientName must be a bounded string");
+				if (raw.redirectPort !== undefined && (typeof raw.redirectPort !== "number" || !Number.isInteger(raw.redirectPort) || raw.redirectPort < 1 || raw.redirectPort > 65_535)) return fail("oauth.redirectPort must be an integer between 1 and 65535");
 				const scopes: string[] = [];
 				if (raw.scopes !== undefined) {
 					if (!Array.isArray(raw.scopes) || raw.scopes.length > 16) return fail("oauth.scopes must be an array of at most 16 scopes");
@@ -147,6 +156,7 @@ function parseServer(
 				oauth = {
 					...(typeof raw.clientId === "string" ? { clientId: raw.clientId } : {}),
 					...(typeof raw.clientName === "string" ? { clientName: raw.clientName } : {}),
+					...(typeof raw.redirectPort === "number" ? { redirectPort: raw.redirectPort } : {}),
 					scopes,
 				};
 			} else return fail("oauth must be true or an object");

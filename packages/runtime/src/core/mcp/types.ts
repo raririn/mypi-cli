@@ -25,6 +25,12 @@ export interface McpOAuthConfig {
 	 * Default: "MyPi".
 	 */
 	readonly clientName?: string;
+	/**
+	 * Fixed loopback redirect port. Some providers pre-register redirect URIs
+	 * for provisioned clients (keyed by clientName) and reject other ports.
+	 * When set, the flow fails instead of falling back to an ephemeral port.
+	 */
+	readonly redirectPort?: number;
 	/** Requested scopes; the authorization server may narrow them. */
 	readonly scopes: readonly string[];
 }

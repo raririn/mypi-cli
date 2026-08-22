@@ -210,6 +210,14 @@ test("http transport config validation requires https-or-loopback and separates 
 		servers: { o: { transport: "http", url: "https://example.com/mcp", oauth: { clientId: "c", scopes: ["read:user"] } } },
 	}, "global");
 	assert.deepEqual(oauthParsed.config.servers.get("o")!.oauth, { clientId: "c", scopes: ["read:user"] });
+	const pinnedParsed = parseMcpConfig({
+		servers: {
+			p: { transport: "http", url: "https://example.com/mcp", oauth: { clientName: "codex", redirectPort: 3118, scopes: [] } },
+			badport: { transport: "http", url: "https://example.com/mcp", oauth: { redirectPort: 0 } },
+		},
+	}, "global");
+	assert.deepEqual(pinnedParsed.config.servers.get("p")!.oauth, { clientName: "codex", redirectPort: 3118, scopes: [] });
+	assert.equal(pinnedParsed.config.servers.has("badport"), false, "out-of-range redirectPort is rejected");
 });
 
 test("streamable http transport lists and calls tools over JSON and SSE bodies", async () => {
@@ -259,6 +267,15 @@ test("bearer-token indirection reads the exact env variable and fails closed", a
 });
 
 test("oauth discovery, registration, PKCE, token storage, and cached reuse", { timeout: 30_000 }, async () => {
+	// Reserve a port, release it, and pin the OAuth redirect to it.
+	const reserved = createServer();
+	const pinnedPort = await new Promise<number>((resolvePort) => {
+		reserved.listen(0, "127.0.0.1", () => {
+			const address = reserved.address();
+			resolvePort(typeof address === "object" && address ? address.port : 0);
+		});
+	});
+	await new Promise((resolveClose) => reserved.close(resolveClose));
 	const fixture = await startHttpFixture({ oauth: true });
 	const authorizations: string[] = [];
 	const authorize = async (url: string) => {
@@ -266,7 +283,7 @@ test("oauth discovery, registration, PKCE, token storage, and cached reuse", { t
 		const response = await fetch(url, { redirect: "follow" });
 		assert.equal(response.status, 200);
 	};
-	const server = httpServerConfig(fixture.url, { oauth: { scopes: ["read:user"] } });
+	const server = httpServerConfig(fixture.url, { oauth: { scopes: ["read:user"], redirectPort: pinnedPort } });
 	const manager = managerFor(server, { authorize });
 	try {
 		const catalog = await manager.search({ server: "httpfixture", kind: "tool" });
@@ -275,6 +292,11 @@ test("oauth discovery, registration, PKCE, token storage, and cached reuse", { t
 		assert.match(authorizations[0]!, /code_challenge_method=S256/u);
 		assert.match(authorizations[0]!, /resource=/u);
 		assert.match(authorizations[0]!, /scope=read%3Auser/u);
+		assert.match(
+			authorizations[0]!,
+			new RegExp(`redirect_uri=http%3A%2F%2Flocalhost%3A${pinnedPort}%2Fcallback`, "u"),
+			"configured redirectPort pins the loopback redirect",
+		);
 		assert.equal(fixture.issued.registrations, 1, "dynamic client registration ran once");
 
 		const storePath = join(getAgentDir(), "runtime", "mcp", "oauth", "httpfixture.json");

@@ -101,7 +101,7 @@ test("/mcp add wizard probes a URL, offers auth choices, and persists without to
 		const { updateHistoryConfig } = await import("../../src/product/global-config.ts");
 		await updateHistoryConfig("maxActive", 42);
 
-		harness.scripted.inputs.push(url, "", "");       // target, suggested name, default client name
+		harness.scripted.inputs.push(url, "", "", "");   // target, suggested name, default client name, random redirect port
 		harness.scripted.selects.push("OAuth");
 		harness.scripted.confirms.push(true);
 		await harness.commands.get("mcp").handler("add", harness.ctx);

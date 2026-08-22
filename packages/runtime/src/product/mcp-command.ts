@@ -30,7 +30,7 @@ variable you name; token literals are never stored in settings. Anything else
 is treated as a STDIO command line (argv, no shell). OAuth prompts for a
 client_name because some providers only honor provisioned agent names.
 Advanced fields (toolPolicy effect classification, allow/deny lists,
-timeouts, required startup, oauth.scopes/clientId/clientName) remain
+timeouts, required startup, oauth.scopes/clientId/clientName/redirectPort) remain
 editable in ~/.mypi/agent/config.yaml under mcp.servers.`;
 
 export interface McpProbeResult {
@@ -177,7 +177,23 @@ export function registerMcpCommand(pi: ExtensionAPI, runtime: McpProductRuntime)
 						"MyPi",
 					))?.trim();
 					if (clientName === undefined) return;
-					record.oauth = clientName && clientName !== "MyPi" ? { clientName } : true;
+					// Providers that key provisioned clients on agent names usually
+					// pre-register that agent's fixed callback port too; offer a pin.
+					const portRaw = (await ctx.ui.input(
+						"OAuth redirect port (enter picks a random free port; set a fixed port when the provider pre-registers the callback URI)",
+						"",
+					))?.trim();
+					if (portRaw === undefined) return;
+					const redirectPort = portRaw ? Number.parseInt(portRaw, 10) : undefined;
+					if (portRaw && (!Number.isInteger(redirectPort) || redirectPort! < 1 || redirectPort! > 65_535)) {
+						ctx.ui.notify("Redirect port must be an integer between 1 and 65535.", "error");
+						return;
+					}
+					const oauthRecord: Record<string, unknown> = {
+						...(clientName && clientName !== "MyPi" ? { clientName } : {}),
+						...(redirectPort !== undefined ? { redirectPort } : {}),
+					};
+					record.oauth = Object.keys(oauthRecord).length ? oauthRecord : true;
 				}
 				else if (auth.startsWith("Bearer")) {
 					const envName = (await ctx.ui.input("Environment variable holding the token", `MCP_${serverId.toUpperCase().replace(/[^A-Z0-9]/gu, "_")}_TOKEN`))?.trim();

@@ -159,7 +159,13 @@ export class McpOAuthProvider {
 		const issuer = typeof asMetadata.issuer === "string" ? asMetadata.issuer : authServer;
 
 		const storedClient = this.options.config.clientId ? undefined : await this.loadClientRegistration(issuer);
-		const { server, redirectUri, port, callback } = await this.startLoopbackListener(storedClient?.redirectPort);
+		// A configured redirectPort wins over the persisted registration's port:
+		// providers with pre-registered redirect URIs accept only that exact port.
+		const configuredPort = this.options.config.redirectPort;
+		const { server, redirectUri, port, callback } = await this.startLoopbackListener(
+			configuredPort ?? storedClient?.redirectPort,
+			configuredPort !== undefined,
+		);
 		try {
 			// A persisted dynamic client is bound to its registered redirect port;
 			// when that port is unavailable this run, register a fresh client.
@@ -257,7 +263,7 @@ export class McpOAuthProvider {
 		return typeof body?.client_id === "string" ? body.client_id : undefined;
 	}
 
-	private startLoopbackListener(preferredPort?: number): Promise<{
+	private startLoopbackListener(preferredPort?: number, portRequired = false): Promise<{
 		server: ReturnType<typeof createServer>;
 		redirectUri: string;
 		port: number;
@@ -296,12 +302,16 @@ export class McpOAuthProvider {
 			let retried = false;
 			server.on("error", (error) => {
 				// Fall back to an ephemeral port when the preferred one is taken.
-				if (!retried && preferredPort && (error as NodeJS.ErrnoException).code === "EADDRINUSE") {
+				if (!retried && preferredPort && !portRequired && (error as NodeJS.ErrnoException).code === "EADDRINUSE") {
 					retried = true;
 					server.listen(0, "127.0.0.1");
 					return;
 				}
-				rejectListener(error);
+				rejectListener(
+					portRequired && (error as NodeJS.ErrnoException).code === "EADDRINUSE"
+						? new McpError("MCP_AUTH_FAILED", `configured oauth.redirectPort ${preferredPort} is already in use`, this.options.serverId)
+						: error,
+				);
 			});
 			server.listen(preferredPort ?? 0, "127.0.0.1", () => {
 				const address = server.address();
