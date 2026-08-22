@@ -103,14 +103,29 @@ if (internalCommand === "__remote-node-eval") {
   if (process.env.MYPI_TUI_HOSTED !== "0" && !nonSessionInvocation && process.stdin.isTTY && process.stdout.isTTY) {
     try {
       const { MYPI_DAEMON_PROTOCOL, ensureDaemonRunning } = await import("./mypi-daemon-discovery.mjs");
-      const socketPath = await ensureDaemonRunning(process.argv[1]);
+      // Launch-latency: do NOT serialize daemon ensure (spawn can take
+      // seconds on a cold profile) in front of the CLI module import (its own
+      // seconds). Start the ensure now, let the import run concurrently, and
+      // have the runtime await the handoff right before hosted init
+      // (globalThis.__MYPI_DAEMON_READY__). Preattach still starts the engine
+      // the moment the daemon is up — overlapping the remaining import.
       process.env.MYPI_TUI_HOSTED = "1";
-      process.env.MYPI_DAEMON_SOCKET = socketPath;
       process.env.MYPI_DAEMON_PROTOCOL = String(MYPI_DAEMON_PROTOCOL);
-      // Start the engine spawn now, while the TUI child still has its own
-      // ~5s module import ahead of it; see mypi-preattach.mjs.
-      const { startPreattach } = await import("./mypi-preattach.mjs");
-      startPreattach({ socketPath, protocol: MYPI_DAEMON_PROTOCOL, argv: cliArgs });
+      globalThis.__MYPI_DAEMON_READY__ = ensureDaemonRunning(process.argv[1])
+        .then(async (socketPath) => {
+          process.env.MYPI_DAEMON_SOCKET = socketPath;
+          const { startPreattach } = await import("./mypi-preattach.mjs");
+          startPreattach({ socketPath, protocol: MYPI_DAEMON_PROTOCOL, argv: cliArgs });
+          return socketPath;
+        })
+        .catch((error) => {
+          delete process.env.MYPI_TUI_HOSTED;
+          delete process.env.MYPI_DAEMON_SOCKET;
+          process.stderr.write(
+            `Hosted session unavailable (${error instanceof Error ? error.message : String(error)}); running embedded.\n`,
+          );
+          return null;
+        });
     } catch (error) {
       delete process.env.MYPI_TUI_HOSTED;
       process.stderr.write(

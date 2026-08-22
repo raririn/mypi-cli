@@ -842,6 +842,14 @@ export async function main(args: string[], options?: MainOptions) {
 	// in the daemon, co-drivable by every other surface, and survives the
 	// TUI exiting. Anything ineligible falls back to embedded, which remains
 	// the default and fully supported path.
+	// Launch-latency handoff: the launcher starts the daemon ensure WITHOUT
+	// blocking the module import and parks the pending socket here. By the
+	// time this line runs the import is paid for, so this await usually
+	// resolves instantly; a failed ensure already cleared MYPI_TUI_HOSTED.
+	const daemonReadyHandoff = (
+		globalThis as { __MYPI_DAEMON_READY__?: Promise<string | null> }
+	).__MYPI_DAEMON_READY__;
+	if (daemonReadyHandoff) await daemonReadyHandoff;
 	const hostedEnv = readHostedDaemonEnv();
 	let hostedStdinContent: string | undefined;
 	let hostedStdinRead = false;

@@ -644,12 +644,20 @@ export class InteractiveMode {
 		const loginCommand = slashCommands.find((command) => command.name === "login");
 		if (loginCommand) {
 			loginCommand.getArgumentCompletions = (prefix: string): AutocompleteItem[] | null => {
+				const refreshItem: AutocompleteItem = {
+					value: "--refresh",
+					label: "--refresh",
+					description: "Force-refresh provider model catalogs (bypasses the cache)",
+				};
 				const providers = getLoginProviderCompletionOptions(this.getLoginProviderOptions());
-				return createFuzzyAutocompleteItems(providers, prefix, getLoginProviderSearchText, (provider) => ({
+				const matches = createFuzzyAutocompleteItems(providers, prefix, getLoginProviderSearchText, (provider) => ({
 					value: provider.id,
 					label: provider.id,
 					description: formatLoginProviderCompletionDescription(provider),
 				}));
+				const refreshMatches = "--refresh".startsWith(prefix.toLowerCase()) ? [refreshItem] : [];
+				if (refreshMatches.length === 0) return matches;
+				return [...refreshMatches, ...(matches ?? [])];
 			};
 		}
 
@@ -2918,6 +2926,10 @@ export class InteractiveMode {
 			if (text === "/login" || text.startsWith("/login ")) {
 				const providerRef = text.startsWith("/login ") ? text.slice(7).trim() : undefined;
 				this.editor.setText("");
+				if (providerRef === "--refresh" || providerRef === "-r") {
+					await this.handleLoginRefreshCommand();
+					return;
+				}
 				await this.handleLoginCommand(providerRef);
 				return;
 			}
@@ -5267,7 +5279,32 @@ export class InteractiveMode {
 			await this.startProviderLogin(providerOptions[0]!);
 			return;
 		}
+		return this.finishLoginCommand(providerOptions, providerRef);
+	}
 
+	/** Forced catalog refresh (`/login --refresh`): bypasses the provider
+	 *  catalog max-age cache — self-hosted endpoints change models rapidly. */
+	private async handleLoginRefreshCommand(): Promise<void> {
+		this.showStatus("Refreshing model catalogs…");
+		try {
+			const result = await this.session.modelRuntime.refresh({ force: true, allowNetwork: true });
+			const available = await this.session.modelRuntime.getAvailable();
+			const failures = [...result.errors.keys()];
+			this.updateAvailableProviderCount();
+			this.showStatus(
+				failures.length > 0
+					? `Catalogs refreshed with errors (${failures.join(", ")}) — ${available.length} models available`
+					: `Model catalogs refreshed — ${available.length} models available`,
+			);
+		} catch (error) {
+			this.showStatus(`Catalog refresh failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	private async finishLoginCommand(
+		providerOptions: AuthSelectorProvider[],
+		providerRef: string,
+	): Promise<void> {
 		if (providerOptions.length > 1) {
 			const providerIds = new Set(providerOptions.map((provider) => provider.id));
 			if (providerIds.size === 1) {
