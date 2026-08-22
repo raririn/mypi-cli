@@ -19,6 +19,7 @@ import type { ConvertedMcpResult } from "../core/mcp/result.ts";
 import { McpError, type McpConfig, type McpConfigDiagnostic, type McpToolDescriptor } from "../core/mcp/types.ts";
 import { loadGlobalConfig } from "./global-config.ts";
 import { registerMcpCommand } from "./mcp-command.ts";
+import { openBrowser } from "../utils/open-browser.ts";
 
 export const MCP_SEARCH_TOOL = "mcp_search";
 export const MCP_LOAD_TOOL = "mcp_load";
@@ -104,7 +105,11 @@ export class McpProductRuntime {
 			authorize: async (url) => {
 				const context = this.ctx;
 				if (!context) throw new McpError("MCP_AUTH_REQUIRED", "no interactive surface can open the authorization URL");
-				context.ui.notify(`MCP authorization required. Open this URL to continue: ${url}`, "warning");
+				// Launch the browser directly: terminal-wrapped URLs lose their
+				// tail parameters when copied, which authorization servers
+				// reject in confusing ways (silent bounce, no consent screen).
+				if (/^https?:\/\//u.test(url)) openBrowser(url);
+				context.ui.notify(`MCP authorization required. A browser window should open; if it does not, open this URL manually: ${url}`, "warning");
 			},
 			takenToolNames: () => {
 				const taken = new Set(this.pi.getAllTools().map((tool) => tool.name));
