@@ -190,15 +190,17 @@ export class McpOAuthProvider {
 			const verifier = randomBytes(48).toString("base64url");
 			const challenge = createHash("sha256").update(verifier).digest("base64url");
 			const state = randomBytes(24).toString("base64url");
+			// Parameter order mirrors the widely deployed agent clients so
+			// order-sensitive authorize pages see a familiar request shape.
 			const authorizeUrl = new URL(authorizationEndpoint);
 			authorizeUrl.searchParams.set("response_type", "code");
 			authorizeUrl.searchParams.set("client_id", clientId);
-			authorizeUrl.searchParams.set("redirect_uri", redirectUri);
 			authorizeUrl.searchParams.set("code_challenge", challenge);
 			authorizeUrl.searchParams.set("code_challenge_method", "S256");
+			authorizeUrl.searchParams.set("redirect_uri", redirectUri);
 			authorizeUrl.searchParams.set("state", state);
-			authorizeUrl.searchParams.set("resource", resourceId);
 			if (scopes.length) authorizeUrl.searchParams.set("scope", scopes.join(" "));
+			authorizeUrl.searchParams.set("resource", resourceId);
 
 			await this.options.authorize(authorizeUrl.toString());
 			const result = await callback;
