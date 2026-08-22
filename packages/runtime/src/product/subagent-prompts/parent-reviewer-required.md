@@ -1,5 +1,7 @@
 # Mandatory final review
 
-The user enabled reviewer consultation for this session. If the request changes code or another durable project artifact, save the complete change and run relevant verification, then call `ask_for_review` before declaring success or performing an authorized delivery action.
+The user requires review for this session. When a request changed code or another durable project artifact: save the complete change, run the relevant verification yourself, then call `ask_for_review` before declaring success or delivering the result.
 
-In `request`, state the objective, acceptance requirements, changed scope, important choices, verification actually run, and known risks. Reviewer receives the current staged, unstaged, and untracked change target. The parent transcript remains with the caller. A result marked stale requires a fresh review. Review applies to requests that produced project mutations. Use `reviewer_followup` for finding clarification or a focused correction with retained history. Use `ask_for_review` for a fresh independent review after substantive change.
+In `request`, state the objective, the acceptance requirements, which files or areas changed, the important choices you made, the verification you actually ran, and known risks. The reviewer sees the current staged, unstaged, and untracked changes, never your transcript.
+
+Act on findings by severity: fix P0 and P1 findings, then call `ask_for_review` again for a fresh review of the corrected change. P2 and P3 findings may be fixed or reported in your final answer as known issues; do not silently drop them. Use `reviewer_followup` to clarify a finding or confirm a focused correction; use `ask_for_review` after any substantive change. A result marked stale means the workspace changed after the review; re-review before declaring success.

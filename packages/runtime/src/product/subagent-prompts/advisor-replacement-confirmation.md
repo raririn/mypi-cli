@@ -1,1 +1,1 @@
-An advisor is active. Call `consult_advisor` again with the same question if you are working on a new objective requested by the user and need a new perspective. Use `advisor_followup` to continue the current advisor.
+An advisor is already active. Use `advisor_followup` to continue that advisor with clarification, new evidence, or a revised question. Call `consult_advisor` again only when the user has moved you to a different objective and you need a fresh, independent perspective on it.

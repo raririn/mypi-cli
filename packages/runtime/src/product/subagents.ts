@@ -32,10 +32,12 @@ import {
 import {
 	ADVISOR_REPLACEMENT_CONFIRMATION_PROMPT,
 	ADVISOR_PROMPT,
+	EXPLORE_ROLE_PROMPT,
 	PARENT_ADVISOR_REQUIRED_PROMPT,
 	PARENT_REVIEWER_REQUIRED_PROMPT,
 	REVIEWER_ENVELOPE_PROMPT,
 	REVIEWER_REPLACEMENT_CONFIRMATION_PROMPT,
+	WORK_ROLE_PROMPT,
 } from "./subagent-prompts.ts";
 import { getModelSearchText } from "../modes/interactive/model-search.ts";
 import { reviewSnapshot, type WorkspaceSnapshot, workspaceSnapshot } from "./subagent-review.ts";
@@ -193,8 +195,8 @@ type ConsultationStartResult =
 	| { confirmationRequired: false; batchId: string; jobs: unknown[] };
 
 export const SUBAGENT_ROLE_PROMPTS: Record<SubagentRole, string> = {
-	explore: `You are a bounded MyPi exploration subagent. Investigate the assigned task through read-only evidence. Keep intermediate context in this child session. Return one concise self-contained answer with exact file or source references. Your complete role is evidence gathering and reporting.`,
-	work: `You are a bounded MyPi work subagent. Complete the assigned workspace task using the available workspace-confined tools. Shell execution uses the mandatory sandbox. Your complete authority covers ordinary files inside the assigned workspace. Report changed files, verification actually run, and any partial work honestly.`,
+	explore: EXPLORE_ROLE_PROMPT,
+	work: WORK_ROLE_PROMPT,
 	advisor: ADVISOR_PROMPT,
 	review: REVIEWER_ENVELOPE_PROMPT,
 };
@@ -1131,7 +1133,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: CONSULT_ADVISOR_TOOL,
 		label: "Consult Advisor",
-		description: "Start one asynchronous read-only advisor consultation. State the tentative approach, assumptions, uncertainty, and decision requested. The advisor receives a caller-model neutral brief plus bounded exact evidence and can independently verify with workspace reads and sealed web research. The result is delivered automatically.",
+		description: "Start one asynchronous read-only advisor consultation. State the tentative approach, assumptions, uncertainty, and decision requested. The advisor receives a caller-model neutral brief plus bounded exact evidence and can independently verify with workspace reads and sealed web research. The result is delivered automatically and follows a fixed Recommendation/Blocking concerns/Verified/Next steps structure.",
 		promptSnippet: "Consult an independent advisor asynchronously",
 		promptGuidelines: [
 			"Use consult_advisor for approach, interpretation, uncertainty, repeated failure, or evidence conflicts.",
@@ -1161,7 +1163,7 @@ export default function subagentsExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: ASK_FOR_REVIEW_TOOL,
 		label: "Ask for Review",
-		description: "Start one asynchronous read-only code review of the current working-tree change. State the objective, acceptance requirements, changed scope, verification run, and known risks. The reviewer receives staged, unstaged, and untracked evidence plus the trusted project review policy. The result is delivered automatically.",
+		description: "Start one asynchronous read-only code review of the current working-tree change. State the objective, acceptance requirements, changed scope, verification run, and known risks. The reviewer receives staged, unstaged, and untracked evidence plus the trusted project review policy. The result is delivered automatically; findings return graded P0-P3.",
 		promptSnippet: "Request an independent final code review asynchronously",
 		promptGuidelines: [
 			"Use ask_for_review for a complete saved change after relevant verification.",

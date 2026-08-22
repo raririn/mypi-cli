@@ -10,7 +10,7 @@ test("project REVIEW policy replaces the default only for a trusted safe file", 
 	try {
 		const missing = await resolveReviewPolicy(root, true);
 		assert.equal(missing.source, "builtin");
-		assert.match(missing.policy, /concrete, actionable defects/);
+		assert.match(missing.policy, /concrete defects introduced or exposed/);
 
 		await mkdir(join(root, ".mypi"), { mode: 0o700 });
 		await writeFile(join(root, ".mypi", "REVIEW.md"), "Review database migrations for rollback safety.\n", { mode: 0o600 });

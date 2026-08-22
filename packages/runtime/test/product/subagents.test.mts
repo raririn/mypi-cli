@@ -115,8 +115,8 @@ test("delegation, advisor, and reviewer expose distinct asynchronous tool calls"
 	assert.match(tools.get(CONSULT_ADVISOR_TOOL).description, /advisor consultation/i);
 	assert.match(tools.get(ASK_FOR_REVIEW_TOOL).description, /code review/i);
 	assert.notEqual(SUBAGENT_ROLE_PROMPTS.advisor, SUBAGENT_ROLE_PROMPTS.review);
-	assert.match(SUBAGENT_ROLE_PROMPTS.advisor, /read-only MyPi advisor/i);
-	assert.match(SUBAGENT_ROLE_PROMPTS.review, /read-only MyPi code reviewer/i);
+	assert.match(SUBAGENT_ROLE_PROMPTS.advisor, /MyPi's independent advisor/i);
+	assert.match(SUBAGENT_ROLE_PROMPTS.review, /MyPi's independent code reviewer/i);
 
 	const schema = tools.get(SUBAGENT_START_TOOL).parameters;
 	assert.equal(schema.properties.jobs.items.properties.childId, undefined, "the model cannot supply child identity");
@@ -227,7 +227,7 @@ test("confirmed replacement settles the running consultation before admission", 
 	assert.deepEqual(reasons, ["replaced_by_new_advisor"]);
 });
 
-test("subagent prompt resources describe positive authority without negation directives", () => {
+test("subagent prompt resources carry the approved contract without meta leakage", () => {
 	const prompts = [
 		...Object.values(SUBAGENT_ROLE_PROMPTS),
 		ADVISOR_BRIEF_PROMPT,
@@ -239,8 +239,24 @@ test("subagent prompt resources describe positive authority without negation dir
 		REVIEWER_ENVELOPE_PROMPT,
 		REVIEWER_REPLACEMENT_CONFIRMATION_PROMPT,
 	];
-	const negativeDirective = /\b(?:do not|don't|never|must not|cannot|can't|without|exclude|prohibit|forbid)\b/iu;
-	for (const prompt of prompts) assert.doesNotMatch(prompt, negativeDirective);
+	// Packaging and tuning notes must never reach a model.
+	const metaLeak = /<!--|pre-release|intentionally modular/iu;
+	for (const prompt of prompts) assert.doesNotMatch(prompt, metaLeak);
+	// Every child runs detached: it must know nobody answers questions.
+	const noQuestions = /cannot ask (?:anyone )?questions|nobody will (?:reply|answer)/iu;
+	for (const child of [SUBAGENT_ROLE_PROMPTS.explore, SUBAGENT_ROLE_PROMPTS.work, ADVISOR_PROMPT, REVIEWER_ENVELOPE_PROMPT]) {
+		assert.match(child, noQuestions);
+	}
+	// Approved output skeletons and severity contract.
+	assert.match(ADVISOR_PROMPT, /## Recommendation/u);
+	assert.match(ADVISOR_PROMPT, /## Next steps/u);
+	assert.match(REVIEWER_DEFAULT_PROMPT, /- P0: /u);
+	assert.match(REVIEWER_DEFAULT_PROMPT, /- P3: /u);
+	assert.match(REVIEWER_DEFAULT_PROMPT, /## Verdict/u);
+	assert.match(REVIEWER_DEFAULT_PROMPT, /"No findings\."/u);
+	assert.match(PARENT_REVIEWER_REQUIRED_PROMPT, /fix P0 and P1 findings/u);
+	assert.match(ADVISOR_BRIEF_PROMPT, /"truncation"/u);
+	assert.match(SUBAGENT_ROLE_PROMPTS.work, /Do not commit/u);
 });
 
 test("advisor and reviewer mandatory prompts are independent and absent by default", () => {

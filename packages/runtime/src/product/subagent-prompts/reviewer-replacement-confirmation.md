@@ -1,1 +1,1 @@
-A reviewer is active. Call `ask_for_review` again with the same request if you are reviewing a new objective requested by the user and need a fresh review. Use `reviewer_followup` to continue the current reviewer.
+A reviewer is already active. Use `reviewer_followup` to clarify findings or confirm a focused correction with the same reviewer. Call `ask_for_review` again only for a fresh independent review after substantive change or when the user has moved you to a different objective.

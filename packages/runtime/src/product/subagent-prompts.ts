@@ -12,6 +12,8 @@ function loadPrompt(name: string): string {
 
 export const PARENT_ADVISOR_REQUIRED_PROMPT = loadPrompt("parent-advisor-required.md");
 export const PARENT_REVIEWER_REQUIRED_PROMPT = loadPrompt("parent-reviewer-required.md");
+export const EXPLORE_ROLE_PROMPT = loadPrompt("explore.md");
+export const WORK_ROLE_PROMPT = loadPrompt("work.md");
 export const ADVISOR_PROMPT = loadPrompt("advisor.md");
 export const ADVISOR_BRIEF_PROMPT = loadPrompt("advisor-brief.md");
 export const ADVISOR_REPLACEMENT_CONFIRMATION_PROMPT = loadPrompt("advisor-replacement-confirmation.md");
