@@ -96,6 +96,7 @@ import {
   listDaemonSkills,
   listPersistedSessions,
   loadGlobalConfig,
+  ProjectTrustStore,
   prepareChatEngineLaunch,
   readPersistedSession,
   runNewSessionMaintenance,
@@ -1171,6 +1172,24 @@ function handleClientFrame(client, frame) {
     return;
   }
 
+  if (frame?.type === "set_project_trust") {
+    try {
+      const cwd = String(frame.cwd ?? "");
+      if (!cwd) throw new Error("set_project_trust requires cwd");
+      const trusted = frame.trusted === true ? true : frame.trusted === false ? false : null;
+      new ProjectTrustStore(daemonAgentDir).set(cwd, trusted);
+      sendDaemonResponse(client, frame, "set_project_trust", { cwd, trusted });
+    } catch (error) {
+      sendToClient(client, {
+        type: "response",
+        command: "set_project_trust",
+        success: false,
+        ...(typeof frame.id === "string" ? { id: frame.id } : {}),
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return;
+  }
   if (frame?.type === "list_persisted_sessions") {
     sendDaemonResponse(client, frame, "list_persisted_sessions", listPersistedSessions({
       agentDir: daemonAgentDir,

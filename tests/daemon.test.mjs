@@ -1359,3 +1359,29 @@ test("chat sessions list with profile and attach through the sealed chat recipe"
     await daemon.cleanup();
   }
 });
+
+test("set_project_trust writes and clears trust decisions", async () => {
+  const daemon = await startDaemon();
+  try {
+    const cwd = join(daemon.daemonDir, "trusted-workspace");
+    await mkdir(cwd, { recursive: true });
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    const response = (id) => client.frames.find((frame) => frame.type === "response" && frame.id === id);
+
+    client.send({ id: "t1", type: "set_project_trust", cwd, trusted: false });
+    await waitFor(() => response("t1"), 5_000, "untrust write");
+    assert.equal(response("t1").success, true);
+    const trustPath = join(daemon.agentDir, "trust.json");
+    assert.ok(readFileSync(trustPath, "utf8").includes("trusted-workspace"), "decision persisted");
+
+    client.send({ id: "t2", type: "set_project_trust", cwd, trusted: null });
+    await waitFor(() => response("t2"), 5_000, "trust removal");
+    assert.equal(response("t2").success, true);
+    assert.ok(!readFileSync(trustPath, "utf8").includes("trusted-workspace"), "decision removed");
+    client.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
