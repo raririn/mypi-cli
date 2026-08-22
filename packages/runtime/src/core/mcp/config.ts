@@ -135,6 +135,7 @@ function parseServer(
 			else if (record.oauth && typeof record.oauth === "object" && !Array.isArray(record.oauth)) {
 				const raw = record.oauth as Record<string, unknown>;
 				if (raw.clientId !== undefined && (typeof raw.clientId !== "string" || raw.clientId.length > 256)) return fail("oauth.clientId must be a bounded string");
+				if (raw.clientName !== undefined && (typeof raw.clientName !== "string" || raw.clientName.length === 0 || raw.clientName.length > 64 || /[\0\r\n]/u.test(raw.clientName))) return fail("oauth.clientName must be a bounded string");
 				const scopes: string[] = [];
 				if (raw.scopes !== undefined) {
 					if (!Array.isArray(raw.scopes) || raw.scopes.length > 16) return fail("oauth.scopes must be an array of at most 16 scopes");
@@ -143,7 +144,11 @@ function parseServer(
 						scopes.push(scope);
 					}
 				}
-				oauth = { ...(typeof raw.clientId === "string" ? { clientId: raw.clientId } : {}), scopes };
+				oauth = {
+					...(typeof raw.clientId === "string" ? { clientId: raw.clientId } : {}),
+					...(typeof raw.clientName === "string" ? { clientName: raw.clientName } : {}),
+					scopes,
+				};
 			} else return fail("oauth must be true or an object");
 		}
 		if (authBearerEnv && oauth) return fail("configure either authBearerEnv or oauth, not both");

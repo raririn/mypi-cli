@@ -47,6 +47,8 @@ interface McpOAuthClientRegistration {
 	readonly serverId: string;
 	readonly issuer: string;
 	readonly clientId: string;
+	/** client_name the registration was created with; a change re-registers. */
+	readonly clientName: string;
 	/** Loopback redirect port the client was registered with; reused when free. */
 	readonly redirectPort: number;
 }
@@ -166,7 +168,14 @@ export class McpOAuthProvider {
 			if (!clientId) {
 				clientId = await this.registerClient(asMetadata, redirectUri) ?? undefined;
 				if (clientId && !this.options.config.clientId) {
-					await this.saveClientRegistration({ version: 1, serverId: this.options.serverId, issuer, clientId, redirectPort: port });
+					await this.saveClientRegistration({
+						version: 1,
+						serverId: this.options.serverId,
+						issuer,
+						clientId,
+						clientName: this.effectiveClientName(),
+						redirectPort: port,
+					});
 				}
 			}
 			if (!clientId) {
@@ -235,7 +244,7 @@ export class McpOAuthProvider {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({
-				client_name: "MyPi",
+				client_name: this.effectiveClientName(),
 				redirect_uris: [redirectUri],
 				grant_types: ["authorization_code", "refresh_token"],
 				response_types: ["code"],
@@ -300,7 +309,11 @@ export class McpOAuthProvider {
 					rejectListener(new McpError("MCP_AUTH_FAILED", "loopback redirect listener failed to bind", this.options.serverId));
 					return;
 				}
-				resolveListener({ server, redirectUri: `http://127.0.0.1:${address.port}/callback`, port: address.port, callback });
+				// The URI uses the localhost name form: several real authorization
+				// pages (e.g. Robinhood) accept only localhost loopback redirects.
+				// The listener stays bound to 127.0.0.1; browsers fall back from
+				// ::1 to 127.0.0.1 for localhost automatically.
+				resolveListener({ server, redirectUri: `http://localhost:${address.port}/callback`, port: address.port, callback });
 			});
 		});
 	}
@@ -337,6 +350,10 @@ export class McpOAuthProvider {
 		await chmod(this.storePath, 0o600);
 	}
 
+	private effectiveClientName(): string {
+		return this.options.config.clientName ?? "MyPi";
+	}
+
 	private async loadClientRegistration(issuer: string): Promise<McpOAuthClientRegistration | undefined> {
 		try {
 			const parsed = JSON.parse(await readFile(this.clientStorePath, "utf8")) as McpOAuthClientRegistration;
@@ -344,6 +361,7 @@ export class McpOAuthProvider {
 				parsed.version === 1 &&
 				parsed.serverId === this.options.serverId &&
 				parsed.issuer === issuer &&
+				parsed.clientName === this.effectiveClientName() &&
 				typeof parsed.clientId === "string" &&
 				Number.isInteger(parsed.redirectPort)
 			) {

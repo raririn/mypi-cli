@@ -24,7 +24,7 @@ interface HttpFixture {
 }
 
 async function startHttpFixture(options: HttpFixtureOptions = {}): Promise<HttpFixture> {
-	const issued = { accessTokens: [] as string[], refreshUsed: 0, registrations: 0 };
+	const issued = { accessTokens: [] as string[], refreshUsed: 0, registrations: 0, clientNames: [] as string[] };
 	const codes = new Map<string, { challenge: string }>();
 	let origin = "";
 	const valid = () => options.requireBearer ?? issued.accessTokens.at(-1);
@@ -51,6 +51,11 @@ async function startHttpFixture(options: HttpFixtureOptions = {}): Promise<HttpF
 			}
 			if (url.pathname === "/register") {
 				issued.registrations += 1;
+				try {
+					issued.clientNames.push(String(JSON.parse(body).client_name));
+				} catch {
+					issued.clientNames.push("(unparsed)");
+				}
 				response.writeHead(201, { "content-type": "application/json" });
 				response.end(JSON.stringify({ client_id: "dyn-client-1" }));
 				return;
@@ -314,6 +319,7 @@ test("oauth defaults to advertised scopes, reuses the registered client, and out
 		const catalog = await first.search({ server: "oauthreuse", kind: "tool" });
 		assert.deepEqual(catalog.records.map((record) => record.name), ["echo"], "slow authorization still beats the startup timeout");
 		assert.match(authorizations[0]!, /scope=internal/u, "unconfigured scopes default to the resource metadata");
+		assert.match(authorizations[0]!, /redirect_uri=http%3A%2F%2Flocalhost%3A/u, "loopback redirects use the localhost name form");
 	} finally {
 		await first.shutdown();
 	}
@@ -329,6 +335,7 @@ test("oauth defaults to advertised scopes, reuses the registered client, and out
 		await fixture.close();
 	}
 	assert.equal(fixture.issued.registrations, 1, "dynamic client registration happens once across acquisitions");
+	assert.deepEqual(fixture.issued.clientNames, ["MyPi"], "default registration identity");
 	assert.equal(authorizations.length, 2);
 	const portOf = (url: string) => new URL(new URL(url).searchParams.get("redirect_uri")!).port;
 	assert.equal(portOf(authorizations[0]!), portOf(authorizations[1]!), "the registered redirect port is pinned and reused");

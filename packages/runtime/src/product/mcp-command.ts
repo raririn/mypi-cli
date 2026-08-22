@@ -27,9 +27,11 @@ URLs become Streamable HTTP servers (https, or http on localhost). The wizard
 probes the endpoint: open endpoints need no auth, 401-challenged endpoints
 offer OAuth (browser sign-in) or a bearer token read from an environment
 variable you name; token literals are never stored in settings. Anything else
-is treated as a STDIO command line (argv, no shell). Advanced fields
-(toolPolicy effect classification, allow/deny lists, timeouts, required
-startup) remain editable in ~/.mypi/agent/config.yaml under mcp.servers.`;
+is treated as a STDIO command line (argv, no shell). OAuth prompts for a
+client_name because some providers only honor provisioned agent names.
+Advanced fields (toolPolicy effect classification, allow/deny lists,
+timeouts, required startup, oauth.scopes/clientId/clientName) remain
+editable in ~/.mypi/agent/config.yaml under mcp.servers.`;
 
 export interface McpProbeResult {
 	readonly status: "open" | "auth" | "unreachable";
@@ -166,7 +168,17 @@ export function registerMcpCommand(pi: ExtensionAPI, runtime: McpProductRuntime)
 					"None (configure anyway)",
 				]);
 				if (auth === undefined) return;
-				if (auth.startsWith("OAuth")) record.oauth = true;
+				if (auth.startsWith("OAuth")) {
+					// Some providers only honor provisioned agent client names
+					// (Robinhood accepts claude/codex/chatgpt/cursor/gemini and
+					// ignores unknown clients). Let the user pick the identity.
+					const clientName = (await ctx.ui.input(
+						"OAuth client name (enter keeps MyPi; some providers only accept known agent names such as codex or claude)",
+						"MyPi",
+					))?.trim();
+					if (clientName === undefined) return;
+					record.oauth = clientName && clientName !== "MyPi" ? { clientName } : true;
+				}
 				else if (auth.startsWith("Bearer")) {
 					const envName = (await ctx.ui.input("Environment variable holding the token", `MCP_${serverId.toUpperCase().replace(/[^A-Z0-9]/gu, "_")}_TOKEN`))?.trim();
 					if (!envName) return;
@@ -179,7 +191,10 @@ export function registerMcpCommand(pi: ExtensionAPI, runtime: McpProductRuntime)
 				);
 				if (!anyway) return;
 			}
-			summary = `${serverId}: http ${target}${record.oauth ? " (OAuth)" : record.authBearerEnv ? ` (bearer from $${record.authBearerEnv})` : ""}${probe.serverName ? ` — reports "${probe.serverName}"` : ""}`;
+			const oauthLabel = record.oauth
+				? ` (OAuth${typeof record.oauth === "object" && (record.oauth as { clientName?: string }).clientName ? ` as ${(record.oauth as { clientName?: string }).clientName}` : ""})`
+				: "";
+			summary = `${serverId}: http ${target}${oauthLabel}${record.authBearerEnv ? ` (bearer from $${record.authBearerEnv})` : ""}${probe.serverName ? ` — reports "${probe.serverName}"` : ""}`;
 		} else {
 			const argv = tokenizeCommandLine(target);
 			if (argv.length === 0) {

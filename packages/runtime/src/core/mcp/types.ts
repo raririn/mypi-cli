@@ -19,6 +19,12 @@ export type McpTransportKind = "stdio" | "http";
 export interface McpOAuthConfig {
 	/** Static client ID; omitted when dynamic client registration is expected. */
 	readonly clientId?: string;
+	/**
+	 * client_name sent to dynamic client registration. Some providers key
+	 * provisioned clients on known agent names and ignore unknown ones.
+	 * Default: "MyPi".
+	 */
+	readonly clientName?: string;
 	/** Requested scopes; the authorization server may narrow them. */
 	readonly scopes: readonly string[];
 }
