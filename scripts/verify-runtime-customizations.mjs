@@ -81,14 +81,15 @@ const productComposition = await readFile(join(packageRoot, "dist", "product", "
 for (const fragment of [
   "productModules",
   "defineProductModule",
-  'defineProductModule("goal", "required"',
+  "defineSessionProductModule",
+  'defineSessionProductModule("goal", planGoalBuiltIn)',
   'defineProductModule("global-config", "required"',
   'defineProductModule("session-maintenance", "required"',
-  'defineProductModule("subagents", "capability"',
+  'defineSessionProductModule("subagents", subagentsBuiltIn)',
   'defineProductModule("cliproxy", "provider"',
   'defineProductModule("gui-control", "surface"',
   "webSearchExtension",
-  "planGoalExtension",
+  "planGoalBuiltIn",
   "safetyExtension",
 ]) {
   if (!productComposition.includes(fragment)) {
@@ -124,6 +125,8 @@ for (const fragment of [
   "blocks your edit, write, and Bash",
   "MYPI_SUBAGENT_CHILD",
   "mypi-subagent-results",
+  "requestContinuation",
+  'delivery = { state: "pending" }',
   'registerCommand("advisor-model"',
   'registerRequirementCommand(pi, manager, "advisor"',
   'registerRequirementCommand(pi, manager, "reviewer"',
@@ -133,6 +136,12 @@ for (const fragment of [
 ]) {
   if (!subagents.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing async subagent behavior (${fragment}).`);
+  }
+}
+const continuationSession = await readFile(join(packageRoot, "dist", "core", "agent-session.js"), "utf8");
+for (const fragment of ["_pendingSessionContinuations", "_takeSessionContinuations", "continuationPending", "requestBuiltInContinuation"]) {
+  if (!continuationSession.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing built-in session continuation arbitration (${fragment}).`);
   }
 }
 const reviewPolicy = await readFile(join(packageRoot, "dist", "product", "review-policy.js"), "utf8");
