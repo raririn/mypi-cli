@@ -119,6 +119,7 @@ import {
   prepareChatEngineLaunch,
   readPersistedSession,
   runNewSessionMaintenance,
+  setPersistedSessionArchived,
   WorkspaceTracker,
 } from "@earendil-works/pi-coding-agent";
 
@@ -1055,6 +1056,26 @@ function closeSession(session) {
   killTimer.unref?.();
 }
 
+async function closeIdleSessionForArchive(session, requestingClient) {
+  if (session.turnActive) throw new Error("Session archive is blocked while the session is working.");
+  const otherClients = [...session.clients].filter((attached) => attached !== requestingClient);
+  if (otherClients.length > 0) throw new Error("Session archive is blocked while another client is attached.");
+  if (session.clients.has(requestingClient)) detachClientFromSession(requestingClient, session);
+  if (session.graceTimer) {
+    clearTimeout(session.graceTimer);
+    session.graceTimer = null;
+  }
+  if (session.exited) return;
+  await new Promise((resolvePromise, rejectPromise) => {
+    const timer = setTimeout(() => rejectPromise(new Error("Session engine did not close before archive.")), 10_000);
+    session.child.once("exit", () => {
+      clearTimeout(timer);
+      resolvePromise();
+    });
+    closeSession(session);
+  });
+}
+
 function completeRelease(session) {
   const requester = session.pendingRelease?.client;
   session.pendingRelease = null;
@@ -1597,6 +1618,21 @@ function handleClientFrame(client, frame) {
       ...(Number.isInteger(frame.maxBytes) ? { maxBytes: frame.maxBytes } : {}),
       includeArchived: frame.includeArchived !== false,
     }));
+    return;
+  }
+
+  if (frame?.type === "set_session_archived") {
+    const sessionId = typeof frame.sessionId === "string" ? frame.sessionId : "";
+    sendDaemonResponse(client, frame, "set_session_archived", (async () => {
+      if (!sessionId || typeof frame.archived !== "boolean") throw new Error("set_session_archived requires sessionId and archived");
+      const live = [...sessions.values()].find((session) =>
+        !session.exited && (session.sessionId === sessionId || session.nativeSessionId === sessionId || session.key === sessionId),
+      );
+      if (live) await closeIdleSessionForArchive(live, client);
+      const result = await setPersistedSessionArchived(sessionId, frame.archived, daemonAgentDir);
+      broadcastAll({ type: "persisted_changed", sessionId, kind: frame.archived ? "archived" : "restored" });
+      return result;
+    })());
     return;
   }
 

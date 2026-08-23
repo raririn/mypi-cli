@@ -262,6 +262,14 @@ export class WorkspaceTracker {
 		return new WorkspaceTracker(agentDir, await canonical(root), config);
 	}
 
+	static async openStored(agentDir: string, key: string, config: TrackingConfig): Promise<WorkspaceTracker> {
+		if (!/^[a-f0-9]{32}$/u.test(key)) throw new Error("Invalid stored tracker identity.");
+		const directory = join(resolve(agentDir), "trackers", key);
+		const raw = JSON.parse(await readFile(join(directory, "state.json"), "utf8")) as { root?: unknown };
+		if (typeof raw.root !== "string" || trackerKey(raw.root) !== key) throw new Error("Stored tracker identity mismatch.");
+		return new WorkspaceTracker(agentDir, raw.root, config);
+	}
+
 	async health(configured: "track" | "dont-track" | null): Promise<TrackerHealth> {
 		if (configured === null) return "unconfigured";
 		if (configured === "dont-track") return "disabled";
@@ -392,6 +400,30 @@ export class WorkspaceTracker {
 		await this.locked(async (state) => {
 			await this.pruneSession(state, sessionId, this.config.maxDetachedCheckpoints);
 			await atomicWrite(this.statePath, state);
+		});
+	}
+
+	/** Archiving is a recovery-data destruction boundary. Remove every
+	 * checkpoint ref owned by the session while retaining materialized change
+	 * sets for read-only archived Diff. */
+	async purgeSessionSnapshots(sessionId: string): Promise<number> {
+		if (await this.storageHealth() === "missing") return 0;
+		return this.locked(async (state) => {
+			const owned = state.checkpoints.filter((item) => item.sessionId === sessionId);
+			for (const checkpoint of owned) {
+				await execGit(this.gitDirectory, this.root, ["update-ref", "-d", `refs/mypi/checkpoints/${checkpoint.id}`]).catch(() => undefined);
+			}
+			state.checkpoints = state.checkpoints.filter((item) => item.sessionId !== sessionId);
+			state.tombstones = state.tombstones.filter((item) => item.sessionId !== sessionId);
+			state.currentSnapshot = state.checkpoints
+				.slice()
+				.sort((left, right) => right.sequence - left.sequence)[0]?.snapshot;
+			await atomicWrite(this.statePath, state);
+			if (owned.length > 0) {
+				await execGit(this.gitDirectory, this.root, ["reflog", "expire", "--expire=now", "--all"]).catch(() => undefined);
+				await execGit(this.gitDirectory, this.root, ["gc", "--prune=now"]).catch(() => undefined);
+			}
+			return owned.length;
 		});
 	}
 
@@ -562,6 +594,35 @@ export class WorkspaceTracker {
 			await atomicWrite(this.statePath, state);
 		});
 	}
+}
+
+/** Remove a session's recovery snapshots from every project tracker. Sessions
+ * may outlive or move away from their workspace, so archive cannot rely on
+ * resolving one currently-existing cwd. */
+export async function purgeSessionSnapshotsAcrossTrackers(
+	agentDir: string,
+	sessionId: string,
+	config: TrackingConfig,
+): Promise<number> {
+	const root = join(resolve(agentDir), "trackers");
+	let stream: Awaited<ReturnType<typeof opendir>>;
+	try { stream = await opendir(root); }
+	catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+		throw error;
+	}
+	let removed = 0;
+	for await (const entry of stream) {
+		if (!entry.isDirectory() || !/^[a-f0-9]{32}$/u.test(entry.name)) continue;
+		try {
+			const tracker = await WorkspaceTracker.openStored(agentDir, entry.name, config);
+			removed += await tracker.purgeSessionSnapshots(sessionId);
+		} catch {
+			// A corrupt tracker is already unusable for rewind; archive continues
+			// through healthy trackers and the corruption warning remains visible.
+		}
+	}
+	return removed;
 }
 
 export function estimatedChangeSet(input: {

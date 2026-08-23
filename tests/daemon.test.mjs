@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1456,6 +1456,48 @@ test("daemon returns the same estimated change shape when tracking is absent", a
     assert.equal(changes.estimated, true);
     assert.equal(changes.trackerStatus, "unconfigured");
     assert.ok(changes.files.some((file) => file.path === "tracked.txt"));
+    client.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("daemon-level session archive destroys every owned checkpoint snapshot", async () => {
+  const daemon = await startDaemon({ idleGraceMs: 100, turnMs: 100 });
+  try {
+    const workspace = join(daemon.agentDir, "sessions", "archive-snapshots-workspace");
+    await mkdir(workspace, { recursive: true });
+    await writeFile(
+      join(workspace, "archive-snapshots-1.jsonl"),
+      persistedSession({ id: "archive-snapshots-1", cwd: workspace }),
+    );
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    const response = (id) => client.frames.find((frame) => frame.type === "response" && frame.id === id);
+    client.send({ id: "track", type: "set_project_tracking", cwd: workspace, tracking: "track" });
+    await waitFor(() => response("track"), 5_000, "archive tracking consent");
+    client.send({ type: "attach", sessionId: "archive-snapshots-1", cwd: workspace });
+    await waitFor(() => client.ofType("attached").length === 1, 5_000, "archive session attach");
+    client.send({ id: "p1", type: "prompt", message: "write-tracked archive", sessionId: "archive-snapshots-1" });
+    await waitFor(() => client.ofType("agent_settled").length === 1, 10_000, "archive session settle");
+    client.send({ id: "before", type: "list_checkpoints", sessionId: "archive-snapshots-1" });
+    await waitFor(() => response("before"), 5_000, "archive checkpoints before");
+    assert.equal(response("before").data.checkpoints.length, 1);
+
+    client.send({ id: "archive", type: "set_session_archived", sessionId: "archive-snapshots-1", archived: true });
+    await waitFor(() => response("archive"), 10_000, "daemon session archive");
+    assert.equal(response("archive").success, true, response("archive").error);
+    assert.equal(response("archive").data.snapshotsRemoved, 1);
+
+    const trackerStatePath = (await readdir(join(daemon.agentDir, "trackers"), { withFileTypes: true }))
+      .find((entry) => entry.isDirectory());
+    assert.ok(trackerStatePath);
+    const trackerState = JSON.parse(await readFile(join(daemon.agentDir, "trackers", trackerStatePath.name, "state.json"), "utf8"));
+    assert.equal(trackerState.checkpoints.some((checkpoint) => checkpoint.sessionId === "archive-snapshots-1"), false);
+    client.send({ id: "list", type: "list_persisted_sessions", includeArchived: true });
+    await waitFor(() => response("list"), 5_000, "archived session listing");
+    assert.equal(response("list").data.sessions.find((session) => session.id === "archive-snapshots-1")?.archived, true);
     client.socket.destroy();
   } finally {
     await daemon.cleanup();

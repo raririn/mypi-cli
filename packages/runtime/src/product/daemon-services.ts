@@ -10,8 +10,9 @@ import { SettingsManager } from "../core/settings-manager.ts";
 import { removeSubagentParentStorage } from "../core/subagents/storage.ts";
 import type { SourceInfo } from "../core/source-info.ts";
 import { ProjectTrustStore, resolveProjectTrustRoot } from "../core/trust-manager.ts";
-import { resolveChatPaths } from "./mypi-chat-storage.ts";
+import { archiveChat, resolveChatPaths, restoreChat } from "./mypi-chat-storage.ts";
 import { CHAT_TOOL_NAMES } from "./mypi-chat.ts";
+import { purgeSessionSnapshotsAcrossTrackers, WorkspaceTracker } from "./workspace-tracker.ts";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { loadGlobalConfig, type GlobalConfigDiagnostic, type HistoryConfig } from "./global-config.ts";
@@ -99,6 +100,7 @@ export interface SessionMaintenanceMove {
 	readonly id: string;
 	readonly from: string;
 	readonly to: string;
+	readonly snapshotsRemoved?: number;
 }
 
 export interface SessionMaintenanceResult {
@@ -111,6 +113,13 @@ export interface SessionMaintenanceResult {
 	readonly archivedCount: number;
 	readonly archivedExcess: number;
 	readonly cleanupCommand?: "/archive-cleanup";
+}
+
+export interface SessionArchiveResult {
+	readonly sessionId: string;
+	readonly archived: boolean;
+	readonly profile: "coding" | "chat";
+	readonly snapshotsRemoved: number;
 }
 
 export interface ArchiveCleanupPreview {
@@ -361,7 +370,7 @@ export async function runNewSessionMaintenance(options: {
 		for (const session of initial) {
 			if (!(await isObviousShortTest(session, roots.sessionsRoot, config.shortTestMaxWords))) continue;
 			try {
-				archivedShortTests.push(await archiveStoredSession(session, roots));
+				archivedShortTests.push(await archiveStoredSession(session, roots, agentDir));
 			} catch (error) {
 				skipped.push({ id: session.id, reason: boundedMessage(error) });
 			}
@@ -375,7 +384,7 @@ export async function runNewSessionMaintenance(options: {
 		const overflow = remaining.slice(Math.max(0, config.maxActive - 1));
 		for (const session of overflow.reverse()) {
 			try {
-				archivedOverflow.push(await archiveStoredSession(session, roots));
+				archivedOverflow.push(await archiveStoredSession(session, roots, agentDir));
 			} catch (error) {
 				skipped.push({ id: session.id, reason: boundedMessage(error) });
 			}
@@ -483,7 +492,7 @@ export async function executeProjectRemoval(
 			const summary = (await scanSessionRoot(roots.sessionsRoot, false)).find((session) => session.id === candidate.id && session.sessionFile === candidate.sessionFile);
 			if (!summary || await canonicalPath(resolveProjectTrustRoot(summary.cwd)) !== preview.project) throw new Error("session changed after preview");
 			if (preview.historyMode === "archive") {
-				await archiveStoredSession(summary, roots);
+				await archiveStoredSession(summary, roots, agentDir);
 				archived.push(summary.id);
 			} else {
 				await withStoredSessionLock(summary.sessionFile, async () => {
@@ -596,6 +605,7 @@ async function isObviousShortTest(
 async function archiveStoredSession(
 	session: PersistedSessionSummary,
 	roots: { sessionsRoot: string; archiveRoot: string },
+	agentDir: string,
 ): Promise<SessionMaintenanceMove> {
 	const relativePath = relative(resolve(roots.sessionsRoot), resolve(session.sessionFile));
 	if (!relativePath || relativePath.startsWith("..") || isAbsolute(relativePath)) throw new Error("session escapes active history root");
@@ -614,7 +624,66 @@ async function archiveStoredSession(
 		await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
 		await rename(session.sessionFile, destination);
 	});
-	return { id: session.id, from: session.sessionFile, to: destination };
+	const snapshotsRemoved = await destroySessionSnapshots(agentDir, session.cwd, session.id);
+	return { id: session.id, from: session.sessionFile, to: destination, snapshotsRemoved };
+}
+
+async function restoreStoredSession(
+	session: PersistedSessionSummary,
+	roots: { sessionsRoot: string; archiveRoot: string },
+): Promise<void> {
+	const relativePath = relative(resolve(roots.archiveRoot), resolve(session.sessionFile));
+	if (!relativePath || relativePath.startsWith("..") || isAbsolute(relativePath)) throw new Error("session escapes archive root");
+	const destination = join(roots.sessionsRoot, relativePath);
+	if (!isContained(destination, roots.sessionsRoot)) throw new Error("restore destination escapes managed root");
+	await withStoredSessionLock(session.sessionFile, async () => {
+		const handle = await openSafeSessionFile(session.sessionFile, roots.archiveRoot);
+		await handle.close();
+		try {
+			await lstat(destination);
+			throw new Error("restore destination already exists");
+		} catch (error) {
+			if (!isErrorCode(error, "ENOENT")) throw error;
+		}
+		await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
+		await rename(session.sessionFile, destination);
+	});
+}
+
+export async function destroySessionSnapshots(agentDir: string, cwd: string, sessionId: string): Promise<number> {
+	void cwd;
+	const loaded = await loadGlobalConfig(join(resolve(agentDir), "config.yaml"));
+	return purgeSessionSnapshotsAcrossTrackers(agentDir, sessionId, loaded.config.tracking);
+}
+
+export async function setPersistedSessionArchived(
+	sessionId: string,
+	archived: boolean,
+	agentDir = getAgentDir(),
+): Promise<SessionArchiveResult> {
+	const page = await listPersistedSessions({ agentDir, includeArchived: true, limit: MAX_LIST_LIMIT });
+	const matches = page.sessions.filter((session) => session.id === sessionId);
+	if (matches.length !== 1) throw new Error(matches.length === 0 ? `Session not found: ${sessionId}` : `Session identity is ambiguous: ${sessionId}`);
+	const session = matches[0]!;
+	if (session.archived === archived) {
+		const snapshotsRemoved = archived ? await destroySessionSnapshots(agentDir, session.cwd, session.id) : 0;
+		return { sessionId, archived, profile: session.profile, snapshotsRemoved };
+	}
+	if (session.profile === "chat") {
+		if (archived) await archiveChat(sessionId, resolveChatPaths(agentDir));
+		else await restoreChat(sessionId, resolveChatPaths(agentDir));
+	} else {
+		const roots = resolveSessionRoots(agentDir);
+		if (archived) {
+			const move = await archiveStoredSession(session, roots, agentDir);
+			clearDaemonServiceCache();
+			return { sessionId, archived, profile: session.profile, snapshotsRemoved: move.snapshotsRemoved ?? 0 };
+		}
+		else await restoreStoredSession(session, roots);
+	}
+	const snapshotsRemoved = archived ? await destroySessionSnapshots(agentDir, session.cwd, session.id) : 0;
+	clearDaemonServiceCache();
+	return { sessionId, archived, profile: session.profile, snapshotsRemoved };
 }
 
 async function withStoredSessionLock<T>(sessionFile: string, operation: () => Promise<T>): Promise<T> {

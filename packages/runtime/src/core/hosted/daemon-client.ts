@@ -143,6 +143,10 @@ export class HostedDaemonClient {
 	private counter = 0;
 	private readonly pending = new Map<string, PendingRequest>();
 	private frameListeners = new Set<(frame: Frame) => void>();
+	/** Respondable frames may follow `attached` in the same socket chunk,
+	 * before createHostedRuntime constructs its permanent session listener. */
+	private earlyUiFrames: Frame[] = [];
+	private hasSessionConsumer = false;
 	private closed = false;
 	/** The session id every routed frame carries; adopted from `attached`. */
 	sessionId: string | null = null;
@@ -305,6 +309,12 @@ export class HostedDaemonClient {
 
 	onFrame(listener: (frame: Frame) => void): () => void {
 		this.frameListeners.add(listener);
+		if (!this.hasSessionConsumer) {
+			this.hasSessionConsumer = true;
+			const queued = this.earlyUiFrames;
+			this.earlyUiFrames = [];
+			for (const frame of queued) listener(frame);
+		}
 		return () => this.frameListeners.delete(listener);
 	}
 
@@ -359,6 +369,12 @@ export class HostedDaemonClient {
 				pending.reject(new Error(String(frame.error ?? "The session daemon refused the command.")));
 				return;
 			}
+		}
+		if (
+			!this.hasSessionConsumer &&
+			(frame.type === "extension_ui_request" || frame.type === "extension_ui_resolved")
+		) {
+			this.earlyUiFrames.push(frame);
 		}
 		for (const listener of [...this.frameListeners]) listener(frame);
 	}

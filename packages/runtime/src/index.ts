@@ -487,6 +487,8 @@ export {
 	prepareChatEngineLaunch,
 	readPersistedSession,
 	runNewSessionMaintenance,
+	setPersistedSessionArchived,
+	destroySessionSnapshots,
 	type ArchiveCleanupPreview,
 	type ChatEngineLaunch,
 	type DaemonResourceInventoryEntry,
@@ -497,6 +499,7 @@ export {
 	type ProjectRemovalPreview,
 	type SessionMaintenanceMove,
 	type SessionMaintenanceResult,
+	type SessionArchiveResult,
 } from "./product/daemon-services.ts";
 export * from "./product/gui-control/presence.ts";
 export * from "./product/gui-control/protocol.ts";

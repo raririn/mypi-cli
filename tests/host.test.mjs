@@ -157,7 +157,11 @@ test("commands route responses to the issuing client only; events fan out to all
       3_000,
       "settled on both clients",
     );
-    assert.equal(second.ofType("message_update").length, 1);
+    assert.deepEqual(
+      second.ofType("message_update").map((frame) => frame.assistantMessageEvent.type),
+      ["thinking_delta", "text_delta"],
+      "every streamed assistant event fans out in order",
+    );
     // The prompt ack went only to the issuing client.
     assert.equal(second.frames.filter((f) => f.type === "response" && f.command === "prompt").length, 0);
 

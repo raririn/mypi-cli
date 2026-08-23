@@ -34,6 +34,7 @@ let safetyMode = 'full';
 let pendingSafetyMode;
 let queuedCounter = 0;
 let queuedItems = [];
+let askCounter = 0;
 
 const emitQueue = () => out({
   type: 'queue_update',
@@ -149,7 +150,39 @@ async function runTurn(promptText, structuredOutput, requestId) {
   }
   out({ type: 'message_start', message: userMessage });
   out({ type: 'message_end', message: userMessage });
+
+  const assistantStarted = { role: 'assistant', content: [], timestamp: Date.now() };
+  out({ type: 'message_start', message: assistantStarted });
+  out({
+    type: 'message_update',
+    message: assistantStarted,
+    assistantMessageEvent: { type: 'thinking_delta', contentIndex: 0, delta: `consider:${promptText}` },
+  });
+  out({
+    type: 'message_update',
+    message: assistantStarted,
+    assistantMessageEvent: { type: 'text_delta', contentIndex: 1, delta: `echo:${promptText}` },
+  });
   await sleep(typeof promptText === 'string' && promptText.startsWith('write-tracked') ? 100 : 10);
+  const toolCall = typeof promptText === 'string' && promptText.startsWith('write-tracked')
+    ? { type: 'toolCall', id: `write-${requestId}`, name: 'write', arguments: { path: join(process.cwd(), 'tracked.txt'), content: `${promptText}\n` } }
+    : null;
+  const assistantMessage = {
+    role: 'assistant',
+    content: [
+      { type: 'thinking', thinking: `consider:${promptText}` },
+      { type: 'text', text: `echo:${promptText}` },
+      ...(toolCall ? [toolCall] : []),
+    ],
+    timestamp: Date.now(),
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    stopReason: toolCall ? 'toolUse' : 'stop',
+  };
+  out({ type: 'message_end', message: assistantMessage });
+  if (process.env.FAKE_ENGINE_PERSIST_TURNS) {
+    appendFileSync(sessionPath(), `${JSON.stringify({ type: 'message', id: `assistant-${requestId}`, parentId: `user-${requestId}`, timestamp: new Date().toISOString(), message: assistantMessage })}\n`);
+  }
+  const toolResults = [];
   if (typeof promptText === 'string' && promptText.startsWith('write-tracked')) {
     const path = join(process.cwd(), 'tracked.txt');
     const content = `${promptText}\n`;
@@ -162,17 +195,28 @@ async function runTurn(promptText, structuredOutput, requestId) {
       result: { content: [{ type: 'text', text: `Successfully wrote ${content.length} bytes to ${path}` }] },
       isError: false,
     });
+    const toolResult = {
+      role: 'toolResult',
+      toolCallId: `write-${requestId}`,
+      toolName: 'write',
+      content: [{ type: 'text', text: `Successfully wrote ${content.length} bytes to ${path}` }],
+      isError: false,
+      timestamp: Date.now(),
+    };
+    toolResults.push(toolResult);
+    out({ type: 'message_start', message: toolResult });
+    out({ type: 'message_end', message: toolResult });
+    if (process.env.FAKE_ENGINE_PERSIST_TURNS) {
+      appendFileSync(sessionPath(), `${JSON.stringify({ type: 'message', id: `tool-${requestId}`, parentId: `assistant-${requestId}`, timestamp: new Date().toISOString(), message: toolResult })}\n`);
+    }
   }
-  out({
-    type: 'message_update',
-    message: { role: 'assistant', content: [] },
-    assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: `echo:${promptText}` },
-  });
+  out({ type: 'turn_end', message: assistantMessage, toolResults });
   if (mode === 'crash-mid-turn') process.exit(1);
-  if (mode === 'ask-user') {
+  if (mode === 'ask-user' || (typeof promptText === 'string' && promptText.startsWith('ask-user'))) {
+    askCounter += 1;
     out({
       type: 'extension_ui_request',
-      id: 'ask-1',
+      id: `ask-${askCounter}`,
       method: 'mypiAskUser',
       question: 'Proceed?',
       options: [
@@ -304,7 +348,7 @@ async function handleCommand(command) {
       out({ id, type: 'response', command: 'notify_parent_detached', success: true });
       return;
     case 'extension_ui_response':
-      out({ type: '__fake_ui_response_received', id: command.id, value: command.value });
+      out({ type: '__fake_ui_response_received', id: command.id, value: command.value, cancelled: command.cancelled, confirmed: command.confirmed });
       return;
     case 'new_session':
       sessionId = `fake-new-${(newSessionCounter += 1)}`;

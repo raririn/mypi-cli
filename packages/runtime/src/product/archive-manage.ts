@@ -7,6 +7,8 @@ import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "../core/extensions/types.ts";
 import { type SessionInfo, SessionManager } from "../core/session-manager.ts";
 import { removeSubagentParentStorage } from "../core/subagents/storage.ts";
+import { loadGlobalConfig } from "./global-config.ts";
+import { purgeSessionSnapshotsAcrossTrackers } from "./workspace-tracker.ts";
 
 const TOOL_NAMES = [
 	"session_archive_stats",
@@ -72,6 +74,7 @@ type SessionState = "active" | "archived";
 type RequestedState = SessionState | "all";
 
 interface ArchivePaths {
+	readonly agentDir: string;
 	readonly sessionsRoot: string;
 	readonly archiveRoot: string;
 }
@@ -84,6 +87,11 @@ interface SessionRecord {
 interface BulkFailure {
 	readonly sessionId: string;
 	readonly reason: string;
+}
+
+async function destroySessionSnapshots(agentDir: string, _cwd: string, sessionId: string): Promise<number> {
+	const loaded = await loadGlobalConfig(join(agentDir, "config.yaml"));
+	return purgeSessionSnapshotsAcrossTrackers(agentDir, sessionId, loaded.config.tracking);
 }
 
 type WriterState = "atomic-lock" | "legacy-lease" | "unlocked" | "stale-legacy-lease" | "unknown";
@@ -256,10 +264,12 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 			return withSessionWriterLock(session.path, async () => {
 				const destination = archivedPathFor(session.path, paths);
 				await moveFile(session.path, destination);
+				const snapshotsRemoved = await destroySessionSnapshots(paths.agentDir, session.cwd, session.id);
 				return textResult(`Archived unarchived session ${session.id}.`, {
 					sessionId: session.id,
 					from: session.path,
 					to: destination,
+					snapshotsRemoved,
 				});
 			});
 		},
@@ -285,6 +295,7 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 					assertNotCurrentSession(session, ctx);
 					await withSessionWriterLock(session.path, async () => {
 						await moveFile(session.path, archivedPathFor(session.path, paths));
+						await destroySessionSnapshots(paths.agentDir, session.cwd, session.id);
 						archived++;
 					});
 				} catch (error) {
@@ -325,6 +336,7 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 					assertNotCurrentSession(session, ctx);
 					await withSessionWriterLock(session.path, async () => {
 						await moveFile(session.path, archivedPathFor(session.path, paths));
+						await destroySessionSnapshots(paths.agentDir, session.cwd, session.id);
 						archived++;
 					});
 				} catch (error) {
@@ -509,7 +521,7 @@ function resolveArchivePaths(): ArchivePaths {
 	const configuredAgentDir = process.env.MYPI_AGENT_DIR || process.env.MYPI_CODING_AGENT_DIR;
 	const agentDir = resolve(configuredAgentDir || join(homedir(), ".mypi", "agent"));
 	const sessionsRoot = resolve(join(agentDir, "sessions"));
-	return { sessionsRoot, archiveRoot: join(dirname(sessionsRoot), "session-archive") };
+	return { agentDir, sessionsRoot, archiveRoot: join(dirname(sessionsRoot), "session-archive") };
 }
 
 async function loadSessionRecords(paths: ArchivePaths, state: RequestedState): Promise<SessionRecord[]> {

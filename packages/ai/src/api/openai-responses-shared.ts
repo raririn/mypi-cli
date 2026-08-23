@@ -216,12 +216,14 @@ export function convertResponsesMessages<TApi extends Api>(
 				assistantMsg.provider === model.provider &&
 				assistantMsg.api === model.api;
 			let textBlockIndex = 0;
+			let hasReasoningItem = false;
 
 			for (const block of msg.content) {
 				if (block.type === "thinking") {
 					if (block.thinkingSignature) {
 						const reasoningItem = JSON.parse(block.thinkingSignature) as ResponseReasoningItem;
 						output.push(reasoningItem);
+						hasReasoningItem = true;
 					} else if (
 						(model.compat as { requiresReasoningItemReplay?: boolean } | undefined)?.requiresReasoningItemReplay &&
 						!isDifferentModel &&
@@ -236,6 +238,7 @@ export function convertResponsesMessages<TApi extends Api>(
 							summary: [],
 							content: [{ type: "reasoning_text", text: sanitizeSurrogates(block.thinking) }],
 						} as unknown as ResponseReasoningItem);
+						hasReasoningItem = true;
 					}
 				} else if (block.type === "text") {
 					const textBlock = block as TextContent;
@@ -298,6 +301,24 @@ export function convertResponsesMessages<TApi extends Api>(
 				}
 			}
 			if (output.length === 0) continue;
+			if (
+				(model.compat as { requiresReasoningItemReplay?: boolean } | undefined)?.requiresReasoningItemReplay &&
+				!isDifferentModel &&
+				!hasReasoningItem
+			) {
+				// Some thinking-mode gateways require reasoning_content on every
+				// replayed assistant step, including steps where the model emitted
+				// text/tool calls with zero reasoning tokens. Their Responses bridge
+				// derives that field from a reasoning item, so preserve the explicit
+				// empty value instead of omitting the item. First-party OpenAI never
+				// enables this compatibility flag.
+				output.unshift({
+					type: "reasoning",
+					id: `rs_pi_${msgIndex}_empty`,
+					summary: [],
+					content: [{ type: "reasoning_text", text: "" }],
+				} as unknown as ResponseReasoningItem);
+			}
 			messages.push(...output);
 		} else if (msg.role === "toolResult") {
 			const [callId] = msg.toolCallId.split("|");

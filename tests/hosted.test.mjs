@@ -70,8 +70,25 @@ async function startDaemon({ mode, failSession, ownershipConflict } = {}) {
     daemonDir,
     socketPath: ready.socketPath,
     async cleanup() {
-      child.kill("SIGKILL");
-      await rm(daemonDir, { recursive: true, force: true });
+      if (child.exitCode === null && child.signalCode === null) {
+        await new Promise((resolve) => {
+          const timer = setTimeout(() => child.kill("SIGKILL"), 1_000);
+          child.once("exit", () => {
+            clearTimeout(timer);
+            resolve();
+          });
+          child.kill("SIGTERM");
+        });
+      }
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        try {
+          await rm(daemonDir, { recursive: true, force: true });
+          break;
+        } catch (error) {
+          if (error?.code !== "ENOTEMPTY" || attempt === 19) throw error;
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+      }
     },
   };
 }
@@ -534,9 +551,10 @@ test("/exit shuts down the hosted TUI surface and leaves the session running", a
 test("a late-joining hosted TUI renders prompts parked before it bound its dialogs", async () => {
   const daemon = await startDaemon({ mode: "ask-user" });
   const net = (await import("node:net")).default;
+  let other;
   try {
     // Another surface starts a turn that parks on an ask_user prompt.
-    const other = net.connect(daemon.socketPath);
+    other = net.connect(daemon.socketPath);
     const otherFrames = [];
     let otherBuf = "";
     other.on("data", (data) => {
@@ -582,6 +600,7 @@ test("a late-joining hosted TUI renders prompts parked before it bound its dialo
     other.destroy();
     await host.dispose();
   } finally {
+    other?.destroy();
     await daemon.cleanup();
   }
 });
