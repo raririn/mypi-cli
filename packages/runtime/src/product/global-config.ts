@@ -24,10 +24,18 @@ export interface SubagentsConfig {
 	readonly requireReviewer: boolean;
 }
 
+export interface TrackingConfig {
+	readonly maxSessionCheckpoints: number;
+	readonly maxDetachedCheckpoints: number;
+	readonly warningFiles: number;
+	readonly warningBytes: number;
+}
+
 export interface GlobalConfig {
 	readonly version: 1;
 	readonly history: HistoryConfig;
 	readonly subagents: SubagentsConfig;
+	readonly tracking: TrackingConfig;
 	/** Raw `mcp` section; validated separately by the core MCP config parser. */
 	readonly mcp?: unknown;
 }
@@ -52,6 +60,12 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfig = Object.freeze({
 		maxArchived: 10,
 	}),
 	subagents: Object.freeze({ advisorModel: "inherit", requireAdvisor: false, requireReviewer: false }),
+	tracking: Object.freeze({
+		maxSessionCheckpoints: 3,
+		maxDetachedCheckpoints: 1,
+		warningFiles: 10_000,
+		warningBytes: 1024 * 1024 * 1024,
+	}),
 });
 
 type ConfigRecord = Record<string, unknown>;
@@ -282,6 +296,8 @@ function parseConfigRecord(
 		if (!isRecord(history)) return { diagnostic: invalidOwnedConfig(path) };
 		const subagents = source.subagents === undefined ? {} : source.subagents;
 		if (!isRecord(subagents)) return { diagnostic: invalidOwnedConfig(path) };
+		const tracking = source.tracking === undefined ? {} : source.tracking;
+		if (!isRecord(tracking)) return { diagnostic: invalidOwnedConfig(path) };
 		const config: GlobalConfig = {
 			version: GLOBAL_CONFIG_VERSION,
 			history: {
@@ -297,6 +313,12 @@ function parseConfigRecord(
 				requireAdvisor: readBoolean(subagents.requireAdvisor, DEFAULT_GLOBAL_CONFIG.subagents.requireAdvisor),
 				requireReviewer: readBoolean(subagents.requireReviewer, DEFAULT_GLOBAL_CONFIG.subagents.requireReviewer),
 			},
+			tracking: {
+				maxSessionCheckpoints: readBoundedInteger(tracking.maxSessionCheckpoints, 1, 20, DEFAULT_GLOBAL_CONFIG.tracking.maxSessionCheckpoints),
+				maxDetachedCheckpoints: readBoundedInteger(tracking.maxDetachedCheckpoints, 1, 20, DEFAULT_GLOBAL_CONFIG.tracking.maxDetachedCheckpoints),
+				warningFiles: readBoundedInteger(tracking.warningFiles, 1, 1_000_000, DEFAULT_GLOBAL_CONFIG.tracking.warningFiles),
+				warningBytes: readBoundedInteger(tracking.warningBytes, 1, Number.MAX_SAFE_INTEGER, DEFAULT_GLOBAL_CONFIG.tracking.warningBytes),
+			},
 			...(source.mcp !== undefined ? { mcp: source.mcp } : {}),
 		};
 		if (
@@ -307,6 +329,16 @@ function parseConfigRecord(
 			|| (subagents.advisorModel !== undefined && !isAdvisorModel(subagents.advisorModel))
 			|| (subagents.requireAdvisor !== undefined && typeof subagents.requireAdvisor !== "boolean")
 			|| (subagents.requireReviewer !== undefined && typeof subagents.requireReviewer !== "boolean")
+			|| !validOptionalInteger(tracking.maxSessionCheckpoints, 1, 20)
+			|| !validOptionalInteger(tracking.maxDetachedCheckpoints, 1, 20)
+			|| !validOptionalInteger(tracking.warningFiles, 1, 1_000_000)
+			|| !validOptionalInteger(tracking.warningBytes, 1, Number.MAX_SAFE_INTEGER)
+			|| (
+				tracking.maxSessionCheckpoints !== undefined &&
+				tracking.maxDetachedCheckpoints !== undefined &&
+				(tracking.maxDetachedCheckpoints as number) > (tracking.maxSessionCheckpoints as number)
+			)
+			|| config.tracking.maxDetachedCheckpoints > config.tracking.maxSessionCheckpoints
 		) return { diagnostic: invalidOwnedConfig(path) };
 		return { config, source };
 	} catch {
@@ -410,6 +442,7 @@ function cloneDefaults(): GlobalConfig {
 		version: GLOBAL_CONFIG_VERSION,
 		history: { ...DEFAULT_GLOBAL_CONFIG.history },
 		subagents: { ...DEFAULT_GLOBAL_CONFIG.subagents },
+		tracking: { ...DEFAULT_GLOBAL_CONFIG.tracking },
 	};
 }
 

@@ -44,6 +44,7 @@ import type {
 	InteractiveSessionManagerSurface,
 	InteractiveSessionSurface,
 } from "../agent-session-runtime.ts";
+import type { WorkspaceChangeSet, WorkspaceCheckpoint } from "../../product/workspace-tracker.ts";
 import type { BashResult } from "../bash-executor.ts";
 import { calculateContextTokens, estimateContextTokens } from "../compaction/index.ts";
 import type { CompactionResult } from "../compaction/index.ts";
@@ -665,6 +666,24 @@ export class HostedAgentSession implements InteractiveSessionSurface {
 		if (type === "session_stderr") {
 			return;
 		}
+		if (type === "tracking_warning") {
+			this.uiContext?.notify(String(frame.message ?? "The project tracker is unavailable."), "warning");
+			return;
+		}
+		if (type === "tracking_status") return;
+		if (type === "turn_changes_finalized" && frame.changes && typeof frame.changes === "object") {
+			const event = { type: "mypi_turn_changes", changes: frame.changes as WorkspaceChangeSet } as AgentSessionEvent;
+			for (const listener of [...this.listeners]) listener(event);
+			return;
+		}
+		if (type === "workspace_rewound") {
+			this.uiContext?.notify("Workspace files were rewound to a retained checkpoint.", "info");
+			return;
+		}
+		if (type === "project_removed") {
+			this.uiContext?.notify("Project history and tracking state were removed by another client.", "warning");
+			return;
+		}
 		if (NON_EVENT_FRAMES.has(type)) return;
 
 		// Everything else is the engine's event stream, verbatim.
@@ -889,6 +908,40 @@ export class HostedAgentSession implements InteractiveSessionSurface {
 	get promptTemplates() {
 		return this.services.resourceLoader.getPrompts().prompts;
 	}
+
+	readonly daemonWorkspace = {
+		getProjectTracking: async (cwd: string) => {
+			const response = await this.client.request<{ data: {
+				root: string; trusted: boolean | null; tracking: "track" | "dont-track" | null;
+				status: "unconfigured" | "disabled" | "missing" | "ready" | "corrupt";
+				estimate: { files: number; bytes: number; truncated: boolean; broadRoot: boolean; warning: boolean };
+			} }>({ type: "get_project_tracking", cwd });
+			return response.data;
+		},
+		setProjectTracking: async (cwd: string, tracking: "track" | "dont-track") => {
+			await this.client.request({ type: "set_project_tracking", cwd, tracking });
+		},
+		setProjectTrust: async (cwd: string, trusted: boolean) => {
+			await this.client.request({ type: "set_project_trust", cwd, trusted });
+		},
+		listCheckpoints: async () => {
+			const response = await this.client.request<{ data: { status: string; checkpoints: WorkspaceCheckpoint[] } }>({ type: "list_checkpoints" });
+			return response.data;
+		},
+		prepareRewind: async (checkpointId: string) => {
+			const response = await this.client.request<{ data: {
+				operationToken: string; checkpoint: WorkspaceCheckpoint; files: WorkspaceChangeSet["files"];
+				affectedOtherTasks: number; laterOwned: number;
+			} }>({ type: "prepare_rewind", checkpointId });
+			return response.data;
+		},
+		executeRewind: async (operationToken: string, confirmAffected: boolean) => {
+			const response = await this.client.request<{ data: { removed: number; affectedOtherTasks: number; generation: number } }>({
+				type: "execute_rewind", operationToken, confirm: true, ...(confirmAffected ? { confirmAffected: true } : {}),
+			});
+			return response.data;
+		},
+	};
 
 	subscribe(listener: AgentSessionEventListener): () => void {
 		this.listeners.add(listener);

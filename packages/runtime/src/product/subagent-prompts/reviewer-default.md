@@ -1,6 +1,6 @@
 Inspect the complete change plus enough surrounding code, call sites, and tests to judge its effect.
 
-Report only concrete defects introduced or exposed by this change: bugs, security holes, data loss, performance regressions, broken compatibility, or misleading code that will cause defects. Do not report style preferences, pre-existing issues unrelated to the change, or speculative concerns without a plausible failing scenario.
+Report only concrete defects introduced or exposed by this change: bugs, security holes, data loss, performance regressions, broken compatibility, or misleading code that will cause defects. Omit style preferences and unrelated pre-existing issues. Each reported concern needs a plausible failing scenario.
 
 Grade each finding:
 - P0: certain breakage, data loss, or security vulnerability. Must be fixed.

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { Type } from "typebox";
 import type { ExtensionAPI, ExtensionContext, RegisteredCommand } from "../core/extensions/types.ts";
 import { goalPlanningPrompt, renderGoalContinuationPrompt } from "./goal-prompts.ts";
@@ -40,6 +41,7 @@ import {
 
 const MAX_PLAN_AGENT_ENDS = 2;
 const MAX_PLAN_PAGE_SIZE = 50;
+const MAX_REPEATED_GOAL_TOOL_REJECTIONS = 3;
 const GOAL_PLANNING_TOOLS = new Set([
 	"read", "grep", "find", "ls", "read_workspace", "web_search", "web_fetch",
 	"ask_user", "ask_question", "questionnaire", "question",
@@ -179,6 +181,8 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 	let createGoalConsent = false;
 	let pendingToolGoal: PendingGoalRequest | undefined;
 	let mutationQueue: Promise<void> = Promise.resolve();
+	let planMutationGeneration = 0;
+	let repeatedGoalToolRejection: { readonly key: string; readonly count: number } | undefined;
 	// BUG-097: while session-owned asynchronous subagents are the sole progress
 	// dependency, code parks Goal/Plan continuation instead of waking the
 	// provider; the authoritative completion delivery releases the park.
@@ -218,6 +222,56 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 
 	function currentSnapshot(): GoalSnapshot | undefined {
 		return state.workflow === "goal" ? toGoalSnapshot(state, activeElapsedSeconds()) : undefined;
+	}
+
+	function resetGoalToolRejectionLoop(): void {
+		repeatedGoalToolRejection = undefined;
+	}
+
+	function rejectGoalTool(
+		ctx: ExtensionContext,
+		code: string,
+		message: string,
+		details: Record<string, unknown> = {},
+	) {
+		if (state.workflow !== "goal" || state.status !== "active") {
+			return toolResult(`Rejected: ${message}`, { ...details, accepted: false, code });
+		}
+		const key = [
+			state.goalId,
+			planMutationGeneration,
+			state.blockedRuns,
+			state.blockerFingerprint ?? "",
+			code,
+		].join("\n");
+		const count = repeatedGoalToolRejection?.key === key ? repeatedGoalToolRejection.count + 1 : 1;
+		repeatedGoalToolRejection = { key, count };
+		if (count < MAX_REPEATED_GOAL_TOOL_REJECTIONS) {
+			return toolResult(`Rejected: ${message}`, {
+				...details,
+				accepted: false,
+				code,
+				repeatedRejections: count,
+			});
+		}
+		ctx.abort();
+		pauseActiveGoal(
+			ctx,
+			"error:goal-tool-loop",
+			`Goal paused after ${count} repeated ${code} rejections without plan progress. Inspect the diagnostic and continue explicitly after correcting the request.`,
+		);
+		return toolResult(
+			`Rejected: ${message} Goal paused to prevent an unbounded harness-rejection loop.`,
+			{
+				...details,
+				accepted: false,
+				code: "goal-tool-loop",
+				causeCode: code,
+				repeatedRejections: count,
+				snapshot: currentSnapshot(),
+			},
+			true,
+		);
 	}
 
 	function updateStatus(ctx: ExtensionContext): void {
@@ -389,6 +443,7 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 		}
 		state = resumeGoal(state, request.budget, request.supplemental, now());
 		providerLimit = undefined;
+		resetGoalToolRejectionLoop();
 		persist();
 		updateStatus(ctx);
 		try { pi.sendUserMessage("Continue the active structured Goal from its first open item and current evidence."); } catch (error) { stopAfterDispatchFailure(ctx, error); }
@@ -494,11 +549,13 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 			if (state.workflow === "legacy") return toolResult("Goal v2 state is unsupported and cannot continue.", { goal: null, code: "legacy-goal-unsupported" });
 			if (corruptStoredGoal) return toolResult("Goal v3 state is corrupt and blocked.", { goal: null, code: "corrupt-goal-state" });
 			if (state.workflow === "goal-planning") {
-				const planning = { schemaVersion: GOAL_SCHEMA_VERSION, workflow: state.workflow, goalId: state.goalId, objective: state.objective, status: "planning", autoStart: state.autoStart !== false };
-				return toolResult(JSON.stringify(planning, null, 2), planning);
+				const planning = { schemaVersion: GOAL_SCHEMA_VERSION, workflow: state.workflow, objective: state.objective, status: "planning", autoStart: state.autoStart !== false };
+				return toolResult(JSON.stringify(planning, null, 2), { ...planning, goalId: state.goalId });
 			}
 			const snapshot = currentSnapshot();
-			return snapshot ? toolResult(JSON.stringify(snapshot, null, 2), snapshot) : toolResult("No active Goal exists in this session.", { goal: null });
+			if (!snapshot) return toolResult("No active Goal exists in this session.", { goal: null });
+			const { goalId: _goalId, revision: _revision, ...modelSnapshot } = snapshot;
+			return toolResult(JSON.stringify(modelSnapshot, null, 2), snapshot);
 		},
 	});
 
@@ -508,7 +565,8 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 		description: "Inspect the authoritative structured Goal plan. Use next or open for normal work; all is bounded and paginated.",
 		parameters: Type.Object({ view: Type.Optional(Type.Union([Type.Literal("next"), Type.Literal("open"), Type.Literal("all")])), cursor: Type.Optional(Type.Integer({ minimum: 0 })), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: MAX_PLAN_PAGE_SIZE })) }, { additionalProperties: false }),
 		async execute(_id, raw) {
-			const plan = state.workflow === "goal" ? state.plan : undefined;
+			const activeGoal = state.workflow === "goal" ? state : undefined;
+			const plan = activeGoal?.plan;
 			if (!plan) return state.workflow === "goal-planning"
 				? toolResult("The structured plan is being drafted and has not been installed. Call set_goal_plan with the complete dependency-ordered plan.", { accepted: false, code: "goal-plan-pending", goalId: state.goalId })
 				: toolResult("No structured Goal plan exists.", { accepted: false, code: "no-goal-plan" });
@@ -519,8 +577,8 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 			const cursor = params.cursor ?? 0;
 			const limit = params.limit ?? 20;
 			const items = selected.slice(cursor, cursor + limit);
-			const result = { goalId: state.workflow === "goal" ? state.goalId : undefined, revision: state.workflow === "goal" ? state.revision : undefined, view, items, nextCursor: cursor + items.length < selected.length ? cursor + items.length : undefined, total: selected.length };
-			return toolResult(JSON.stringify(result, null, 2), result);
+			const result = { view, items, nextCursor: cursor + items.length < selected.length ? cursor + items.length : undefined, total: selected.length };
+			return toolResult(JSON.stringify(result, null, 2), { ...result, goalId: activeGoal!.goalId, revision: activeGoal!.revision });
 		},
 	});
 
@@ -597,15 +655,16 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "update_goal_plan",
 		label: "Update Goal Plan",
-		description: "Atomically record progress, current direct evidence with concise source locators, status, blockers, new items, or monotonic requirement strengthening by stable item ID. Protected scope cannot be weakened.",
-		parameters: Type.Object({ goalId: Type.String(), revision: Type.Integer({ minimum: 1 }), operations: Type.Array(GoalPlanOperationSchema, { minItems: 1, maxItems: 50 }) }, { additionalProperties: false }),
+		description: "Atomically apply bounded stable-ID operations to the current session Goal: record progress and direct evidence, update status or blockers, append items, or strengthen requirements. Protected scope cannot be weakened.",
+		parameters: Type.Object({ operations: Type.Array(GoalPlanOperationSchema, { minItems: 1, maxItems: 50 }) }, { additionalProperties: false }),
 		executionMode: "sequential",
 		async execute(_id, raw, _signal, _update, ctx) {
+			const invokedGoalId = state.workflow === "goal" ? state.goalId : undefined;
 			return enqueueMutation(() => {
 				if (state.workflow !== "goal") return toolResult("Rejected: no active structured Goal plan exists.", { accepted: false, code: "no-goal" });
 				if (state.status !== "active") return toolResult(`Rejected: Goal status is ${state.status}.`, { accepted: false, code: "goal-not-active", snapshot: currentSnapshot() });
-				const params = raw as { goalId: string; revision: number; operations: PlanOperation[] };
-				if (params.goalId !== state.goalId || params.revision !== state.revision) return toolResult(`Rejected: stale Goal identity or revision; current revision is ${state.revision}.`, { accepted: false, code: "revision-conflict", snapshot: currentSnapshot() });
+				if (invokedGoalId !== state.goalId) return toolResult("Rejected: the active Goal changed before this queued update executed.", { accepted: false, code: "stale-goal-invocation", snapshot: currentSnapshot() });
+				const params = raw as { operations: PlanOperation[] };
 				let items: GoalPlanItem[] = state.plan.items.map((item) => ({ ...item, acceptance: [...item.acceptance], verify: [...item.verify], evidence: [...item.evidence] }));
 				let violation: string | undefined;
 				let ordinaryError: string | undefined;
@@ -637,11 +696,14 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 					}
 				}
 				if (violation) return protectedViolation(ctx, violation);
-				if (ordinaryError) return toolResult(`Rejected: ${ordinaryError}`, { accepted: false, code: "invalid-operation", snapshot: currentSnapshot() });
+				if (ordinaryError) return rejectGoalTool(ctx, "invalid-operation", ordinaryError, { snapshot: currentSnapshot() });
 				const nextPlan: GoalPlan = { items };
+				if (isDeepStrictEqual(nextPlan, state.plan)) return rejectGoalTool(ctx, "no-plan-change", "the requested operations produced no authoritative plan change.", { snapshot: currentSnapshot() });
 				const validation = validateStructuredGoalPlan(nextPlan);
-				if (!validation.valid) return toolResult(`Rejected: ${validation.error}`, { accepted: false, code: "invalid-plan", snapshot: currentSnapshot() });
+				if (!validation.valid) return rejectGoalTool(ctx, "invalid-plan", validation.error ?? "Goal plan is invalid.", { snapshot: currentSnapshot() });
 				setState({ ...state, revision: state.revision + 1, plan: nextPlan, lastCompleteItems: validation.complete, lastTotalItems: validation.total, updatedAt: now() });
+				planMutationGeneration += 1;
+				resetGoalToolRejectionLoop();
 				updateStatus(ctx);
 				return toolResult(`Applied ${params.operations.length} Goal plan operation(s).`, { accepted: true, snapshot: currentSnapshot() });
 			});
@@ -660,12 +722,13 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 				if (state.status !== "active") return toolResult(`Rejected: Goal status is ${state.status}.`, { accepted: false, code: "goal-not-active", snapshot: currentSnapshot() });
 				if ((raw as { status: string }).status === "complete") {
 					const result = completeGoal(ctx);
-					return result.success
-						? toolResult("Goal completed after structured plan and evidence validation. Now give the user a concise final response summarizing the outcome, verification evidence, and any remaining caveats.", { accepted: true, snapshot: currentSnapshot() })
-						: toolResult(`Rejected: ${result.error}`, { accepted: false, code: "completion-unproven", snapshot: currentSnapshot() });
+					if (!result.success) return rejectGoalTool(ctx, "completion-unproven", result.error ?? "Goal completion is unproven.", { snapshot: currentSnapshot() });
+					resetGoalToolRejectionLoop();
+					return toolResult("Goal completed after structured plan and evidence validation. Now give the user a concise final response summarizing the outcome, verification evidence, and any remaining caveats.", { accepted: true, snapshot: currentSnapshot() });
 				}
-				if (!state.blockerFingerprint || state.blockedRuns < 3) return toolResult("Rejected: blocking requires the same non-empty blocker across three consecutive settled runs without progress.", { accepted: false, code: "blocked-audit-incomplete", blockedRuns: state.blockedRuns, blockerFingerprint: state.blockerFingerprint });
+				if (!state.blockerFingerprint || state.blockedRuns < 3) return rejectGoalTool(ctx, "blocked-audit-incomplete", "blocking requires the same non-empty blocker across three consecutive settled runs without progress.", { blockedRuns: state.blockedRuns, blockerFingerprint: state.blockerFingerprint });
 				transitionGoal(ctx, (goal) => ({ ...goal, revision: goal.revision + 1, status: "blocked", pauseReason: "error:blocked-audit", continuationPending: false, updatedAt: now() }), "Goal blocked after the same blocker repeated across three settled runs.", "warning");
+				resetGoalToolRejectionLoop();
 				return toolResult("Goal marked blocked by the mechanical audit.", { accepted: true, snapshot: currentSnapshot() }, true);
 			});
 		},

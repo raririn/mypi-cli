@@ -29,6 +29,12 @@ test("global YAML config defaults without creating a file and preserves unrelate
     const updated = await updateHistoryConfig("maxArchived", 23, path);
     assert.equal(updated.history.maxActive, 17);
     assert.equal(updated.history.maxArchived, 23);
+	assert.deepEqual(updated.tracking, {
+		maxSessionCheckpoints: 3,
+		maxDetachedCheckpoints: 1,
+		warningFiles: 10_000,
+		warningBytes: 1024 * 1024 * 1024,
+	});
     const source = parse(await readFile(path, "utf8"));
     assert.deepEqual(source.future, { enabled: true });
     assert.equal(source.history.maxActive, 17);
@@ -55,7 +61,8 @@ test("malformed, unsupported, and partially invalid YAML use complete defaults a
       "version: 99\nhistory:\n  maxActive: 42\n",
       "version: 1\nhistory:\n  maxActive: 42\n  maxArchived: zero\n",
 	  "version: 1\nhistory:\n  maxActive: 42\nsubagents:\n  advisorModel: invalid\n",
-	  "version: 1\nhistory:\n  maxActive: 42\nsubagents:\n  requireAdvisor: yes\n",
+      "version: 1\nhistory:\n  maxActive: 42\nsubagents:\n  requireAdvisor: yes\n",
+	  "version: 1\ntracking:\n  maxSessionCheckpoints: 2\n  maxDetachedCheckpoints: 3\n",
       `version: 1\nfuture: ${"x".repeat(1024 * 1024)}\n`,
     ]) {
       await writeFile(path, content, { mode: 0o600 });

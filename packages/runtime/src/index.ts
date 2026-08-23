@@ -342,11 +342,24 @@ export {
 export {
 	hasTrustRequiringProjectResources,
 	type ProjectTrustDecision,
+	type ProjectTrackingDecision,
 	ProjectTrustStore,
 	type ProjectTrustStoreEntry,
 	type ProjectTrustUpdate,
 	resolveProjectTrustRoot,
 } from "./core/trust-manager.ts";
+export {
+	estimateWorkspaceTracking,
+	estimatePersistedSessionChanges,
+	estimatedChangeSet,
+	type ChangeQuality,
+	type TrackedChangeFile,
+	type TrackerHealth,
+	type WorkspaceChangeSet,
+	type WorkspaceCheckpoint,
+	type WorkspaceEstimate,
+	WorkspaceTracker,
+} from "./product/workspace-tracker.ts";
 export {
 	DEFAULT_SAFETY_MODE,
 	isSafetyMode,
@@ -458,16 +471,19 @@ export {
 	type GlobalConfigDiagnostic,
 	type GlobalConfigLoadResult,
 	type HistoryConfig,
+	type TrackingConfig,
 } from "./product/global-config.ts";
 export {
 	clearDaemonServiceCache,
 	cleanupArchivedSessions,
+	executeProjectRemoval,
 	getDaemonAvailableModels,
 	getPersistedSessionStats,
 	listDaemonExtensions,
 	listDaemonSkills,
 	listPersistedSessions,
 	previewArchiveCleanup,
+	previewProjectRemoval,
 	prepareChatEngineLaunch,
 	readPersistedSession,
 	runNewSessionMaintenance,
@@ -478,6 +494,7 @@ export {
 	type PersistedSessionReadOptions,
 	type PersistedSessionReadResult,
 	type PersistedSessionSummary,
+	type ProjectRemovalPreview,
 	type SessionMaintenanceMove,
 	type SessionMaintenanceResult,
 } from "./product/daemon-services.ts";

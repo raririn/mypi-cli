@@ -3,6 +3,7 @@ import { basename, join, resolve } from "node:path";
 import type { Agent } from "@earendil-works/pi-agent-core";
 import { resolvePath } from "../utils/paths.ts";
 import type { AgentSession } from "./agent-session.ts";
+import type { WorkspaceChangeSet, WorkspaceCheckpoint } from "../product/workspace-tracker.ts";
 import type { AgentSessionRuntimeDiagnostic, AgentSessionServices } from "./agent-session-services.ts";
 import type {
 	ExtensionRunner,
@@ -99,6 +100,27 @@ function extractUserMessageText(content: string | Array<{ type: string; text?: s
 
 /** The `Agent` members the interactive TUI touches. */
 export type InteractiveAgentSurface = Pick<Agent, "abort" | "signal" | "transport">;
+
+export interface DaemonWorkspaceActions {
+	getProjectTracking(cwd: string): Promise<{
+		root: string;
+		trusted: boolean | null;
+		tracking: "track" | "dont-track" | null;
+		status: "unconfigured" | "disabled" | "missing" | "ready" | "corrupt";
+		estimate: { files: number; bytes: number; truncated: boolean; broadRoot: boolean; warning: boolean };
+	}>;
+	setProjectTracking(cwd: string, tracking: "track" | "dont-track"): Promise<void>;
+	setProjectTrust(cwd: string, trusted: boolean): Promise<void>;
+	listCheckpoints(): Promise<{ status: string; checkpoints: WorkspaceCheckpoint[] }>;
+	prepareRewind(checkpointId: string): Promise<{
+		operationToken: string;
+		checkpoint: WorkspaceCheckpoint;
+		files: WorkspaceChangeSet["files"];
+		affectedOtherTasks: number;
+		laterOwned: number;
+	}>;
+	executeRewind(operationToken: string, confirmAffected: boolean): Promise<{ removed: number; affectedOtherTasks: number; generation: number }>;
+}
 
 /**
  * The `SessionManager` members the interactive TUI touches, including the
@@ -219,6 +241,7 @@ export type InteractiveSessionSurface = Pick<
 	readonly agent: InteractiveAgentSurface;
 	readonly sessionManager: InteractiveSessionManagerSurface;
 	readonly extensionRunner: InteractiveExtensionSurface;
+	readonly daemonWorkspace?: DaemonWorkspaceActions;
 };
 
 export type InteractiveRuntimeHost = Pick<

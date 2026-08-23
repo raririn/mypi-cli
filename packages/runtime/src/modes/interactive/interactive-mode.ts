@@ -102,6 +102,7 @@ import {
 	formatSigkillPrompt,
 } from "../../core/hosted/ownership-conflict-ui.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
+import type { WorkspaceChangeSet } from "../../product/workspace-tracker.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import {
 	hasTrustRequiringProjectResources,
@@ -952,6 +953,8 @@ export class InteractiveMode {
 		for (const notice of this.options.startupWarnings ?? []) {
 			this.showWarning(notice);
 		}
+
+		await this.ensureWorkspaceTrackingConsent();
 
 		void this.maybeWarnAboutAnthropicSubscriptionAuth();
 
@@ -2828,6 +2831,101 @@ export class InteractiveMode {
 		return images;
 	}
 
+	private formatTrackingEstimate(files: number, bytes: number, warning: boolean): string {
+		const size = bytes >= 1024 * 1024 * 1024
+			? `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`
+			: bytes >= 1024 * 1024
+				? `${(bytes / (1024 * 1024)).toFixed(1)} MiB`
+				: `${Math.max(0, Math.round(bytes / 1024))} KiB`;
+		return `${files.toLocaleString()} files, ${size}${warning ? " — large workspace" : ""}`;
+	}
+
+	private async ensureWorkspaceTrackingConsent(): Promise<void> {
+		const actions = this.session.daemonWorkspace;
+		if (!actions) return;
+		try {
+			const cwd = this.sessionManager.getCwd();
+			const state = await actions.getProjectTracking(cwd);
+			if (state.tracking !== null) return;
+			const estimate = this.formatTrackingEstimate(state.estimate.files, state.estimate.bytes, state.estimate.warning);
+			if (state.trusted === true) {
+				const choice = await this.showExtensionSelector(`Track changes in this workspace?\n${estimate}`, ["Track", "Don't track"]);
+				if (choice === "Track") await actions.setProjectTracking(cwd, "track");
+				else if (choice === "Don't track") await actions.setProjectTracking(cwd, "dont-track");
+				return;
+			}
+			const choice = await this.showExtensionSelector(`Trust and track this workspace?\n${estimate}`, ["Trust and track", "Trust, don't track", "Cancel"]);
+			if (choice === "Trust and track" || choice === "Trust, don't track") {
+				await actions.setProjectTrust(cwd, true);
+				await actions.setProjectTracking(cwd, choice === "Trust and track" ? "track" : "dont-track");
+			}
+		} catch (error) {
+			this.showWarning(`Tracking consent unavailable: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	private renderTurnChanges(changes: WorkspaceChangeSet): void {
+		if (changes.files.length === 0) return;
+		const additions = changes.files.reduce((sum, file) => sum + (file.additions ?? 0), 0);
+		const deletions = changes.files.reduce((sum, file) => sum + (file.deletions ?? 0), 0);
+		const estimate = changes.estimated ? "Estimated · " : "";
+		const heading = `${estimate}Changed ${changes.files.length} file${changes.files.length === 1 ? "" : "s"} · +${additions} −${deletions}`;
+		this.chatContainer.addChild(new Spacer(1));
+		this.chatContainer.addChild(new Text(theme.fg(changes.estimated ? "warning" : "muted", heading), 1, 0));
+		for (const file of changes.files.slice(0, 5)) {
+			const counts = file.opaque ? "opaque" : `+${file.additions ?? 0} −${file.deletions ?? 0}`;
+			this.chatContainer.addChild(new Text(theme.fg("dim", `  • ${file.path}  ${counts}`), 1, 0));
+		}
+		if (changes.files.length > 5) this.chatContainer.addChild(new Text(theme.fg("dim", `  … ${changes.files.length - 5} more`), 1, 0));
+		if (changes.intersection === "concurrent-session") {
+			this.chatContainer.addChild(new Text(theme.fg("warning", "  Changes may include work from another task using this workspace."), 1, 0));
+		}
+		for (const omission of changes.omissions.slice(0, 2)) this.chatContainer.addChild(new Text(theme.fg("warning", `  ${omission}`), 1, 0));
+		this.ui.requestRender();
+	}
+
+	private async handleRewindCommand(): Promise<void> {
+		const actions = this.session.daemonWorkspace;
+		if (!actions) {
+			this.showWarning("Rewind is available only for daemon-hosted sessions.");
+			return;
+		}
+		if (!this.session.isIdle) {
+			this.showWarning("Wait for the active task to finish before rewinding.");
+			return;
+		}
+		try {
+			const listed = await actions.listCheckpoints();
+			if (listed.checkpoints.length === 0) {
+				this.showWarning(`No rewind checkpoints are available (${listed.status}).`);
+				return;
+			}
+			const labels = listed.checkpoints.map((checkpoint) => `${checkpoint.promptPreview || "Untitled prompt"} · ${new Date(checkpoint.createdAt).toLocaleString()}`);
+			const choice = await this.showExtensionSelector("Rewind to checkpoint", labels);
+			const index = choice === undefined ? -1 : labels.indexOf(choice);
+			if (index < 0) return;
+			const preview = await actions.prepareRewind(listed.checkpoints[index]!.id);
+			const opaque = preview.files.filter((file) => file.opaque).length;
+			const summary = [
+				`${preview.files.length} tracked file${preview.files.length === 1 ? "" : "s"} will change.`,
+				`${preview.laterOwned} later checkpoint${preview.laterOwned === 1 ? "" : "s"} from this task will be removed.`,
+				opaque > 0 ? `${opaque} opaque path${opaque === 1 ? " is" : "s are"} left untouched.` : "",
+			].filter(Boolean).join("\n");
+			if (!(await this.showExtensionConfirm("Confirm rewind", summary))) return;
+			if (preview.affectedOtherTasks > 0) {
+				const confirmed = await this.showExtensionConfirm(
+					"Other tasks are affected",
+					`${preview.affectedOtherTasks} other task${preview.affectedOtherTasks === 1 ? " has" : "s have"} checkpoints after this point. Their checkpoints remain available, but the workspace will change.`,
+				);
+				if (!confirmed) return;
+			}
+			const result = await actions.executeRewind(preview.operationToken, preview.affectedOtherTasks > 0);
+			this.showStatus(`Rewound workspace; removed ${result.removed} later checkpoint${result.removed === 1 ? "" : "s"}.`);
+		} catch (error) {
+			this.showError(`Rewind failed: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
 	private setupEditorSubmitHandler(): void {
 		this.defaultEditor.onSubmit = async (text: string) => {
 			text = text.trim();
@@ -2866,6 +2964,11 @@ export class InteractiveMode {
 			if (text === "/export" || text.startsWith("/export ")) {
 				await this.handleExportCommand(text);
 				this.editor.setText("");
+				return;
+			}
+			if (text === "/rewind") {
+				this.editor.setText("");
+				await this.handleRewindCommand();
 				return;
 			}
 			if (text === "/import" || text.startsWith("/import ")) {
@@ -3267,6 +3370,10 @@ export class InteractiveMode {
 			case "agent_settled":
 				await this.deliverPendingSteerNow();
 				await this.checkShutdownRequested();
+				break;
+
+			case "mypi_turn_changes":
+				this.renderTurnChanges(event.changes);
 				break;
 
 			case "compaction_start": {

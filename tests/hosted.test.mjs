@@ -38,6 +38,8 @@ async function startDaemon({ mode, failSession, ownershipConflict } = {}) {
     env: {
       ...process.env,
       MYPI_DAEMON_DIR: daemonDir,
+      MYPI_AGENT_DIR: join(daemonDir, "agent"),
+      MYPI_CODING_AGENT_DIR: join(daemonDir, "agent"),
       MYPI_DAEMON_ENGINE_CMD: JSON.stringify([process.execPath, FAKE_ENGINE]),
       FAKE_ENGINE_MODE: mode ?? "",
       FAKE_ENGINE_FAIL_SESSION: failSession ?? "",
@@ -144,6 +146,7 @@ test("a hosted runtime attaches, mirrors state, and drives a turn through the da
     assert.equal(session.pendingSafetyMode, undefined);
     assert.equal(session.state.messages.length, 0);
     assert.equal(await realpath(session.sessionManager.getCwd()), await realpath(daemon.daemonDir));
+    assert.ok(session.daemonWorkspace, "hosted sessions expose daemon workspace actions");
 
     // Commands arrive from the engine for autocomplete.
     await session.bindExtensions({ uiContext: undefined });
@@ -197,6 +200,38 @@ test("a hosted runtime attaches, mirrors state, and drives a turn through the da
       "safety mode event",
     );
 
+    await host.dispose();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("hosted workspace actions expose consent, settled changes, checkpoints, and rewind", async () => {
+  const daemon = await startDaemon();
+  try {
+    const host = await createHosted(daemon, { sessionId: "tracking-hosted" });
+    const session = host.session;
+    const actions = session.daemonWorkspace;
+    assert.ok(actions);
+    await actions.setProjectTrust(daemon.daemonDir, true);
+    await actions.setProjectTracking(daemon.daemonDir, "track");
+    const tracking = await actions.getProjectTracking(daemon.daemonDir);
+    assert.equal(tracking.tracking, "track");
+
+    const changes = [];
+    const unsubscribe = session.subscribe((event) => {
+      if (event.type === "mypi_turn_changes") changes.push(event.changes);
+    });
+    await session.prompt("write-tracked hosted");
+    await session.waitForIdle();
+    await waitFor(() => changes.length === 1, 8_000, "hosted tracked change event");
+    assert.ok(changes[0].files.some((file) => file.path === "tracked.txt"));
+    const listed = await actions.listCheckpoints();
+    assert.equal(listed.checkpoints.length, 1);
+    const preview = await actions.prepareRewind(listed.checkpoints[0].id);
+    const result = await actions.executeRewind(preview.operationToken, preview.affectedOtherTasks > 0);
+    assert.equal(result.removed, 0);
+    unsubscribe();
     await host.dispose();
   } finally {
     await daemon.cleanup();

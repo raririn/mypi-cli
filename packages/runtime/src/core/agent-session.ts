@@ -101,6 +101,7 @@ import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
 import type { ModelRuntime } from "./model-runtime.ts";
+import type { WorkspaceChangeSet } from "../product/workspace-tracker.ts";
 import { expandPromptTemplate, type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceExtensionPaths, ResourceLoader } from "./resource-loader.ts";
 import type { BranchSummaryEntry, CompactionEntry, SessionEntry, SessionManager } from "./session-manager.ts";
@@ -283,6 +284,7 @@ export type AgentSessionEvent =
 			willRetry: boolean;
 	  }
 	| { type: "agent_settled"; outcome: AgentSettledOutcome }
+	| { type: "mypi_turn_changes"; changes: WorkspaceChangeSet }
 	| { type: "structured_result"; result: StructuredOutputResult }
 	| {
 			type: "structured_result_error";

@@ -115,6 +115,7 @@ test("registers the Goal v3 lifecycle and structured plan tools", async () => {
   assert.deepEqual([...harness.tools.keys()], ["get_goal", "get_goal_plan", "create_goal", "set_goal_plan", "update_goal_plan", "update_goal"]);
   assert.equal(harness.tools.get("set_goal_plan").executionMode, "sequential");
   assert.equal(harness.tools.get("update_goal_plan").executionMode, "sequential");
+  assert.deepEqual(Object.keys(harness.tools.get("update_goal_plan").parameters.properties), ["operations"]);
   assert.match(harness.tools.get("update_goal").description, /tool result is not the final response/i);
   assert.deepEqual(harness.commands.get("plan").getArgumentCompletions("--").map((item: any) => item.value), ["--report", "--abort", "--help"]);
 });
@@ -157,6 +158,7 @@ test("/goal runs the same structured planner first and auto-starts after install
 	const lifecycle = await harness.executeTool("get_goal", {});
 	assert.equal(lifecycle.details.status, "planning");
 	assert.equal(lifecycle.details.autoStart, true);
+	assert.doesNotMatch(lifecycle.content[0].text, /goalId|revision/);
 	const pending = await harness.executeTool("get_goal_plan", {});
 	assert.equal(pending.details.code, "goal-plan-pending");
 	await harness.executeTool("set_goal_plan", { items: STRUCTURED_ITEMS });
@@ -249,27 +251,70 @@ test("invalid budgets fail explicitly without partial planning", async () => {
   assert.equal(latestState(invalidBudget), undefined);
 });
 
-test("structured updates are revision-checked, atomic, and completion requires evidence", async () => {
+test("structured updates are session-bound, atomic, and completion requires evidence", async () => {
   const harness = createHarness(await mkdtemp(join(tmpdir(), "mypi-goal-update-")));
   await activate(harness);
-  let snapshot = harness.snapshot();
-  const stale = await harness.executeTool("update_goal_plan", { goalId: snapshot.goalId, revision: snapshot.revision - 1, operations: [{ op: "set_checked", itemId: "I001", checked: true }] });
-  assert.equal(stale.details.code, "revision-conflict");
-
-  let result = await harness.executeTool("update_goal_plan", { goalId: snapshot.goalId, revision: snapshot.revision, operations: [{ op: "set_checked", itemId: "I001", checked: true }, { op: "add_evidence", itemId: "I001", evidence: "parser test passed" }] });
+  let result = await harness.executeTool("update_goal_plan", { operations: [{ op: "set_checked", itemId: "I001", checked: true }, { op: "add_evidence", itemId: "I001", evidence: "parser test passed" }] });
   assert.equal(result.details.accepted, true);
-  snapshot = harness.snapshot();
-  result = await harness.executeTool("update_goal_plan", { goalId: snapshot.goalId, revision: snapshot.revision, operations: [{ op: "set_checked", itemId: "I002", checked: true }] });
+  result = await harness.executeTool("update_goal_plan", { operations: [{ op: "set_checked", itemId: "I002", checked: true }] });
   assert.equal(result.details.accepted, true);
   const early = await harness.executeTool("update_goal", { status: "complete" });
   assert.match(early.content[0].text, /evidence is missing/i);
-  snapshot = harness.snapshot();
-  await harness.executeTool("update_goal_plan", { goalId: snapshot.goalId, revision: snapshot.revision, operations: [{ op: "add_evidence", itemId: "I002", evidence: "docs inspected" }] });
+  await harness.executeTool("update_goal_plan", { operations: [{ op: "add_evidence", itemId: "I002", evidence: "docs inspected" }] });
   const complete = await harness.executeTool("update_goal", { status: "complete" });
   assert.equal(complete.details.accepted, true);
   assert.equal(complete.terminate, undefined);
   assert.match(complete.content[0].text, /final response/i);
   assert.equal(harness.snapshot().status, "complete");
+});
+
+test("lifecycle revision churn cannot stale the next-turn plan update (BUG-105)", async () => {
+  const harness = createHarness(await mkdtemp(join(tmpdir(), "mypi-goal-cross-turn-update-")));
+  await activate(harness);
+  const plan = await harness.executeTool("get_goal_plan", { view: "next" });
+  assert.doesNotMatch(plan.content[0].text, /goalId|revision/);
+
+  await harness.emit("turn_end", { message: { usage: { input: 10, output: 5 } } });
+  await harness.emit("agent_settled", { outcome: { kind: "success" } });
+  await harness.emit("agent_start");
+
+  const result = await harness.executeTool("update_goal_plan", {
+    operations: [
+      { op: "set_checked", itemId: "I001", checked: true },
+      { op: "add_evidence", itemId: "I001", evidence: "cross-turn verification passed" },
+    ],
+  });
+  assert.equal(result.details.accepted, true);
+  assert.equal(harness.snapshot().checkedItems, 1);
+});
+
+test("repeated Goal tool rejection pauses instead of looping indefinitely", async () => {
+  const harness = createHarness(await mkdtemp(join(tmpdir(), "mypi-goal-tool-loop-")));
+  await activate(harness);
+  const invalid = { operations: [{ op: "set_checked", itemId: "I999", checked: true }] };
+
+  let result = await harness.executeTool("update_goal_plan", invalid);
+  assert.equal(result.details.repeatedRejections, 1);
+  result = await harness.executeTool("update_goal_plan", invalid);
+  assert.equal(result.details.repeatedRejections, 2);
+  result = await harness.executeTool("update_goal_plan", invalid);
+  assert.equal(result.details.code, "goal-tool-loop");
+  assert.equal(result.terminate, true);
+  assert.equal(harness.snapshot().status, "paused");
+  assert.equal(harness.snapshot().reason, "error:goal-tool-loop");
+  assert.equal(harness.aborts, 1);
+});
+
+test("no-op plan updates are rejected and do not masquerade as progress", async () => {
+  const harness = createHarness(await mkdtemp(join(tmpdir(), "mypi-goal-no-op-update-")));
+  await activate(harness);
+  const noOp = { operations: [{ op: "set_checked", itemId: "I001", checked: false }] };
+
+  const result = await harness.executeTool("update_goal_plan", noOp);
+  assert.equal(result.details.code, "no-plan-change");
+  assert.equal(result.details.repeatedRejections, 1);
+  assert.equal(harness.snapshot().checkedItems, 0);
+  assert.equal(harness.snapshot().status, "active");
 });
 
 test("three protected mutations warn exactly and the third aborts and blocks", async () => {
@@ -288,8 +333,7 @@ test("three protected mutations warn exactly and the third aborts and blocks", a
 test("strengthening proposals identify exact protected requirement weakening", async () => {
   const harness = createHarness(await mkdtemp(join(tmpdir(), "mypi-goal-strengthen-")));
   await activate(harness);
-  const snapshot = harness.snapshot();
-  const result = await harness.executeTool("update_goal_plan", { goalId: snapshot.goalId, revision: snapshot.revision, operations: [{ op: "strengthen_item", itemId: "I001", task: "Preserve the API", acceptance: ["easier"], verify: ["node --test"] }] });
+  const result = await harness.executeTool("update_goal_plan", { operations: [{ op: "strengthen_item", itemId: "I001", task: "Preserve the API", acceptance: ["easier"], verify: ["node --test"] }] });
   assert.match(result.content[0].text, /protected acceptance requirements were removed or weakened for item I001/);
   assert.equal(result.details.attempts, 1);
 });

@@ -15,7 +15,7 @@ const args = process.argv.slice(2);
 const mode = process.env.FAKE_ENGINE_MODE || 'happy';
 const { randomUUID } = require('node:crypto');
 const { join } = require('node:path');
-const { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } = require('node:fs');
+const { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } = require('node:fs');
 
 const readFlag = (name) => {
   const index = args.indexOf(name);
@@ -80,6 +80,14 @@ const state = () => ({
   isPersisted: true,
 });
 
+const ensurePersistedSession = () => {
+  if (!process.env.FAKE_ENGINE_PERSIST_TURNS) return;
+  mkdirSync(sessionDir, { recursive: true });
+  if (!existsSync(sessionPath())) {
+    writeFileSync(sessionPath(), `${JSON.stringify({ type: 'session', version: 3, id: sessionId, timestamp: new Date().toISOString(), cwd: process.cwd() })}\n`);
+  }
+};
+
 const readEntries = () => {
   if (!existsSync(sessionPath())) return [];
   return readFileSync(sessionPath(), 'utf8')
@@ -134,7 +142,27 @@ const branchTo = (entries, leafId) => {
 async function runTurn(promptText, structuredOutput, requestId) {
   turnActive = true;
   out({ type: 'agent_start' });
-  await sleep(10);
+  const userMessage = { role: 'user', content: [{ type: 'text', text: promptText }], timestamp: Date.now() };
+  ensurePersistedSession();
+  if (process.env.FAKE_ENGINE_PERSIST_TURNS) {
+    appendFileSync(sessionPath(), `${JSON.stringify({ type: 'message', id: `user-${requestId}`, parentId: null, timestamp: new Date().toISOString(), message: userMessage })}\n`);
+  }
+  out({ type: 'message_start', message: userMessage });
+  out({ type: 'message_end', message: userMessage });
+  await sleep(typeof promptText === 'string' && promptText.startsWith('write-tracked') ? 100 : 10);
+  if (typeof promptText === 'string' && promptText.startsWith('write-tracked')) {
+    const path = join(process.cwd(), 'tracked.txt');
+    const content = `${promptText}\n`;
+    out({ type: 'tool_execution_start', toolCallId: `write-${requestId}`, toolName: 'write', args: { path, content } });
+    writeFileSync(path, content);
+    out({
+      type: 'tool_execution_end',
+      toolCallId: `write-${requestId}`,
+      toolName: 'write',
+      result: { content: [{ type: 'text', text: `Successfully wrote ${content.length} bytes to ${path}` }] },
+      isError: false,
+    });
+  }
   out({
     type: 'message_update',
     message: { role: 'assistant', content: [] },
@@ -220,6 +248,7 @@ async function handleCommand(command) {
         process.exit(1);
       }
       if (mode === 'slow') return;
+      ensurePersistedSession();
       if (!sessionStartAnnounced && process.env.MYPI_DAEMON_SESSION_START) {
         sessionStartAnnounced = true;
         out({ type: '__fake_session_start', value: JSON.parse(process.env.MYPI_DAEMON_SESSION_START) });

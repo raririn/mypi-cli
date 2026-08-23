@@ -27,7 +27,7 @@ import {
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.ts";
 import { exportFromFile } from "./core/export-html/index.ts";
 import type { InlineExtension, SessionStartEvent } from "./core/extensions/types.ts";
-import { HostedOwnershipConflictError, readHostedDaemonEnv } from "./core/hosted/daemon-client.ts";
+import { HostedDaemonClient, HostedOwnershipConflictError, readHostedDaemonEnv } from "./core/hosted/daemon-client.ts";
 import { createHostedRuntime } from "./core/hosted/hosted-runtime-host.ts";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.ts";
 import { resolveCliModel, resolveModelScope, type ScopedModel } from "./core/model-resolver.ts";
@@ -865,6 +865,45 @@ export async function main(args: string[], options?: MainOptions) {
 		if (hostedStdinContent === undefined) {
 			const hostedCwd = sessionManager.getCwd();
 			const trustRoot = resolveProjectTrustRoot(hostedCwd);
+			try {
+				const trackingClient = new HostedDaemonClient(hostedEnv);
+				await trackingClient.connect("mypi-tui-tracking-consent");
+				try {
+					const response = await trackingClient.request<{ data: {
+						trusted: boolean | null;
+						tracking: "track" | "dont-track" | null;
+						estimate: { files: number; bytes: number; warning: boolean };
+					} }>({ type: "get_project_tracking", cwd: hostedCwd });
+					if (response.data.tracking === null) {
+						const size = response.data.estimate.bytes >= 1024 * 1024 * 1024
+							? `${(response.data.estimate.bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`
+							: `${(response.data.estimate.bytes / (1024 * 1024)).toFixed(1)} MiB`;
+						const title = `Workspace tracking: ${response.data.estimate.files.toLocaleString()} files, ${size}${response.data.estimate.warning ? " — large workspace" : ""}`;
+						const context = createProjectTrustContext({ cwd: hostedCwd, mode: "interactive", settingsManager: startupSettingsManager, hasUI: true });
+						const options = response.data.trusted === true
+							? ["Track", "Don't track"]
+							: ["Trust and track", "Trust, don't track", "Cancel"];
+						const selected = await context.ui.select(title, options);
+						if (selected === "Cancel" || selected === undefined) {
+							trackingClient.close();
+							return;
+						}
+						if (selected === "Trust and track" || selected === "Trust, don't track") {
+							await trackingClient.request({ type: "set_project_trust", cwd: hostedCwd, trusted: true });
+						}
+						await trackingClient.request({
+							type: "set_project_tracking",
+							cwd: hostedCwd,
+							tracking: selected === "Track" || selected === "Trust and track" ? "track" : "dont-track",
+						});
+					}
+				} finally {
+					trackingClient.close();
+				}
+			} catch {
+				// Older daemons retain the existing trust-only startup path. The hosted
+				// session reports tracking capability after attach when available.
+			}
 			let projectTrusted: boolean;
 			try {
 				projectTrusted = await resolveProjectTrusted({

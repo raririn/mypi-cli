@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -935,6 +935,8 @@ test("mypi proxy pipes the daemon protocol verbatim, and --read-only refuses mut
       3_000,
       "mutation refused locally",
     );
+    locked.send({ id: "track-ro", type: "set_project_tracking", cwd: daemon.daemonDir, tracking: "track" });
+    await waitFor(() => locked.frames.some((f) => f.id === "track-ro" && f.code === "PROXY_READ_ONLY"), 3_000, "tracking mutation refused locally");
     locked.child.kill();
   } finally {
     await daemon.cleanup();
@@ -1380,6 +1382,227 @@ test("set_project_trust writes and clears trust decisions", async () => {
     await waitFor(() => response("t2"), 5_000, "trust removal");
     assert.equal(response("t2").success, true);
     assert.ok(!readFileSync(trustPath, "utf8").includes("trusted-workspace"), "decision removed");
+    client.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("daemon owns tracking consent, checkpoints, net changes, and rewind", async () => {
+  const daemon = await startDaemon({ idleGraceMs: 5_000, turnMs: 500 });
+  try {
+    const workspace = join(daemon.daemonDir, "tracked-workspace");
+    await mkdir(workspace, { recursive: true });
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    const response = (id) => client.frames.find((frame) => frame.type === "response" && frame.id === id);
+
+    client.send({ id: "trust", type: "set_project_trust", cwd: workspace, trusted: true });
+    client.send({ id: "track", type: "set_project_tracking", cwd: workspace, tracking: "track" });
+    await waitFor(() => response("trust") && response("track"), 5_000, "tracking consent");
+    client.send({ type: "attach", sessionId: "s1", cwd: workspace });
+    await waitFor(() => client.ofType("attached").length === 1, 5_000, "tracked attach");
+
+    client.send({ id: "p1", type: "prompt", message: "write-tracked first", sessionId: "s1" });
+    await waitFor(() => client.ofType("agent_settled").length === 1, 10_000, "first tracked settle");
+    const firstChanges = client.ofType("agent_settled")[0].changes;
+    assert.equal(firstChanges.basis, "tracker");
+    assert.equal(firstChanges.estimated, false);
+    assert.ok(firstChanges.files.some((file) => file.path === "tracked.txt" && file.status === "added"));
+
+    client.send({ id: "list1", type: "list_checkpoints", sessionId: "s1" });
+    await waitFor(() => response("list1"), 5_000, "checkpoint list");
+    assert.equal(response("list1").data.checkpoints.length, 1);
+    const firstCheckpoint = response("list1").data.checkpoints[0];
+    assert.equal(typeof firstCheckpoint.userMessageId, "string");
+
+    client.send({ id: "p2", type: "prompt", message: "write-tracked second", sessionId: "s1" });
+    await waitFor(() => client.ofType("agent_start").length === 2, 5_000, "second tracked start");
+    client.send({ id: "busy-preview", type: "prepare_rewind", sessionId: "s1", checkpointId: firstCheckpoint.id });
+    await waitFor(() => response("busy-preview"), 5_000, "busy rewind refusal");
+    assert.equal(response("busy-preview").success, false);
+    assert.match(response("busy-preview").error, /working/i);
+    await waitFor(() => client.ofType("agent_settled").length === 2, 10_000, "second tracked settle");
+    assert.ok(client.ofType("agent_settled")[1].changes.files.some((file) => file.path === "tracked.txt" && file.status === "modified"));
+
+    client.send({ id: "preview", type: "prepare_rewind", sessionId: "s1", checkpointId: firstCheckpoint.id });
+    await waitFor(() => response("preview"), 10_000, "rewind preview");
+    assert.equal(response("preview").success, true);
+    client.send({ id: "rewind", type: "execute_rewind", sessionId: "s1", operationToken: response("preview").data.operationToken, confirm: true, confirmAffected: true });
+    await waitFor(() => response("rewind"), 10_000, "rewind execution");
+    assert.equal(response("rewind").success, true);
+    assert.equal(existsSync(join(workspace, "tracked.txt")), false, "rewind restored the pre-prompt checkpoint");
+    client.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("daemon returns the same estimated change shape when tracking is absent", async () => {
+  const daemon = await startDaemon({ idleGraceMs: 5_000 });
+  try {
+    const workspace = join(daemon.daemonDir, "estimated-workspace");
+    await mkdir(workspace, { recursive: true });
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    client.send({ type: "attach", sessionId: "estimate-1", cwd: workspace });
+    await waitFor(() => client.ofType("attached").length === 1, 5_000, "estimated attach");
+    client.send({ id: "p1", type: "prompt", message: "write-tracked estimate", sessionId: "estimate-1" });
+    await waitFor(() => client.ofType("agent_settled").length === 1, 10_000, "estimated settle");
+    const changes = client.ofType("agent_settled")[0].changes;
+    assert.equal(changes.basis, "tool-estimate");
+    assert.equal(changes.estimated, true);
+    assert.equal(changes.trackerStatus, "unconfigured");
+    assert.ok(changes.files.some((file) => file.path === "tracked.txt"));
+    client.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("project removal preview and execution clear consent, tracker data, and histories", async () => {
+  const daemon = await startDaemon();
+  try {
+    const workspace = join(daemon.daemonDir, "remove-workspace");
+    const sessionDir = join(daemon.agentDir, "sessions", "remove-workspace");
+    await mkdir(sessionDir, { recursive: true });
+    await mkdir(workspace, { recursive: true });
+    await writeFile(join(sessionDir, "one.jsonl"), persistedSession({ id: "remove-1", cwd: workspace }));
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    const response = (id) => client.frames.find((frame) => frame.type === "response" && frame.id === id);
+    client.send({ id: "trust", type: "set_project_trust", cwd: workspace, trusted: true });
+    client.send({ id: "track", type: "set_project_tracking", cwd: workspace, tracking: "track" });
+    await waitFor(() => response("trust") && response("track"), 5_000, "project consent");
+    client.send({ id: "preview", type: "prepare_project_removal", cwd: workspace, historyMode: "delete" });
+    await waitFor(() => response("preview"), 5_000, "project removal preview");
+    assert.equal(response("preview").data.active.length, 1);
+    client.send({ id: "remove", type: "execute_project_removal", operationToken: response("preview").data.operationToken, confirm: true });
+    await waitFor(() => response("remove"), 10_000, "project removal");
+    assert.deepEqual(response("remove").data.deleted, ["remove-1"]);
+    assert.equal(existsSync(join(sessionDir, "one.jsonl")), false);
+    const trust = JSON.parse(readFileSync(join(daemon.agentDir, "trust.json"), "utf8"));
+    assert.equal(Object.keys(trust.trust).length, 0);
+    assert.equal(Object.keys(trust.tracking).length, 0);
+    client.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("project removal archive mode preserves histories while clearing project state", async () => {
+  const daemon = await startDaemon();
+  try {
+    const workspace = join(daemon.daemonDir, "archive-remove-workspace");
+    const sessionDir = join(daemon.agentDir, "sessions", "archive-remove-workspace");
+    await mkdir(sessionDir, { recursive: true });
+    await mkdir(workspace, { recursive: true });
+    await writeFile(join(sessionDir, "one.jsonl"), persistedSession({ id: "archive-remove-1", cwd: workspace }));
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    const response = (id) => client.frames.find((frame) => frame.type === "response" && frame.id === id);
+    client.send({ id: "trust", type: "set_project_trust", cwd: workspace, trusted: true });
+    client.send({ id: "preview", type: "prepare_project_removal", cwd: workspace, historyMode: "archive" });
+    await waitFor(() => response("trust") && response("preview"), 5_000, "archive removal preview");
+    client.send({ id: "archive", type: "execute_project_removal", operationToken: response("preview").data.operationToken, confirm: true });
+    await waitFor(() => response("archive"), 10_000, "archive removal execution");
+    assert.deepEqual(response("archive").data.archived, ["archive-remove-1"]);
+    assert.equal(response("archive").data.projectStateRemoved, true);
+    client.send({ id: "list", type: "list_persisted_sessions", cwd: workspace, includeArchived: true });
+    await waitFor(() => response("list"), 5_000, "archived project listing");
+    assert.equal(response("list").data.sessions[0].archived, true);
+    client.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("old sessions expose stable estimated change sets through the daemon interface", async () => {
+  const daemon = await startDaemon();
+  try {
+    const workspace = join(daemon.daemonDir, "old-workspace");
+    const sessionDir = join(daemon.agentDir, "sessions", "old-workspace");
+    await mkdir(sessionDir, { recursive: true });
+    await mkdir(workspace, { recursive: true });
+    const timestamp = new Date().toISOString();
+    const entries = [
+      { type: "session", version: 3, id: "old-1", timestamp, cwd: workspace },
+      { type: "message", id: "u1", parentId: null, timestamp, message: { role: "user", content: [{ type: "text", text: "write it" }], timestamp: Date.now() } },
+      { type: "message", id: "a1", parentId: "u1", timestamp, message: { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "write", arguments: { path: "old.txt", content: "one\ntwo\n" } }], timestamp: Date.now() } },
+      { type: "message", id: "r1", parentId: "a1", timestamp, message: { role: "toolResult", toolCallId: "call-1", toolName: "write", content: [{ type: "text", text: "Successfully wrote 8 bytes" }], isError: false, timestamp: Date.now() } },
+    ];
+    await writeFile(join(sessionDir, "old.jsonl"), `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    const response = (id) => client.frames.find((frame) => frame.type === "response" && frame.id === id);
+    client.send({ id: "changes", type: "get_session_changes", sessionId: "old-1" });
+    await waitFor(() => response("changes"), 5_000, "old session changes");
+    assert.equal(response("changes").success, true, response("changes").error);
+    const changes = response("changes").data.changes;
+    assert.equal(changes.length, 1);
+    assert.equal(changes[0].estimated, true);
+    assert.equal(changes[0].files[0].path, "old.txt");
+    assert.equal(changes[0].files[0].additions, 2);
+    client.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("overlapping sessions on one workspace mark both change sets as intersected", async () => {
+  const daemon = await startDaemon({ turnMs: 500, idleGraceMs: 5_000 });
+  try {
+    const workspace = join(daemon.daemonDir, "shared-workspace");
+    await mkdir(workspace, { recursive: true });
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    const response = (id) => client.frames.find((frame) => frame.type === "response" && frame.id === id);
+    client.send({ id: "track", type: "set_project_tracking", cwd: workspace, tracking: "track" });
+    await waitFor(() => response("track"), 5_000, "shared tracking consent");
+    client.send({ type: "attach", sessionId: "shared-a", cwd: workspace });
+    client.send({ type: "attach", sessionId: "shared-b", cwd: workspace });
+    await waitFor(() => client.ofType("attached").length === 2, 5_000, "shared attaches");
+    client.send({ id: "a", type: "prompt", message: "write-tracked A", sessionId: "shared-a" });
+    await waitFor(() => client.ofType("agent_start").some((frame) => frame.sessionId === "shared-a"), 5_000, "first shared run");
+    client.send({ id: "b", type: "prompt", message: "write-tracked B", sessionId: "shared-b" });
+    await waitFor(() => client.ofType("agent_settled").filter((frame) => frame.sessionId === "shared-a" || frame.sessionId === "shared-b").length === 2, 12_000, "shared settles");
+    const settled = client.ofType("agent_settled").filter((frame) => frame.sessionId === "shared-a" || frame.sessionId === "shared-b");
+    assert.ok(settled.every((frame) => frame.changes.intersection === "concurrent-session"));
+    assert.ok(settled.every((frame) => frame.changes.affectedTaskCount >= 1));
+    client.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("corrupt tracking data warns on attach and rebuilds only through the confirmed daemon operation", async () => {
+  const daemon = await startDaemon();
+  try {
+    const workspace = join(daemon.daemonDir, "corrupt-tracker-workspace");
+    await mkdir(workspace, { recursive: true });
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    const response = (id) => client.frames.find((frame) => frame.type === "response" && frame.id === id);
+    client.send({ id: "track", type: "set_project_tracking", cwd: workspace, tracking: "track" });
+    client.send({ id: "rebuild1", type: "rebuild_project_tracker", cwd: workspace, confirm: true });
+    await waitFor(() => response("track") && response("rebuild1"), 10_000, "initial tracker build");
+    const [trackerName] = await readdir(join(daemon.agentDir, "trackers"));
+    await writeFile(join(daemon.agentDir, "trackers", trackerName, "state.json"), "{broken\n");
+
+    client.send({ type: "attach", sessionId: "corrupt-1", cwd: workspace });
+    await waitFor(() => client.ofType("attached").length === 1, 5_000, "corrupt attach");
+    await waitFor(() => client.ofType("tracking_warning").length === 1, 5_000, "corrupt warning");
+    assert.equal(client.ofType("tracking_warning")[0].status, "corrupt");
+    client.send({ id: "rebuild2", type: "rebuild_project_tracker", cwd: workspace, confirm: true });
+    await waitFor(() => response("rebuild2"), 10_000, "confirmed tracker rebuild");
+    assert.equal(response("rebuild2").data.status, "ready");
     client.socket.destroy();
   } finally {
     await daemon.cleanup();

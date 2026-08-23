@@ -243,7 +243,7 @@ test("subagent prompt resources carry the approved contract without meta leakage
 	const metaLeak = /<!--|pre-release|intentionally modular/iu;
 	for (const prompt of prompts) assert.doesNotMatch(prompt, metaLeak);
 	// Every child runs detached: it must know nobody answers questions.
-	const noQuestions = /cannot ask (?:anyone )?questions|nobody will (?:reply|answer)/iu;
+	const noQuestions = /interactive questioning (?:is|are) unavailable|cannot ask (?:anyone )?questions|nobody will (?:reply|answer)/iu;
 	for (const child of [SUBAGENT_ROLE_PROMPTS.explore, SUBAGENT_ROLE_PROMPTS.work, ADVISOR_PROMPT, REVIEWER_ENVELOPE_PROMPT]) {
 		assert.match(child, noQuestions);
 	}

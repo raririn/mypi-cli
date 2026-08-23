@@ -6,6 +6,7 @@ import { CONFIG_DIR_NAME } from "../config.ts";
 import { canonicalizePath, resolvePath } from "../utils/paths.ts";
 
 export type ProjectTrustDecision = boolean | null;
+export type ProjectTrackingDecision = "track" | "dont-track" | null;
 
 export interface ProjectTrustStoreEntry {
 	path: string;
@@ -24,7 +25,11 @@ export interface ProjectTrustOption {
 	savedPath?: string;
 }
 
-type TrustFile = Record<string, boolean | null | undefined>;
+interface TrustFileV2 {
+	version: 2;
+	trust: Record<string, boolean | null | undefined>;
+	tracking: Record<string, Exclude<ProjectTrackingDecision, null> | undefined>;
+}
 
 const TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES = [
 	"settings.json",
@@ -40,7 +45,7 @@ function normalizeCwd(cwd: string): string {
 	return canonicalizePath(resolvePath(cwd));
 }
 
-function findNearestTrustEntry(data: TrustFile, cwd: string): ProjectTrustStoreEntry | null {
+function findNearestTrustEntry(data: TrustFileV2["trust"], cwd: string): ProjectTrustStoreEntry | null {
 	let currentDir = normalizeCwd(cwd);
 	while (true) {
 		const value = data[currentDir];
@@ -105,9 +110,13 @@ export function getProjectTrustOptions(cwd: string, options?: { includeSessionOn
 	return trustOptions;
 }
 
-function readTrustFile(path: string): TrustFile {
+function emptyTrustFile(): TrustFileV2 {
+	return { version: 2, trust: {}, tracking: {} };
+}
+
+function readTrustFile(path: string): TrustFileV2 {
 	if (!existsSync(path)) {
-		return {};
+		return emptyTrustFile();
 	}
 
 	let parsed: unknown;
@@ -122,26 +131,45 @@ function readTrustFile(path: string): TrustFile {
 		throw new Error(`Invalid trust store ${path}: expected an object`);
 	}
 
-	const data: TrustFile = {};
-	for (const [key, value] of Object.entries(parsed)) {
-		if (value !== true && value !== false && value !== null) {
-			throw new Error(`Invalid trust store ${path}: value for ${JSON.stringify(key)} must be true, false, or null`);
+	if ((parsed as { version?: unknown }).version === 2) {
+		const record = parsed as { trust?: unknown; tracking?: unknown };
+		if (!record.trust || typeof record.trust !== "object" || Array.isArray(record.trust)) throw new Error(`Invalid trust store ${path}: trust must be an object`);
+		if (!record.tracking || typeof record.tracking !== "object" || Array.isArray(record.tracking)) throw new Error(`Invalid trust store ${path}: tracking must be an object`);
+		const data = emptyTrustFile();
+		for (const [key, value] of Object.entries(record.trust)) {
+			if (value !== true && value !== false && value !== null) throw new Error(`Invalid trust store ${path}: trust value for ${JSON.stringify(key)} must be true, false, or null`);
+			data.trust[key] = value;
 		}
-		data[key] = value;
+		for (const [key, value] of Object.entries(record.tracking)) {
+			if (value !== "track" && value !== "dont-track") throw new Error(`Invalid trust store ${path}: tracking value for ${JSON.stringify(key)} is invalid`);
+			data.tracking[key] = value;
+		}
+		return data;
+	}
+	// Version-1 compatibility: the original file was the trust map itself.
+	const data = emptyTrustFile();
+	for (const [key, value] of Object.entries(parsed)) {
+		if (value !== true && value !== false && value !== null) throw new Error(`Invalid trust store ${path}: value for ${JSON.stringify(key)} must be true, false, or null`);
+		data.trust[key] = value;
 	}
 	return data;
 }
 
-function writeTrustFile(path: string, data: TrustFile): void {
-	const sorted: TrustFile = {};
-	for (const key of Object.keys(data).sort()) {
-		const value = data[key];
+function writeTrustFile(path: string, data: TrustFileV2): void {
+	const trust: TrustFileV2["trust"] = {};
+	for (const key of Object.keys(data.trust).sort()) {
+		const value = data.trust[key];
 		if (value === true || value === false || value === null) {
-			sorted[key] = value;
+			trust[key] = value;
 		}
 	}
+	const tracking: TrustFileV2["tracking"] = {};
+	for (const key of Object.keys(data.tracking).sort()) {
+		const value = data.tracking[key];
+		if (value === "track" || value === "dont-track") tracking[key] = value;
+	}
 	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, `${JSON.stringify(sorted, null, 2)}\n`, "utf-8");
+	writeFileSync(path, `${JSON.stringify({ version: 2, trust, tracking }, null, 2)}\n`, "utf-8");
 }
 
 function acquireTrustLockSync(path: string): () => void {
@@ -230,7 +258,32 @@ export class ProjectTrustStore {
 	getEntry(cwd: string): ProjectTrustStoreEntry | null {
 		return withTrustFileLock(this.trustPath, () => {
 			const data = readTrustFile(this.trustPath);
-			return findNearestTrustEntry(data, cwd);
+			return findNearestTrustEntry(data.trust, cwd);
+		});
+	}
+
+	getTracking(cwd: string): ProjectTrackingDecision {
+		const key = normalizeCwd(cwd);
+		return withTrustFileLock(this.trustPath, () => readTrustFile(this.trustPath).tracking[key] ?? null);
+	}
+
+	setTracking(cwd: string, decision: ProjectTrackingDecision): void {
+		const key = normalizeCwd(cwd);
+		withTrustFileLock(this.trustPath, () => {
+			const data = readTrustFile(this.trustPath);
+			if (decision === null) delete data.tracking[key];
+			else data.tracking[key] = decision;
+			writeTrustFile(this.trustPath, data);
+		});
+	}
+
+	removeProject(cwd: string): void {
+		const key = normalizeCwd(cwd);
+		withTrustFileLock(this.trustPath, () => {
+			const data = readTrustFile(this.trustPath);
+			delete data.trust[key];
+			delete data.tracking[key];
+			writeTrustFile(this.trustPath, data);
 		});
 	}
 
@@ -244,9 +297,9 @@ export class ProjectTrustStore {
 			for (const { path, decision } of decisions) {
 				const key = normalizeCwd(path);
 				if (decision === null) {
-					delete data[key];
+					delete data.trust[key];
 				} else {
-					data[key] = decision;
+					data.trust[key] = decision;
 				}
 			}
 			writeTrustFile(this.trustPath, data);

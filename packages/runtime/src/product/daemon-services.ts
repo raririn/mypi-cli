@@ -9,7 +9,7 @@ import { createAgentSessionServices, type AgentSessionServices } from "../core/a
 import { SettingsManager } from "../core/settings-manager.ts";
 import { removeSubagentParentStorage } from "../core/subagents/storage.ts";
 import type { SourceInfo } from "../core/source-info.ts";
-import { ProjectTrustStore } from "../core/trust-manager.ts";
+import { ProjectTrustStore, resolveProjectTrustRoot } from "../core/trust-manager.ts";
 import { resolveChatPaths } from "./mypi-chat-storage.ts";
 import { CHAT_TOOL_NAMES } from "./mypi-chat.ts";
 import { randomUUID } from "node:crypto";
@@ -120,6 +120,13 @@ export interface ArchiveCleanupPreview {
 	readonly excess: number;
 	readonly candidates: PersistedSessionSummary[];
 	readonly configDiagnostic?: GlobalConfigDiagnostic;
+}
+
+export interface ProjectRemovalPreview {
+	readonly project: string;
+	readonly historyMode: "delete" | "archive";
+	readonly active: Array<Pick<PersistedSessionSummary, "id" | "sessionFile">>;
+	readonly archived: Array<Pick<PersistedSessionSummary, "id" | "sessionFile">>;
 }
 
 /** Everything a daemon needs to spawn one MyPi Chat engine child: the chat
@@ -438,6 +445,75 @@ export async function cleanupArchivedSessions(
 		}
 	}
 	return { deleted, failures: failures.slice(0, 20), preview };
+}
+
+export async function previewProjectRemoval(
+	cwd: string,
+	historyMode: "delete" | "archive",
+	agentDir = getAgentDir(),
+): Promise<ProjectRemovalPreview> {
+	const roots = resolveSessionRoots(agentDir);
+	const project = await canonicalPath(resolveProjectTrustRoot(cwd));
+	const matchesProject = async (session: PersistedSessionSummary): Promise<boolean> => {
+		if (!session.cwd) return false;
+		return await canonicalPath(resolveProjectTrustRoot(session.cwd)) === project;
+	};
+	const [activeAll, archivedAll] = await Promise.all([
+		scanSessionRoot(roots.sessionsRoot, false),
+		scanSessionRoot(roots.archiveRoot, true),
+	]);
+	const active: ProjectRemovalPreview["active"] = [];
+	const archived: ProjectRemovalPreview["archived"] = [];
+	for (const session of activeAll) if (await matchesProject(session)) active.push({ id: session.id, sessionFile: session.sessionFile });
+	for (const session of archivedAll) if (await matchesProject(session)) archived.push({ id: session.id, sessionFile: session.sessionFile });
+	return { project, historyMode, active, archived };
+}
+
+export async function executeProjectRemoval(
+	preview: ProjectRemovalPreview,
+	options: { readonly agentDir?: string },
+): Promise<{ archived: string[]; deleted: string[]; failures: Array<{ id: string; reason: string }> }> {
+	const agentDir = options.agentDir ?? getAgentDir();
+	const roots = resolveSessionRoots(agentDir);
+	const archived: string[] = [];
+	const deleted: string[] = [];
+	const failures: Array<{ id: string; reason: string }> = [];
+	for (const candidate of preview.active) {
+		try {
+			const summary = (await scanSessionRoot(roots.sessionsRoot, false)).find((session) => session.id === candidate.id && session.sessionFile === candidate.sessionFile);
+			if (!summary || await canonicalPath(resolveProjectTrustRoot(summary.cwd)) !== preview.project) throw new Error("session changed after preview");
+			if (preview.historyMode === "archive") {
+				await archiveStoredSession(summary, roots);
+				archived.push(summary.id);
+			} else {
+				await withStoredSessionLock(summary.sessionFile, async () => {
+					await assertNoLegacyLease(summary.sessionFile);
+					const handle = await openSafeSessionFile(summary.sessionFile, roots.sessionsRoot);
+					await handle.close();
+					await removeSubagentParentStorage(agentDir, summary.id);
+					await rm(summary.sessionFile);
+				});
+				deleted.push(summary.id);
+			}
+		} catch (error) { failures.push({ id: candidate.id, reason: boundedMessage(error) }); }
+	}
+	if (preview.historyMode === "delete") {
+		for (const candidate of preview.archived) {
+			try {
+				const summary = (await scanSessionRoot(roots.archiveRoot, true)).find((session) => session.id === candidate.id && session.sessionFile === candidate.sessionFile);
+				if (!summary || await canonicalPath(resolveProjectTrustRoot(summary.cwd)) !== preview.project) throw new Error("session changed after preview");
+				await withStoredSessionLock(summary.sessionFile, async () => {
+					await assertNoLegacyLease(summary.sessionFile);
+					const handle = await openSafeSessionFile(summary.sessionFile, roots.archiveRoot);
+					await handle.close();
+					await removeSubagentParentStorage(agentDir, summary.id);
+					await rm(summary.sessionFile);
+				});
+				deleted.push(summary.id);
+			} catch (error) { failures.push({ id: candidate.id, reason: boundedMessage(error) }); }
+		}
+	}
+	return { archived, deleted, failures: failures.slice(0, 50) };
 }
 
 async function daemonServices(cwd: string, agentDir: string): Promise<AgentSessionServices> {

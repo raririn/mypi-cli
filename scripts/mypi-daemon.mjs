@@ -24,6 +24,16 @@
 //     {type:"get_available_models", cwd?}             no engine required
 //     {type:"list_skills"|"list_extensions", cwd?}   no engine required
 //     {type:"get_session_stats", sessionId|sessionFile} no engine required
+//     {type:"get_project_tracking"|"estimate_project_tracking", cwd}
+//     {type:"set_project_tracking", cwd, tracking:"track"|"dont-track"|null}
+//     {type:"rebuild_project_tracker", cwd, confirm:true}
+//     {type:"get_session_changes", sessionId|sessionFile}
+//     {type:"get_change_set", sessionId, changeSetId}
+//     {type:"list_checkpoints", sessionId}
+//     {type:"prepare_rewind", sessionId, checkpointId}
+//     {type:"execute_rewind", sessionId, operationToken, confirm:true, confirmAffected?}
+//     {type:"prepare_project_removal", cwd, historyMode:"archive"|"delete"}
+//     {type:"execute_project_removal", operationToken, confirm:true}
 //     {type:"daemon_status"}                           version/pid/turn counts
 //     {type:"restart", force?}                         graceful drain + exit
 //     {type:"attach", sessionId?, cwd?, model?, sessionStart?}
@@ -58,6 +68,9 @@
 //     {type:"configuration_warning", code, message, path}
 //     {type:"persisted_changed", sessionId, sessionFile, cwd, kind}
 //     {type:"session_maintenance", ..., archivedExcess, command?}
+//     {type:"tracking_status"|"tracking_warning", ...}
+//     {type:"turn_changes_finalized", sessionId, changes}
+//     {type:"workspace_rewound"|"project_removed", ...}
 //     {type:"attached", sessionId, sessionFile, cwd, clients}
 //       Re-broadcast if a legacy sole-client command changes child identity.
 //       Modern navigation/create/derive attaches the requester to another child.
@@ -75,10 +88,10 @@
 
 import { randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { hostname } from "node:os";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import {
   MYPI_DAEMON_PROTOCOL,
   acquireStartupLock,
@@ -89,6 +102,10 @@ import {
 } from "./mypi-daemon-discovery.mjs";
 import {
   clearDaemonServiceCache,
+  estimateWorkspaceTracking,
+  estimatePersistedSessionChanges,
+  estimatedChangeSet,
+  executeProjectRemoval,
   getDaemonAvailableModels,
   getAgentDir,
   getPersistedSessionStats,
@@ -96,10 +113,13 @@ import {
   listDaemonSkills,
   listPersistedSessions,
   loadGlobalConfig,
+  previewProjectRemoval,
   ProjectTrustStore,
+  resolveProjectTrustRoot,
   prepareChatEngineLaunch,
   readPersistedSession,
   runNewSessionMaintenance,
+  WorkspaceTracker,
 } from "@earendil-works/pi-coding-agent";
 
 const DEFAULT_IDLE_GRACE_MS = 5 * 60_000;
@@ -209,6 +229,10 @@ const externalOwners = new Map();
 /** @type {Set<object>} connections that completed the handshake */
 const clients = new Set();
 const preparedFreshSessionIds = new Set();
+const rewindPreviews = new Map();
+const projectRemovalPreviews = new Map();
+const liveChangeSets = new Map();
+const projectMaintenanceRoots = new Set();
 const daemonAgentDir = getAgentDir();
 const daemonGlobalConfigPath = resolve(daemonAgentDir, "config.yaml");
 
@@ -255,6 +279,12 @@ function sendDaemonResponse(client, request, command, task) {
 function boundedError(error) {
   const message = error instanceof Error ? error.message : String(error);
   return message.replace(/[\r\n]+/g, " ").slice(0, 1_000) || "Daemon request failed";
+}
+
+function publicTrackerError(error, fallback) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/^(?:Checkpoint is unavailable|Tracker changed after preview)/u.test(message)) return message;
+  return fallback;
 }
 
 function persistedChanged(session, kind) {
@@ -415,6 +445,16 @@ function startSession({ sessionId, cwd, model, sessionStart, profile, launchArgs
     fresh: !sessionId || sessionStart?.reason === "new",
     persistedAnnounced: false,
     maintenanceStarted: false,
+    trackingRoot: null,
+    trackingRun: null,
+    trackingCapturePromise: null,
+    trackingEstimates: new Map(),
+    trackingToolCalls: new Map(),
+    trackingOmissions: [],
+    trackingIntersection: new Set(),
+    trackingWarningSent: false,
+    trackingCaptureRaced: false,
+    trackingPendingPrompt: null,
   };
   const [executable, ...args] = engineCommand(session);
   session.child = spawn(executable, args, {
@@ -445,6 +485,7 @@ function startSession({ sessionId, cwd, model, sessionStart, profile, launchArgs
     });
     for (const client of session.clients) client.sessions.delete(session.key);
     sessions.delete(session.key);
+    void pruneDetachedTracking(session);
   });
   session.child.on("error", () => {
     session.exited = true;
@@ -492,6 +533,243 @@ function joinSessionAsClient(client, session) {
   }
 }
 
+function canonicalTrackingRoot(cwd) {
+  try { return resolveProjectTrustRoot(cwd); }
+  catch { return resolve(cwd); }
+}
+
+function sessionsWorkingInRoot(root, except) {
+  return [...sessions.values()].filter((candidate) =>
+    candidate !== except && !candidate.exited && candidate.turnActive && canonicalTrackingRoot(candidate.cwd) === root,
+  );
+}
+
+function textFromUserMessage(message) {
+  if (!Array.isArray(message?.content)) return typeof message?.content === "string" ? message.content : "";
+  return message.content.filter((part) => part?.type === "text" && typeof part.text === "string").map((part) => part.text).join("\n");
+}
+
+function queuedMode(message) {
+  if (!Array.isArray(message?.content)) return null;
+  for (const part of message.content) {
+    if (part?.mypiQueuedMessageMode === "steer" || part?.mypiQueuedMessageMode === "followUp") return part.mypiQueuedMessageMode;
+  }
+  return null;
+}
+
+function queuedId(message) {
+  if (!Array.isArray(message?.content)) return null;
+  for (const part of message.content) if (typeof part?.mypiQueuedMessageId === "string") return part.mypiQueuedMessageId;
+  return null;
+}
+
+function latestPersistedUserEntry(sessionFile, startedAt) {
+  let fd;
+  try {
+    const size = statSync(sessionFile).size;
+    const length = Math.min(size, 8 * 1024 * 1024);
+    const buffer = Buffer.allocUnsafe(length);
+    fd = openSync(sessionFile, "r");
+    const bytes = readSync(fd, buffer, 0, length, Math.max(0, size - length));
+    let text = buffer.subarray(0, bytes).toString("utf8");
+    if (length < size) text = text.slice(text.indexOf("\n") + 1);
+    const lines = text.split("\n");
+    for (let index = lines.length - 1; index >= 0; index -= 1) {
+      if (!lines[index]?.trim()) continue;
+      let entry;
+      try { entry = JSON.parse(lines[index]); } catch { continue; }
+      if (entry?.type !== "message" || entry.message?.role !== "user" || typeof entry.id !== "string") continue;
+      if (queuedMode(entry.message) === "steer") continue;
+      const timestamp = typeof entry.message.timestamp === "number" ? entry.message.timestamp : Date.parse(String(entry.timestamp ?? ""));
+      if (Number.isFinite(timestamp) && timestamp < startedAt - 1_000) continue;
+      return entry;
+    }
+  } catch {}
+  finally { if (fd !== undefined) try { closeSync(fd); } catch {} }
+  return undefined;
+}
+
+async function trackingContext(session) {
+  const root = canonicalTrackingRoot(session.cwd);
+  session.trackingRoot = root;
+  const loaded = await loadGlobalConfig(daemonGlobalConfigPath);
+  const store = new ProjectTrustStore(daemonAgentDir);
+  let decision = null;
+  try { decision = store.getTracking(root); } catch {}
+  const tracker = await WorkspaceTracker.open(daemonAgentDir, root, loaded.config.tracking);
+  return { root, loaded, decision, tracker, health: await tracker.health(decision), storageHealth: await tracker.storageHealth() };
+}
+
+function markTrackingIntersection(session, root) {
+  const overlapping = sessionsWorkingInRoot(root, session);
+  for (const other of overlapping) {
+    session.trackingIntersection.add(other.sessionId ?? other.key);
+    other.trackingIntersection.add(session.sessionId ?? session.key);
+  }
+  return overlapping;
+}
+
+function publishTrackingWarning(session, status, message) {
+  if (session.trackingWarningSent) return;
+  session.trackingWarningSent = true;
+  broadcast(session, {
+    type: "tracking_warning",
+    sessionId: session.sessionId ?? session.key,
+    cwd: session.trackingRoot ?? canonicalTrackingRoot(session.cwd),
+    status,
+    message,
+  });
+}
+
+async function finalizeTrackingRun(session, skipCaptureWait = false) {
+  if (!skipCaptureWait) {
+    await session.trackingCapturePromise?.catch(() => undefined);
+    session.trackingCapturePromise = null;
+  }
+  const run = session.trackingRun;
+  if (!run) return null;
+  if (run.tracker && run.checkpointId && session.sessionFile) {
+    try {
+      const entry = latestPersistedUserEntry(session.sessionFile, run.startedAt);
+      if (entry?.id) await run.tracker.bindCheckpointToUserMessage(session.sessionId ?? session.key, run.checkpointId, entry.id, run.promptPreview);
+    } catch {}
+  }
+  let changeSet;
+  if (run.tracker && run.checkpointId) {
+    try {
+      changeSet = await run.tracker.finalizeChangeSet({
+        sessionId: session.sessionId ?? session.key,
+        checkpointId: run.checkpointId,
+        intersection: session.trackingIntersection.size ? "concurrent-session" : "none",
+        affectedTaskCount: session.trackingIntersection.size,
+        ...(session.trackingCaptureRaced ? { partialReason: "A file tool began before the checkpoint capture completed." } : {}),
+      });
+    } catch (error) {
+      session.trackingOmissions.push("Tracker finalization failed; estimates were used.");
+      publishTrackingWarning(session, "corrupt", "The project tracker is unavailable. File changes are estimated until it is rebuilt or disabled.");
+    }
+  }
+  if (!changeSet) {
+    changeSet = estimatedChangeSet({
+      sessionId: session.sessionId ?? session.key,
+      trackerStatus: run.health,
+      files: [...session.trackingEstimates.values()],
+      intersection: session.trackingIntersection.size ? "concurrent-session" : "none",
+      affectedTaskCount: session.trackingIntersection.size,
+      omissions: session.trackingOmissions,
+    });
+  }
+  liveChangeSets.set(changeSet.id, { root: run.root, changeSet });
+  if (liveChangeSets.size > 2_000) liveChangeSets.delete(liveChangeSets.keys().next().value);
+  session.lastChangeSet = changeSet;
+  broadcast(session, { type: "turn_changes_finalized", sessionId: session.sessionId ?? session.key, changes: changeSet });
+  session.trackingRun = null;
+  session.trackingEstimates = new Map();
+  session.trackingToolCalls = new Map();
+  session.trackingOmissions = [];
+  session.trackingIntersection = new Set();
+  session.trackingCaptureRaced = false;
+  return changeSet;
+}
+
+function beginTrackingUserMessage(session, message) {
+  if (session.profile === "chat" || queuedMode(message) === "steer") return;
+  const previousCapture = session.trackingCapturePromise;
+  session.trackingCapturePromise = (async () => {
+    await previousCapture?.catch(() => undefined);
+    if (session.trackingRun) await finalizeTrackingRun(session, true);
+    const context = await trackingContext(session);
+    const overlapping = markTrackingIntersection(session, context.root);
+    const pendingPrompt = queuedMode(message) === "followUp" ? null : session.trackingPendingPrompt;
+    session.trackingPendingPrompt = null;
+    const run = {
+      root: context.root,
+      health: context.health,
+      tracker: null,
+      checkpointId: null,
+	  startedAt: typeof message?.timestamp === "number" ? message.timestamp : Date.now(),
+	  promptPreview: pendingPrompt?.text ?? textFromUserMessage(message),
+    };
+    if (context.decision === "track" && context.health !== "corrupt") {
+      try {
+        const checkpoint = await context.tracker.createCheckpoint({
+          sessionId: session.sessionId ?? session.key,
+		  userMessageId: queuedId(message) ?? pendingPrompt?.id ?? `message-${message?.timestamp ?? Date.now()}-${randomUUID()}`,
+		  promptPreview: pendingPrompt?.text ?? textFromUserMessage(message),
+          intersection: overlapping.length ? "concurrent-session" : "none",
+          affectedTaskCount: overlapping.length,
+        });
+        run.tracker = context.tracker;
+        run.checkpointId = checkpoint.id;
+        run.health = "ready";
+      } catch (error) {
+        run.health = "corrupt";
+        session.trackingOmissions.push("Checkpoint capture failed; estimates were used.");
+        publishTrackingWarning(session, "corrupt", "The project tracker is unavailable. File changes are estimated until it is rebuilt or disabled.");
+      }
+    }
+    session.trackingRun = run;
+  })();
+}
+
+function normalizeTrackedToolPath(session, value) {
+  if (typeof value !== "string" || !value) return null;
+  const root = session.trackingRoot ?? canonicalTrackingRoot(session.cwd);
+  const absolute = resolve(session.cwd, value);
+  const rel = relative(root, absolute);
+  if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return null;
+  return rel.split(sep).join("/");
+}
+
+function patchCounts(patch) {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of String(patch ?? "").split("\n")) {
+    if (line.startsWith("+") && !line.startsWith("+++")) additions += 1;
+    else if (line.startsWith("-") && !line.startsWith("---")) deletions += 1;
+  }
+  return { additions, deletions };
+}
+
+function recordToolTracking(session, frame) {
+  if (frame?.type === "tool_execution_start" && typeof frame.toolCallId === "string") {
+    if (session.trackingCapturePromise && !session.trackingRun) session.trackingCaptureRaced = true;
+    session.trackingToolCalls.set(frame.toolCallId, { name: frame.toolName, args: frame.args });
+    return;
+  }
+  if (frame?.type !== "tool_execution_end" || frame.isError || typeof frame.toolCallId !== "string") return;
+  const call = session.trackingToolCalls.get(frame.toolCallId);
+  if (!call) return;
+  session.trackingToolCalls.delete(frame.toolCallId);
+  const args = call.args && typeof call.args === "object" ? call.args : {};
+  const path = normalizeTrackedToolPath(session, args.path ?? args.file_path ?? args.filePath);
+  if (!path) return;
+  const previous = session.trackingEstimates.get(path);
+  const result = frame.result && typeof frame.result === "object" ? frame.result : {};
+  const patch = typeof result.details?.patch === "string" ? result.details.patch : undefined;
+  const counts = patch ? patchCounts(patch) : typeof args.content === "string"
+    ? { additions: args.content ? args.content.split("\n").length - (args.content.endsWith("\n") ? 1 : 0) : 0, deletions: 0 }
+    : { additions: 0, deletions: 0 };
+  const boundedPatch = patch && Buffer.byteLength(patch) <= 400_000 ? patch : undefined;
+  session.trackingEstimates.set(path, {
+    path,
+    status: previous?.status ?? "modified",
+    additions: (previous?.additions ?? 0) + counts.additions,
+    deletions: (previous?.deletions ?? 0) + counts.deletions,
+    opaque: false,
+    ...(boundedPatch ? { patch: boundedPatch } : {}),
+    diffAvailable: Boolean(boundedPatch),
+  });
+}
+
+async function pruneDetachedTracking(session) {
+  if (shuttingDown || session.clients.size > 0 || !session.trackingRoot || !session.sessionId) return;
+  try {
+    const context = await trackingContext(session);
+    if (context.storageHealth === "ready") await context.tracker.pruneDetached(session.sessionId);
+  } catch {}
+}
+
 function handleEngineFrame(session, line) {
   let frame;
   try {
@@ -500,6 +778,9 @@ function handleEngineFrame(session, line) {
     broadcast(session, { type: "session_raw", sessionId: session.sessionId ?? session.key, line });
     return;
   }
+
+  recordToolTracking(session, frame);
+  if (frame?.type === "message_start" && frame.message?.role === "user") beginTrackingUserMessage(session, frame.message);
 
   if (frame?.type === "response" && typeof frame.id === "string") {
     if (frame.id === "__daemon_state") {
@@ -521,6 +802,18 @@ function handleEngineFrame(session, line) {
           clients: session.clients.size,
           profile: session.profile ?? "coding",
         });
+        if (session.profile !== "chat") {
+          void trackingContext(session).then((context) => {
+            broadcast(session, {
+              type: "tracking_status",
+              sessionId: session.sessionId ?? session.key,
+              cwd: context.root,
+              status: context.health,
+              tracking: context.decision,
+            });
+            if (context.health === "corrupt") publishTrackingWarning(session, "corrupt", "The project tracker is unavailable. File changes are estimated until it is rebuilt or disabled.");
+          }).catch(() => publishTrackingWarning(session, "corrupt", "The project tracker could not be inspected. File changes are estimated."));
+        }
         if (!session.persistedAnnounced && session.sessionFile) {
           session.persistedAnnounced = true;
           persistedChanged(session, session.fresh ? "created" : "attached");
@@ -639,17 +932,19 @@ function handleEngineFrame(session, line) {
   if (frame?.type === "agent_start") session.turnActive = true;
   if (frame?.type === "agent_settled") {
     session.turnActive = false;
-    broadcast(session, { ...frame, sessionId: session.sessionId ?? session.key });
-    session.structuredCorrelations.clear();
-    clearDaemonServiceCache();
-    persistedChanged(session, "updated");
-    // A drain in progress exits as soon as the last turn settles.
-    if (draining) maybeFinishDrain();
-    if (session.pendingRelease) {
-      completeRelease(session);
-      return;
-    }
-    if (session.clients.size === 0) scheduleSessionGrace(session);
+    void finalizeTrackingRun(session).then((changes) => {
+      broadcast(session, { ...frame, sessionId: session.sessionId ?? session.key, ...(changes ? { changes } : {}) });
+    }).catch((error) => {
+      broadcast(session, { ...frame, sessionId: session.sessionId ?? session.key, trackingError: boundedError(error) });
+    }).finally(() => {
+      session.structuredCorrelations.clear();
+      clearDaemonServiceCache();
+      persistedChanged(session, "updated");
+      // A drain in progress exits as soon as the last turn settles.
+      if (draining) maybeFinishDrain();
+      if (session.pendingRelease) completeRelease(session);
+      else if (session.clients.size === 0) scheduleSessionGrace(session);
+    });
     return;
   }
 
@@ -1190,6 +1485,96 @@ function handleClientFrame(client, frame) {
     }
     return;
   }
+  if (frame?.type === "get_project_tracking" || frame?.type === "estimate_project_tracking") {
+    const cwd = String(frame.cwd ?? "");
+    sendDaemonResponse(client, frame, frame.type, (async () => {
+      if (!cwd) throw new Error(`${frame.type} requires cwd`);
+      const root = canonicalTrackingRoot(cwd);
+      const loaded = await loadGlobalConfig(daemonGlobalConfigPath);
+      const store = new ProjectTrustStore(daemonAgentDir);
+      const decision = store.getTracking(root);
+      const tracker = await WorkspaceTracker.open(daemonAgentDir, root, loaded.config.tracking);
+      const estimate = await estimateWorkspaceTracking(root, loaded.config.tracking);
+      return { root, trusted: store.get(root), tracking: decision, status: await tracker.health(decision), estimate };
+    })());
+    return;
+  }
+  if (frame?.type === "set_project_tracking") {
+    try {
+      const cwd = String(frame.cwd ?? "");
+      if (!cwd) throw new Error("set_project_tracking requires cwd");
+      const root = canonicalTrackingRoot(cwd);
+      const tracking = frame.tracking === "track" ? "track" : frame.tracking === "dont-track" ? "dont-track" : null;
+      new ProjectTrustStore(daemonAgentDir).setTracking(root, tracking);
+      sendDaemonResponse(client, frame, "set_project_tracking", { root, tracking });
+    } catch (error) {
+      sendToClient(client, { type: "response", command: "set_project_tracking", success: false, ...(typeof frame.id === "string" ? { id: frame.id } : {}), error: boundedError(error) });
+    }
+    return;
+  }
+  if (frame?.type === "rebuild_project_tracker") {
+    const cwd = String(frame.cwd ?? "");
+    sendDaemonResponse(client, frame, "rebuild_project_tracker", (async () => {
+      if (!cwd || frame.confirm !== true) throw new Error("rebuild_project_tracker requires cwd and confirm=true");
+      const root = canonicalTrackingRoot(cwd);
+      if ([...sessions.values()].some((session) => !session.exited && canonicalTrackingRoot(session.cwd) === root && session.turnActive)) throw new Error("Tracker rebuild is blocked while a task is working in this workspace.");
+      if (projectMaintenanceRoots.has(root)) throw new Error("Another project maintenance operation is active.");
+      projectMaintenanceRoots.add(root);
+      try {
+        const loaded = await loadGlobalConfig(daemonGlobalConfigPath);
+        const tracker = await WorkspaceTracker.open(daemonAgentDir, root, loaded.config.tracking);
+        try { await tracker.rebuild(); }
+        catch (error) { throw new Error(publicTrackerError(error, "Tracker rebuild failed.")); }
+        new ProjectTrustStore(daemonAgentDir).setTracking(root, "track");
+        broadcastAll({ type: "tracking_status", cwd: root, status: "ready", tracking: "track" });
+        return { root, status: "ready", tracking: "track" };
+      } finally { projectMaintenanceRoots.delete(root); }
+    })());
+    return;
+  }
+
+  if (frame?.type === "prepare_project_removal") {
+    const cwd = String(frame.cwd ?? "");
+    const historyMode = frame.historyMode === "archive" ? "archive" : frame.historyMode === "delete" ? "delete" : null;
+    sendDaemonResponse(client, frame, "prepare_project_removal", (async () => {
+      if (!cwd || !historyMode) throw new Error("prepare_project_removal requires cwd and historyMode archive|delete");
+      const preview = await previewProjectRemoval(cwd, historyMode, daemonAgentDir);
+      const live = [...sessions.values()].filter((session) => !session.exited && canonicalTrackingRoot(session.cwd) === preview.project);
+      const operationToken = randomUUID();
+      projectRemovalPreviews.set(operationToken, { client, preview, expiresAt: Date.now() + 5 * 60_000 });
+      return { operationToken, ...preview, liveSessions: live.length, activeSessions: live.filter((session) => session.turnActive).length };
+    })());
+    return;
+  }
+
+  if (frame?.type === "execute_project_removal") {
+    const token = typeof frame.operationToken === "string" ? frame.operationToken : "";
+    const prepared = projectRemovalPreviews.get(token);
+    sendDaemonResponse(client, frame, "execute_project_removal", (async () => {
+      if (!prepared || prepared.client !== client || prepared.expiresAt < Date.now()) throw new Error("Project removal preview expired or is invalid.");
+      if (frame.confirm !== true) throw new Error("Project removal requires confirm=true after preview.");
+      const root = prepared.preview.project;
+      if ([...sessions.values()].some((session) => !session.exited && canonicalTrackingRoot(session.cwd) === root && (session.clients.size > 0 || session.turnActive))) throw new Error("Project removal is blocked while a matching session is attached or active.");
+      if (projectMaintenanceRoots.has(root)) throw new Error("Another project maintenance operation is active.");
+      projectMaintenanceRoots.add(root);
+      try {
+        const result = await executeProjectRemoval(prepared.preview, { agentDir: daemonAgentDir });
+        if (result.failures.length > 0) {
+          broadcastAll({ type: "project_removal_partial", project: root, historyMode: prepared.preview.historyMode, ...result });
+          return { project: root, historyMode: prepared.preview.historyMode, projectStateRemoved: false, ...result };
+        }
+        const loaded = await loadGlobalConfig(daemonGlobalConfigPath);
+        const tracker = await WorkspaceTracker.open(daemonAgentDir, root, loaded.config.tracking);
+        await tracker.removeAll();
+        new ProjectTrustStore(daemonAgentDir).removeProject(root);
+        projectRemovalPreviews.delete(token);
+        clearDaemonServiceCache();
+        broadcastAll({ type: "project_removed", project: root, historyMode: prepared.preview.historyMode, ...result });
+        return { project: root, historyMode: prepared.preview.historyMode, projectStateRemoved: true, ...result };
+      } finally { projectMaintenanceRoots.delete(root); }
+    })());
+    return;
+  }
   if (frame?.type === "list_persisted_sessions") {
     sendDaemonResponse(client, frame, "list_persisted_sessions", listPersistedSessions({
       agentDir: daemonAgentDir,
@@ -1212,6 +1597,40 @@ function handleClientFrame(client, frame) {
       ...(Number.isInteger(frame.maxBytes) ? { maxBytes: frame.maxBytes } : {}),
       includeArchived: frame.includeArchived !== false,
     }));
+    return;
+  }
+
+  if (frame?.type === "get_session_changes") {
+    sendDaemonResponse(client, frame, "get_session_changes", (async () => {
+      const requestedId = typeof frame.sessionId === "string" ? frame.sessionId : "";
+      const live = requestedId ? sessions.get(requestedId) : undefined;
+      if (live && live.clients.has(client)) {
+        const context = await trackingContext(live);
+        const tracked = context.storageHealth === "ready" ? await context.tracker.listChangeSets(requestedId) : [];
+        return { sessionId: requestedId, status: context.health, changes: tracked.length ? tracked : [...liveChangeSets.values()].map((item) => item.changeSet).filter((item) => item.sessionId === requestedId) };
+      }
+      const history = await readPersistedSession({
+        agentDir: daemonAgentDir,
+        ...(requestedId ? { id: requestedId } : {}),
+        ...(typeof frame.sessionFile === "string" ? { sessionFile: frame.sessionFile } : {}),
+        includeArchived: frame.includeArchived !== false,
+        limit: 5_000,
+        maxBytes: 8 * 1024 * 1024,
+      });
+      const header = history.entries.find((entry) => entry && typeof entry === "object" && entry.type === "session");
+      const cwd = typeof header?.cwd === "string" ? header.cwd : "";
+      const estimates = estimatePersistedSessionChanges(history.id, history.entries);
+      if (!cwd) return { sessionId: history.id, status: "missing", changes: estimates, complete: !history.hasMore };
+      const root = canonicalTrackingRoot(cwd);
+      const loaded = await loadGlobalConfig(daemonGlobalConfigPath);
+      const store = new ProjectTrustStore(daemonAgentDir);
+      const decision = store.getTracking(root);
+      const tracker = await WorkspaceTracker.open(daemonAgentDir, root, loaded.config.tracking);
+      const status = await tracker.health(decision);
+      const tracked = await tracker.storageHealth() === "ready" ? await tracker.listChangeSets(history.id) : [];
+      const exactUsers = new Set(tracked.map((item) => item.userMessageId).filter(Boolean));
+      return { sessionId: history.id, status, changes: [...estimates.filter((item) => !exactUsers.has(item.userMessageId)), ...tracked], complete: !history.hasMore };
+    })());
     return;
   }
 
@@ -1262,6 +1681,73 @@ function handleClientFrame(client, frame) {
 
   if (frame?.type === "restart") {
     beginDrain(client, frame.force === true);
+    return;
+  }
+
+  if (frame?.type === "get_change_set") {
+    const id = String(frame.changeSetId ?? "");
+    const sessionId = String(frame.sessionId ?? "");
+    sendDaemonResponse(client, frame, "get_change_set", (async () => {
+      const memory = liveChangeSets.get(id);
+      if (memory?.changeSet.sessionId === sessionId) return { changes: memory.changeSet };
+      const session = sessions.get(sessionId);
+      if (!session || !session.clients.has(client)) throw new Error("Change set is unavailable for this session.");
+      const context = await trackingContext(session);
+      const changes = await context.tracker.getChangeSet(id, sessionId);
+      if (!changes) throw new Error("Change set is unavailable for this session.");
+      return { changes };
+    })());
+    return;
+  }
+
+  if (frame?.type === "list_checkpoints" || frame?.type === "prepare_rewind" || frame?.type === "execute_rewind") {
+    const sessionId = String(frame.sessionId ?? "");
+    const session = sessions.get(sessionId);
+    if (!session || !session.clients.has(client)) {
+      sendToClient(client, { type: "response", command: frame.type, success: false, ...(typeof frame.id === "string" ? { id: frame.id } : {}), error: "Attach the session before using checkpoints." });
+      return;
+    }
+    if (frame.type === "list_checkpoints") {
+      sendDaemonResponse(client, frame, "list_checkpoints", (async () => {
+        const context = await trackingContext(session);
+        if (context.storageHealth !== "ready") return { status: context.health, checkpoints: [] };
+        return { status: context.health, checkpoints: await context.tracker.listCheckpoints(sessionId) };
+      })());
+      return;
+    }
+    if (frame.type === "prepare_rewind") {
+      sendDaemonResponse(client, frame, "prepare_rewind", (async () => {
+        const root = canonicalTrackingRoot(session.cwd);
+        if (session.turnActive || sessionsWorkingInRoot(root, session).length > 0) throw new Error("Rewind is blocked while a task is working in this workspace.");
+        const context = await trackingContext(session);
+        if (context.storageHealth !== "ready") throw new Error(`Rewind is unavailable because tracker status is ${context.storageHealth}.`);
+        let preview;
+        try { preview = await context.tracker.previewRewind(sessionId, String(frame.checkpointId ?? "")); }
+        catch (error) { throw new Error(publicTrackerError(error, "Tracker could not prepare rewind.")); }
+        const operationToken = randomUUID();
+        rewindPreviews.set(operationToken, { client, sessionId, root, checkpointId: preview.checkpoint.id, sequence: preview.sequence, generation: preview.generation, affectedOtherTasks: preview.affectedOtherTasks, expiresAt: Date.now() + 5 * 60_000 });
+        return { operationToken, ...preview };
+      })());
+      return;
+    }
+    sendDaemonResponse(client, frame, "execute_rewind", (async () => {
+      const prepared = rewindPreviews.get(String(frame.operationToken ?? ""));
+      if (!prepared || prepared.client !== client || prepared.sessionId !== sessionId || prepared.expiresAt < Date.now()) throw new Error("Rewind preview expired or is invalid.");
+      if (frame.confirm !== true) throw new Error("Rewind requires confirm=true after preview.");
+      if (prepared.affectedOtherTasks > 0 && frame.confirmAffected !== true) throw new Error("Rewind affects checkpoints from other tasks and requires confirmAffected=true.");
+      if (session.turnActive || sessionsWorkingInRoot(prepared.root, session).length > 0) throw new Error("Rewind is blocked while a task is working in this workspace.");
+      if (projectMaintenanceRoots.has(prepared.root)) throw new Error("Another project maintenance operation is active.");
+      projectMaintenanceRoots.add(prepared.root);
+      try {
+        const context = await trackingContext(session);
+        let result;
+        try { result = await context.tracker.rewind({ sessionId, checkpointId: prepared.checkpointId, expectedSequence: prepared.sequence, expectedGeneration: prepared.generation }); }
+        catch (error) { throw new Error(publicTrackerError(error, "Tracker could not complete rewind.")); }
+        rewindPreviews.delete(String(frame.operationToken));
+        broadcastAll({ type: "workspace_rewound", project: prepared.root, sessionId, checkpointId: prepared.checkpointId, ...result });
+        return result;
+      } finally { projectMaintenanceRoots.delete(prepared.root); }
+    })());
     return;
   }
 
@@ -1453,7 +1939,15 @@ function handleClientFrame(client, frame) {
       });
       return;
     }
-    if (frame.type === "prompt" || frame.type === "steer" || frame.type === "follow_up") session.turnActive = true;
+    if (frame.type === "prompt" || frame.type === "steer" || frame.type === "follow_up") {
+      const root = canonicalTrackingRoot(session.cwd);
+      if (projectMaintenanceRoots.has(root)) {
+        sendToClient(client, { type: "error", sessionId, ...(typeof frame.id === "string" ? { id: frame.id } : {}), error: "Project maintenance is in progress; retry when it finishes." });
+        return;
+      }
+      session.turnActive = true;
+	  if (frame.type === "prompt") session.trackingPendingPrompt = { id: typeof frame.id === "string" ? frame.id : randomUUID(), text: typeof frame.message === "string" ? frame.message : "" };
+    }
     session.counter += 1;
     const routedId = `__dc_${session.counter}`;
     session.pending.set(routedId, {

@@ -1,6 +1,6 @@
 Prepare a neutral orientation record for an independent advisor. The advisor, not you, makes the recommendation.
 
-Separate what the user actually asked for and what has been directly observed from what the caller agent proposes, assumes, or interprets. Keep failed attempts and their observed outcomes. List open questions and concrete things the advisor could verify. When a claim is backed by an evidence record, cite its ledger ID. Put anything unverified under assumptions or uncertainties. Include only facts relevant to the task; never include credentials or secrets.
+Separate what the user actually asked for and what has been directly observed from what the caller agent proposes, assumes, or interprets. Keep failed attempts and their observed outcomes. List open questions and concrete things the advisor could verify. When a claim is backed by an evidence record, cite its ledger ID. Put anything unverified under assumptions or uncertainties. Include only task-relevant, non-secret facts; omit credentials and secrets.
 
 Return only JSON with exactly these keys:
 - "objective": one sentence stating the decision or task.

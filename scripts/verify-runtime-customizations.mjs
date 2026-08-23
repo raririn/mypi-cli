@@ -96,7 +96,7 @@ for (const fragment of [
   }
 }
 const globalConfig = await readFile(join(packageRoot, "dist", "product", "global-config.js"), "utf8");
-for (const fragment of ["config.yaml", "shortTestMaxWords: 10", "maxActive: 10", "maxArchived: 10", 'advisorModel: "inherit"', "requireAdvisor: false", "requireReviewer: false", "defaults are active", 'registerCommand("config"']) {
+for (const fragment of ["config.yaml", "shortTestMaxWords: 10", "maxActive: 10", "maxArchived: 10", "maxSessionCheckpoints: 3", "maxDetachedCheckpoints: 1", "warningFiles: 10_000", 'advisorModel: "inherit"', "requireAdvisor: false", "requireReviewer: false", "defaults are active", 'registerCommand("config"']) {
   if (!globalConfig.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing global YAML configuration behavior (${fragment}).`);
   }
@@ -163,6 +163,10 @@ for (const fragment of ["listPersistedSessions", "readPersistedSession", "listDa
   if (!daemonServices.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing daemon GUI service behavior (${fragment}).`);
   }
+}
+const workspaceTracker = await readFile(join(packageRoot, "dist", "product", "workspace-tracker.js"), "utf8");
+for (const fragment of ["maxSessionCheckpoints", "maxDetachedCheckpoints", "tool-estimate", "previewRewind", "removeAll", '".ssh"']) {
+  if (!workspaceTracker.includes(fragment)) throw new Error(`Installed Pi ${expectedVersion} is missing daemon workspace tracking behavior (${fragment}).`);
 }
 for (const relativePath of [
   join("dist", "product", "goal-prompts", "planning.md"),
