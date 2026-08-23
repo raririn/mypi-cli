@@ -43,7 +43,7 @@ describe("safety modes", () => {
 	});
 
 	it("keeps every Goal lifecycle tool only for sealed required-product provenance", () => {
-		const builtin = { path: "<product:required:goal>", source: "product", scope: "temporary", origin: "top-level", productClass: "required" } as const;
+		const builtin = { path: "<product:session:goal>", source: "product", scope: "temporary", origin: "top-level", productClass: "session" } as const;
 		const goalTools = ["get_goal", "get_goal_plan", "create_goal", "set_goal_plan", "update_goal_plan", "update_goal"];
 		for (const name of goalTools) {
 			expect(isTrustedSafetyTool(name, builtin), name).toBe(true);
@@ -52,7 +52,7 @@ describe("safety modes", () => {
 	});
 
 	it("keeps subagent lifecycle tools only for sealed capability provenance", () => {
-		const source = { path: "<product:capability:subagents>", source: "product", scope: "temporary", origin: "top-level", productClass: "capability" } as const;
+		const source = { path: "<product:session:subagents>", source: "product", scope: "temporary", origin: "top-level", productClass: "session" } as const;
 		for (const name of ["subagent_start", "consult_advisor", "ask_for_review", "subagent_followup", "advisor_followup", "reviewer_followup", "subagent_cancel", "subagent_status", "advisor_evidence"]) {
 			expect(isTrustedSafetyTool(name, source), name).toBe(true);
 			expect(isTrustedSafetyTool(name, { ...source, path: "/tmp/spoof.ts", source: "extension" }), name).toBe(false);

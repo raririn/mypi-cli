@@ -56,6 +56,7 @@ function createHarness(cwd: string, initialEntries: any[] = []) {
     setActiveTools: (next: string[]) => { activeTools = [...next]; },
     sendUserMessage: (message: string) => { sent.push(message); },
     sendMessage: (message: any, options: any) => { customMessages.push({ message, options }); },
+	requestContinuation: (message: any, options: any) => { customMessages.push({ message, options }); },
     registerCommand: (name: string, command: any) => commands.set(name, command),
     registerTool: (tool: any) => tools.set(tool.name, tool),
     on: (name: string, handler: (event: any, ctx: any) => unknown) => handlers.set(name, [...(handlers.get(name) ?? []), handler]),
@@ -266,6 +267,29 @@ test("structured updates are session-bound, atomic, and completion requires evid
   assert.equal(complete.terminate, undefined);
   assert.match(complete.content[0].text, /final response/i);
   assert.equal(harness.snapshot().status, "complete");
+});
+
+test("Goal completion waits for owned subagents and consumes their pending results first (BUG-115)", async () => {
+	const harness = createHarness(await mkdtemp(join(tmpdir(), "mypi-goal-subagent-completion-")));
+	await activate(harness);
+	await harness.executeTool("update_goal_plan", { operations: [
+		{ op: "set_checked", itemId: "I001", checked: true },
+		{ op: "add_evidence", itemId: "I001", evidence: "API verified" },
+		{ op: "set_checked", itemId: "I002", checked: true },
+		{ op: "add_evidence", itemId: "I002", evidence: "Docs verified" },
+	] });
+
+	harness.emitBus("mypi:subagent-wait-state", { active: 1, pending: 0 });
+	let result = await harness.executeTool("update_goal", { status: "complete" });
+	assert.equal(result.details.accepted, false);
+	assert.match(result.content[0].text, /still active/i);
+	harness.emitBus("mypi:subagent-wait-state", { active: 0, pending: 1 });
+	result = await harness.executeTool("update_goal", { status: "complete" });
+	assert.equal(result.details.accepted, false);
+	assert.match(result.content[0].text, /unconsumed/i);
+	harness.emitBus("mypi:subagent-wait-state", { active: 0, pending: 0 });
+	result = await harness.executeTool("update_goal", { status: "complete" });
+	assert.equal(result.details.accepted, true);
 });
 
 test("lifecycle revision churn cannot stale the next-turn plan update (BUG-105)", async () => {

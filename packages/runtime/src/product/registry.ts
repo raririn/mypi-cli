@@ -1,6 +1,6 @@
-import type { ExtensionFactory, InlineExtension } from "../core/extensions/types.ts";
+import type { BuiltInSessionAPI, ExtensionFactory, InlineExtension } from "../core/extensions/types.ts";
 
-export const PRODUCT_MODULE_CLASSES = ["required", "capability", "provider", "surface", "compatibility"] as const;
+export const PRODUCT_MODULE_CLASSES = ["session", "required", "capability", "provider", "surface", "compatibility"] as const;
 export type ProductModuleClass = (typeof PRODUCT_MODULE_CLASSES)[number];
 
 const PRODUCT_MODULE_AUTHORITY = Symbol("mypi.product-module-authority");
@@ -21,6 +21,14 @@ export function defineProductModule(
 		builtIn: true,
 		[PRODUCT_MODULE_AUTHORITY]: moduleClass,
 	};
+}
+
+/** Define a sealed first-class session participant with privileged lifecycle authority. */
+export function defineSessionProductModule(
+	name: string,
+	factory: (api: BuiltInSessionAPI) => void | Promise<void>,
+): ProductModule {
+	return defineProductModule(name, "session", factory as ExtensionFactory);
 }
 
 /**

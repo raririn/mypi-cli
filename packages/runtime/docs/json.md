@@ -31,7 +31,7 @@ type AgentSessionEvent =
   | { type: "summarization_retry_finished" };
 ```
 
-`queue_update` emits the full pending steering and follow-up queues whenever they change. `compaction_start` and `compaction_end` cover both manual and automatic compaction.
+`queue_update` emits the full pending steering and follow-up queues whenever they change. `compaction_start` and `compaction_end` cover both manual and automatic compaction. The session-level `agent_settled` event carries `outcome` and optional `continuationPending`; true means a sealed built-in continuation was selected and its `agent_start` follows this boundary.
 
 Base events from [`AgentEvent`](https://github.com/earendil-works/pi-mono/blob/main/packages/agent/src/types.ts#L179):
 
@@ -85,7 +85,7 @@ Followed by events as they occur:
 {"type":"turn_end","message":{...},"toolResults":[]}
 {"type":"agent_end","messages":[...]}
 {"type":"structured_result","result":{"value":{"summary":"..."},"schemaHash":"...","method":"native","attempts":1}}
-{"type":"agent_settled","outcome":{"kind":"success"}}
+{"type":"agent_settled","outcome":{"kind":"success"},"continuationPending":true}
 ```
 
 ## Example

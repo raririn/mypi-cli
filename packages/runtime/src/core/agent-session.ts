@@ -72,6 +72,7 @@ import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.ts";
 import {
 	type AgentSettledOutcome,
+	type BuiltInContinuationOptions,
 	type ContextUsage,
 	type ExtensionCommandContextActions,
 	type ExtensionErrorListener,
@@ -83,6 +84,7 @@ import {
 	type MessageStartEvent,
 	type MessageUpdateEvent,
 	type ReplacedSessionContext,
+	type SendMessageOptions,
 	type SessionBeforeCompactResult,
 	type SessionBeforeTreeResult,
 	type SessionStartEvent,
@@ -283,7 +285,7 @@ export type AgentSessionEvent =
 			messages: AgentMessage[];
 			willRetry: boolean;
 	  }
-	| { type: "agent_settled"; outcome: AgentSettledOutcome }
+	| { type: "agent_settled"; outcome: AgentSettledOutcome; continuationPending?: boolean }
 	| { type: "mypi_turn_changes"; changes: WorkspaceChangeSet }
 	| { type: "structured_result"; result: StructuredOutputResult }
 	| {
@@ -451,6 +453,12 @@ interface ToolDefinitionEntry {
 	sourceInfo: SourceInfo;
 }
 
+interface PendingSessionContinuation {
+	message: Pick<CustomMessage<unknown>, "customType" | "content" | "display" | "details">;
+	options: BuiltInContinuationOptions;
+	order: number;
+}
+
 function estimateMessagesTokens(messages: AgentMessage[]): number {
 	let tokens = 0;
 	for (const message of messages) {
@@ -481,6 +489,9 @@ export class AgentSession {
 	private _unsubscribeAgent?: () => void;
 	private _eventListeners: AgentSessionEventListener[] = [];
 	private _isAgentRunActive = false;
+	private _isEmittingAgentSettled = false;
+	private _pendingSessionContinuations: PendingSessionContinuation[] = [];
+	private _sessionContinuationOrder = 0;
 	private _idleWaitPromise: Promise<void> | undefined;
 	private _resolveIdleWait: (() => void) | undefined;
 
@@ -497,7 +508,7 @@ export class AgentSession {
 	private _overflowRecoveryAttempted = false;
 	private _mypiProactiveContinuationBudget = 0;
 	private _mypiProactiveContinuationTokens = new Set<string>();
-	/** True while an extension reports still-running session-owned background children. */
+	/** True while a built-in session participant reports background work or delivery. */
 	private _mypiBackgroundWait = false;
 	private _mypiSettledOutcome: AgentSettledOutcome = { kind: "success" };
 	private _mypiSettlementEpoch = 0;
@@ -786,11 +797,71 @@ export class AgentSession {
 		this._mypiSettlementEpoch += 1;
 		try {
 			const event = { type: "agent_settled", outcome: this._mypiSettledOutcome } as const;
+			this._isEmittingAgentSettled = true;
 			await this._extensionRunner.emit(event);
-			this._emit(event);
+			const continuations = this._takeSessionContinuations();
+			// The wire event is emitted before the arbiter starts another parent
+			// run, so clients never observe agent_start followed by an apparently
+			// terminal settlement from the preceding run.
+			const continuationPending = this._isAgentRunActive || this.agent.hasQueuedMessages() || continuations.length > 0;
+			this._emit(continuationPending ? { ...event, continuationPending } : event);
+			this._isEmittingAgentSettled = false;
+			if (continuations.length > 0) this._dispatchSessionContinuations(continuations);
 		} finally {
+			this._isEmittingAgentSettled = false;
 			this._resolveIdleWaitIfIdle();
 		}
+	}
+
+	private _requestBuiltInContinuation<T>(
+		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
+		options: BuiltInContinuationOptions,
+	): void {
+		if (!options.arbitrationGroup.trim() || !Number.isFinite(options.priority)) {
+			throw new Error("Built-in continuation arbitration metadata is invalid.");
+		}
+		if (this._isEmittingAgentSettled) {
+			this._pendingSessionContinuations.push({
+				message: message as Pick<CustomMessage<unknown>, "customType" | "content" | "display" | "details">,
+				options,
+				order: this._sessionContinuationOrder++,
+			});
+			return;
+		}
+		const settlementEpoch = this._mypiSettlementEpoch;
+		this.sendCustomMessage(message, { triggerTurn: true, deliverAs: "followUp" }).catch(async (error) => {
+			this._extensionRunner.emitError({
+				extensionPath: "<builtin-session>",
+				event: "request_continuation",
+				error: error instanceof Error ? error.message : String(error),
+			});
+			await this._mypiEmitDispatchFailureIfUnsettled(settlementEpoch, error);
+		});
+	}
+
+	private _takeSessionContinuations(): PendingSessionContinuation[] {
+		const pending = this._pendingSessionContinuations.splice(0);
+		const winners = new Map<string, PendingSessionContinuation>();
+		for (const intent of pending) {
+			const current = winners.get(intent.options.arbitrationGroup);
+			if (!current || intent.options.priority > current.options.priority) {
+				winners.set(intent.options.arbitrationGroup, intent);
+			}
+		}
+		return [...winners.values()].sort((left, right) => left.order - right.order);
+	}
+
+	private _dispatchSessionContinuations(continuations: PendingSessionContinuation[]): void {
+		const settlementEpoch = this._mypiSettlementEpoch;
+		const messages = continuations.map(({ message }) => this._createCustomMessage(message));
+		void this._runAgentPrompt(messages).catch(async (error) => {
+			this._extensionRunner.emitError({
+				extensionPath: "<builtin-session>",
+				event: "request_continuation",
+				error: error instanceof Error ? error.message : String(error),
+			});
+			await this._mypiEmitDispatchFailureIfUnsettled(settlementEpoch, error);
+		});
 	}
 
 	private async _mypiEmitDispatchFailureIfUnsettled(settlementEpoch: number, error: unknown): Promise<void> {
@@ -2042,17 +2113,18 @@ export class AgentSession {
 	 */
 	async sendCustomMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
-		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
+		options?: SendMessageOptions,
 	): Promise<void> {
-		const appMessage = {
-			role: "custom" as const,
-			customType: message.customType,
-			// Untyped extensions can pass null/missing content; normalize at ingestion.
-			content: message.content ?? [],
-			display: message.display,
-			details: message.details,
-			timestamp: Date.now(),
-		} satisfies CustomMessage<T>;
+		const appMessage = this._createCustomMessage(message);
+		if (this._isEmittingAgentSettled && options?.triggerTurn && options.deliverAs !== "nextTurn") {
+			const order = this._sessionContinuationOrder++;
+			this._pendingSessionContinuations.push({
+				message: message as Pick<CustomMessage<unknown>, "customType" | "content" | "display" | "details">,
+				options: { arbitrationGroup: `extension:${order}`, priority: 0 },
+				order,
+			});
+			return;
+		}
 		if (options?.deliverAs === "nextTurn") {
 			this._pendingNextTurnMessages.push(appMessage);
 		} else if (this.isStreaming) {
@@ -2074,6 +2146,20 @@ export class AgentSession {
 			this._emit({ type: "message_start", message: appMessage });
 			this._emit({ type: "message_end", message: appMessage });
 		}
+	}
+
+	private _createCustomMessage<T = unknown>(
+		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
+	): CustomMessage<T> {
+		return {
+			role: "custom" as const,
+			customType: message.customType,
+			// Untyped extensions can pass null/missing content; normalize at ingestion.
+			content: message.content ?? [],
+			display: message.display,
+			details: message.details,
+			timestamp: Date.now(),
+		} satisfies CustomMessage<T>;
 	}
 
 	/**
@@ -3139,6 +3225,9 @@ export class AgentSession {
 						await this._mypiEmitDispatchFailureIfUnsettled(settlementEpoch, err);
 					});
 				},
+				requestBuiltInContinuation: (message, options) => {
+					this._requestBuiltInContinuation(message, options);
+				},
 				sendUserMessage: (content, options) => {
 					const settlementEpoch = this._mypiSettlementEpoch;
 					this.sendUserMessage(content, options).catch(async (err) => {
@@ -3207,7 +3296,10 @@ export class AgentSession {
 					}
 					void this.abort();
 				},
-				hasPendingMessages: () => this.pendingMessageCount > 0,
+				hasPendingMessages: () =>
+					this.pendingMessageCount > 0
+					|| this.agent.hasQueuedMessages()
+					|| this._pendingSessionContinuations.length > 0,
 				shutdown: () => {
 					this._extensionShutdownHandler?.();
 				},

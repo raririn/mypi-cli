@@ -40,6 +40,8 @@ export type {
 	BeforeProviderHeadersEvent,
 	BeforeProviderRequestEvent,
 	BeforeProviderRequestEventResult,
+	BuiltInContinuationOptions,
+	BuiltInSessionAPI,
 	BuildSystemPromptOptions,
 	// Context
 	CompactOptions,
@@ -123,6 +125,7 @@ export type {
 	ResourcesDiscoverEvent,
 	ResourcesDiscoverResult,
 	SendMessageHandler,
+	SendMessageOptions,
 	SendUserMessageHandler,
 	SessionBeforeCompactEvent,
 	SessionBeforeCompactResult,

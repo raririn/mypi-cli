@@ -864,7 +864,7 @@ Events are streamed to stdout as JSON lines during agent operation. Events do no
 |-------|-------------|
 | `agent_start` | Agent begins processing |
 | `agent_end` | One low-level agent run completes (may still be followed by retry, compaction, or queued continuations) |
-| `agent_settled` | Agent run is fully settled; no automatic retry, compaction retry, or queued continuation remains |
+| `agent_settled` | The current run reached its final boundary; optional `continuationPending: true` means a sealed built-in session continuation will start next |
 | `turn_start` | New turn begins |
 | `turn_end` | Turn completes (includes assistant message and tool results) |
 | `message_start` | Message begins |
@@ -909,7 +909,7 @@ Emitted when one low-level agent run completes. Contains all messages generated 
 Emitted after the full session-level run settles. At this point Pi will not continue automatically through retry, compaction retry, or queued follow-up messages.
 
 ```json
-{"type": "agent_settled"}
+{"type": "agent_settled", "continuationPending": true}
 ```
 
 ### turn_start / turn_end

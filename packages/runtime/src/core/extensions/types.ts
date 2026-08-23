@@ -397,6 +397,15 @@ export interface ExtensionCommandContext extends ExtensionContext {
 }
 
 /**
+ * Custom-message delivery options. Settlement arbitration applies only when an
+ * extension requests a turn from inside an agent_settled handler.
+ */
+export interface SendMessageOptions {
+	triggerTurn?: boolean;
+	deliverAs?: "steer" | "followUp" | "nextTurn";
+}
+
+/**
  * Fresh command-capable context bound to the replacement session after a session switch.
  *
  * This is passed to `withSession()` callbacks on `newSession()`, `fork()`, and `switchSession()`.
@@ -404,7 +413,7 @@ export interface ExtensionCommandContext extends ExtensionContext {
 export interface ReplacedSessionContext extends ExtensionCommandContext {
 	sendMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
-		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
+		options?: SendMessageOptions,
 	): Promise<void>;
 
 	sendUserMessage(
@@ -1301,7 +1310,7 @@ export interface ExtensionAPI {
 	/** Send a custom message to the session. */
 	sendMessage<T = unknown>(
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
-		options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
+		options?: SendMessageOptions,
 	): void;
 
 	/**
@@ -1454,6 +1463,23 @@ export interface ExtensionAPI {
 	events: EventBus;
 }
 
+/** Arbitration metadata for a first-class built-in session continuation. */
+export interface BuiltInContinuationOptions {
+	arbitrationGroup: string;
+	priority: number;
+}
+
+/**
+ * Privileged API exposed only to sealed session product modules. Dynamic and
+ * ordinary built-in extensions cannot request lifecycle-owned continuations.
+ */
+export interface BuiltInSessionAPI extends ExtensionAPI {
+	requestContinuation<T = unknown>(
+		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
+		options: BuiltInContinuationOptions,
+	): void;
+}
+
 // ============================================================================
 // Provider Registration Types
 // ============================================================================
@@ -1569,12 +1595,17 @@ type HandlerFn = (...args: unknown[]) => Promise<unknown>;
 
 export type SendMessageHandler = <T = unknown>(
 	message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
-	options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" },
+	options?: SendMessageOptions,
 ) => void;
 
 export type SendUserMessageHandler = (
 	content: string | (TextContent | ImageContent)[],
 	options?: { deliverAs?: "steer" | "followUp" },
+) => void;
+
+export type RequestBuiltInContinuationHandler = <T = unknown>(
+	message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
+	options: BuiltInContinuationOptions,
 ) => void;
 
 export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
@@ -1649,6 +1680,7 @@ export interface ExtensionRuntimeState {
 export interface ExtensionActions {
 	sendMessage: SendMessageHandler;
 	sendUserMessage: SendUserMessageHandler;
+	requestBuiltInContinuation: RequestBuiltInContinuationHandler;
 	appendEntry: AppendEntryHandler;
 	setSessionName: SetSessionNameHandler;
 	getSessionName: GetSessionNameHandler;

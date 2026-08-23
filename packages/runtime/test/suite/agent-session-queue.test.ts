@@ -4,6 +4,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import { createHarness, getAssistantTexts, getMessageText, getUserTexts, type Harness } from "./harness.ts";
+import { defineSessionProductModule } from "../../src/product/registry.ts";
 
 async function createWaitingHarness(
 	options: {
@@ -87,6 +88,69 @@ describe("AgentSession queue characterization", () => {
 		expect(commandRuns).toEqual(["hello world"]);
 		expect(harness.getPendingResponseCount()).toBe(0);
 		expect(harness.session.messages).toEqual([]);
+	});
+
+	it("arbitrates built-in settlement continuations before starting exactly one next parent run (BUG-115)", async () => {
+		let lowRequested = false;
+		let highRequested = false;
+		let ordinaryRequested = false;
+		let laterHandlerSawPending = false;
+		const harness = await createHarness({
+			extensionFactories: [
+				defineSessionProductModule("low-continuation", (pi) => {
+					pi.on("agent_settled", () => {
+						if (lowRequested) return;
+						lowRequested = true;
+						pi.requestContinuation(
+							{ customType: "goal-like", content: "lower priority", display: false },
+							{ arbitrationGroup: "test-parent", priority: 10 },
+						);
+					});
+				}),
+				defineSessionProductModule("high-continuation", (pi) => {
+					pi.on("agent_settled", () => {
+						if (highRequested) return;
+						highRequested = true;
+						pi.requestContinuation(
+							{ customType: "result-like", content: "higher priority", display: true },
+							{ arbitrationGroup: "test-parent", priority: 100 },
+						);
+					});
+				}),
+				(pi) => {
+					pi.on("agent_settled", (_event, ctx) => {
+						if (ordinaryRequested) return;
+						ordinaryRequested = true;
+						laterHandlerSawPending = ctx.hasPendingMessages();
+						pi.sendMessage(
+							{ customType: "ordinary-extension", content: "ordinary context", display: false },
+							{ triggerTurn: true },
+						);
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage("initial response"),
+			(context) => fauxAssistantMessage(
+				JSON.stringify(context.messages).includes("higher priority")
+					&& JSON.stringify(context.messages).includes("ordinary context")
+					? "processed result"
+					: "missing result",
+			),
+		]);
+
+		await harness.session.prompt("start");
+		await harness.session.waitForIdle();
+
+		expect(harness.faux.state.callCount).toBe(2);
+		expect(laterHandlerSawPending).toBe(true);
+		expect(harness.session.messages.filter((message) => message.role === "custom").map((message) => message.customType)).toEqual(["result-like", "ordinary-extension"]);
+		expect(getAssistantTexts(harness)).toEqual(["initial response", "processed result"]);
+		expect(harness.events.filter((event) => event.type === "agent_start" || event.type === "agent_settled").map((event) =>
+			event.type === "agent_settled" ? `settled:${event.continuationPending === true}` : "start"
+		)).toEqual(["start", "settled:true", "start", "settled:false"]);
 	});
 
 	it("delivers extension-origin steering messages before the next LLM call", async () => {

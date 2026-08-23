@@ -7,7 +7,7 @@ import {
   isTrustedWebReadTool,
 } from "../../src/product/mypi-trusted-read-tools.ts";
 
-function productSource(moduleClass: "required" | "capability", name: string) {
+function productSource(moduleClass: "session" | "required" | "capability", name: string) {
   return {
     path: `<product:${moduleClass}:${name}>`,
     source: "product",
@@ -81,7 +81,7 @@ test("trusts sealed compaction recall only as a required product session read", 
 });
 
 test("trusts sealed subagent admission in readonly and only lifecycle controls in no-read", () => {
-	const sourceInfo = productSource("capability", "subagents");
+	const sourceInfo = productSource("session", "subagents");
 	for (const name of ["subagent_start", "consult_advisor", "ask_for_review", "subagent_followup", "advisor_followup", "reviewer_followup", "subagent_cancel", "subagent_status", "advisor_evidence"]) {
 		const pi = toolHarness(name, sourceInfo);
 		assert.equal(isTrustedReadOnlyTool(pi, name), true);

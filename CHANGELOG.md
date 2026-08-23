@@ -1,5 +1,45 @@
 # MyPi CLI changelog
 
+## 2.0.0-beta.3 — 2026-08-23
+
+This exact protocol-2 CLI/GUI pair fixes Goal/subagent continuation ordering
+and completes rewind transcript isolation without changing the public protocol.
+
+### Built-in session continuation ownership
+
+- Promoted Goal and subagents from ordinary product-extension continuation
+  behavior to sealed `session` product modules. Only this non-forgeable class
+  receives the privileged continuation request API.
+- Added session-level settlement arbitration. Subagent evidence outranks a
+  competing Goal continuation, ordinary extension messages are serialized at
+  the same boundary, `agent_settled.continuationPending` is emitted before the
+  selected next `agent_start`, and at most one parent run begins.
+- Kept child `agent_start` events private to child RPC sessions. Only the parent
+  result-review run appears in the parent lifecycle.
+- Moved completed subagent results out of Pi's active intra-run `followUp`
+  queue. Results wait for a true idle/settled boundary, publish active and
+  unconsumed counts atomically, and block Goal completion until consumed or
+  cancelled.
+- Persisted `pending|delivered` result-inbox state per new terminal grant.
+  Restart replays only unconsumed results and reconciles a result already
+  accepted on the current parent branch; historical unmarked grants do not
+  replay.
+- Kept daemon and TUI GUI-control settlement/busy projection aligned for
+  pending continuations.
+
+### Rewind isolation
+
+- After a successful TUI rewind, best-effort branch forking truncates the
+  transcript immediately before the checkpoint's user message so subsequent
+  inference cannot see abandoned post-checkpoint conversation history.
+
+### Verification
+
+- Product 208/208, host 13/13 (including real RPC subagents 6/6), daemon 39/39,
+  hosted 13/13, RPC dialogs 2/2, preattach 5/5, and distribution 6/6.
+- Focused core settlement/registry/safety 24/24, typecheck, build, public-tree,
+  package, and diff checks pass.
+
 ## 2.0.0-beta.2 — 2026-08-23
 
 This protocol-2 stabilization build must be paired with the 2.x desktop GUI.

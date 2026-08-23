@@ -5,7 +5,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import { fuzzyFilter } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import type { AgentSessionEvent } from "../core/agent-session.ts";
-import type { ExtensionAPI, ExtensionContext } from "../core/extensions/types.ts";
+import type { BuiltInSessionAPI, ExtensionAPI, ExtensionContext } from "../core/extensions/types.ts";
 import { RpcClient } from "../modes/rpc/rpc-client.ts";
 import {
 	createSubagentBatchId,
@@ -41,6 +41,7 @@ import {
 } from "./subagent-prompts.ts";
 import { getModelSearchText } from "../modes/interactive/model-search.ts";
 import { reviewSnapshot, type WorkspaceSnapshot, workspaceSnapshot } from "./subagent-review.ts";
+import { subagentResultIntent } from "./session-continuation.ts";
 
 export const SUBAGENT_START_TOOL = "subagent_start";
 export const CONSULT_ADVISOR_TOOL = "consult_advisor";
@@ -245,18 +246,29 @@ export class SubagentManager {
 		this.ownerAttached = true;
 		this.wakeAllowed = true;
 		this.deliveryRetryStrikes = 0;
+		this.publishWaitState();
 		if (this.deliveryQueue.length) this.scheduleDelivery();
 	}
 
-	/** Code-owned wait signal: active children mean parent continuation should park, not poll. */
+	/** Code-owned wait signal: active children or unconsumed results park Goal continuation. */
 	hasActiveChildren(): boolean {
 		return this.active.size > 0;
 	}
 
+	hasPendingResults(): boolean {
+		return this.pendingDeliveryCount() > 0;
+	}
+
+	private pendingDeliveryCount(): number {
+		return this.deliveryQueue.length
+			+ [...this.inFlightDeliveries.values()].reduce((count, results) => count + results.length, 0);
+	}
+
 	private publishWaitState(): void {
 		const active = this.active.size;
-		this.pi.events?.emit?.(SUBAGENT_WAIT_STATE_EVENT, { active });
-		this.pi.setBackgroundWait?.(active > 0);
+		const pending = this.pendingDeliveryCount();
+		this.pi.events?.emit?.(SUBAGENT_WAIT_STATE_EVENT, { active, pending });
+		this.pi.setBackgroundWait?.(active > 0 || pending > 0);
 	}
 
 	/** Parent settlement is a code-owned safe boundary: requeue unconfirmed deliveries and retry. */
@@ -268,9 +280,10 @@ export class SubagentManager {
 			for (const results of this.inFlightDeliveries.values()) this.deliveryQueue.unshift(...results);
 			this.inFlightDeliveries.clear();
 		}
+		this.publishWaitState();
 		// Bound automatic retries so a persistently failing boundary cannot loop;
 		// the queue stays durably pending and the next attach/user turn retries.
-		if (this.deliveryQueue.length && this.deliveryRetryStrikes < 3) this.scheduleDelivery();
+		if (this.deliveryQueue.length && this.deliveryRetryStrikes < 3) this.flushDelivery();
 	}
 
 	/** Confirm one delivered results message by its code-owned nonce. */
@@ -282,6 +295,34 @@ export class SubagentManager {
 		this.inFlightDeliveries.delete(nonce);
 		this.deliveryRetryStrikes = 0;
 		this.recent = this.recent.filter((recent) => !results.some((result) => result.grantId === recent.grantId));
+		this.publishWaitState();
+		const timer = setTimeout(() => {
+			void this.markResultsDelivered(results).catch(() => undefined);
+		}, 0);
+		timer.unref?.();
+	}
+
+	private async markResultsDelivered(results: readonly DeliveredResult[]): Promise<void> {
+		if (!this.store) return;
+		const byChild = new Map<string, Set<string>>();
+		for (const result of results) {
+			const grants = byChild.get(result.childId) ?? new Set<string>();
+			grants.add(result.grantId);
+			byChild.set(result.childId, grants);
+		}
+		for (const [childId, grantIds] of byChild) {
+			const record = this.store.get(childId);
+			if (!record) continue;
+			let changed = false;
+			for (const grant of record.grants) {
+				if (!grantIds.has(grant.grantId) || grant.delivery?.state !== "pending") continue;
+				grant.delivery = { state: "delivered" };
+				changed = true;
+			}
+			if (!changed) continue;
+			record.updatedAt = new Date().toISOString();
+			await this.store.update(record);
+		}
 	}
 
 	/** Persist one typed, parent-accountable usage contribution per settled grant. */
@@ -358,19 +399,33 @@ export class SubagentManager {
 		if (this.store) return;
 		if (!ctx.sessionManager.getSessionFile()) throw new Error("Subagents require a persisted parent session.");
 		this.store = await SubagentStore.open(getAgentDir(), ctx.sessionManager.getSessionId());
+		const accepted = deliveredSubagentGrantIds(ctx.sessionManager.getBranch());
 		for (const child of this.store.list()) {
-			const grant = child.grants.at(-1);
-			if (!grant || !["queued", "starting", "briefing", "running", "cancelling"].includes(grant.status)) continue;
-			grant.status = "cancelled";
-			grant.reason = "owner_lost_daemon_crash";
-			grant.settledAt = new Date().toISOString();
-			child.updatedAt = grant.settledAt;
-			await this.store.update(child);
-			const result = this.resultFrom(child, grant);
-			this.recent.push(result);
-			this.deliveryQueue.push(result);
+			let changed = false;
+			const latest = child.grants.at(-1);
+			if (latest && ["queued", "starting", "briefing", "running", "cancelling"].includes(latest.status)) {
+				latest.status = "cancelled";
+				latest.reason = "owner_lost_daemon_crash";
+				latest.settledAt = new Date().toISOString();
+				latest.delivery = { state: "pending" };
+				child.updatedAt = latest.settledAt;
+				changed = true;
+			}
+			for (const grant of child.grants) {
+				if (grant.delivery?.state !== "pending") continue;
+				if (accepted.has(grant.grantId)) {
+					grant.delivery = { state: "delivered" };
+					changed = true;
+					continue;
+				}
+				const result = this.resultFrom(child, grant);
+				this.recent.push(result);
+				this.deliveryQueue.push(result);
+			}
+			if (changed) await this.store.update(child);
 		}
 		this.publishWaitState();
+		if (this.deliveryQueue.length) this.scheduleDelivery();
 	}
 
 	async restoreRequirements(ctx: ExtensionContext): Promise<boolean> {
@@ -866,10 +921,9 @@ export class SubagentManager {
 			grant.lastEventAt = new Date(running.lastEventAt).toISOString();
 			grant.stderrTail = running.stderrTail || undefined;
 			grant.usage = usage;
+			grant.delivery = { state: "pending" };
 			record.updatedAt = grant.settledAt;
 			await this.store!.update(record);
-			this.active.delete(record.childId);
-			this.publishWaitState();
 			this.recordGrantUsage(record, grant);
 			const result = this.resultFrom(record, grant);
 			if (record.role === "work" && running.baseline) {
@@ -884,6 +938,8 @@ export class SubagentManager {
 			}
 			this.recent.push(result);
 			this.deliveryQueue.push(result);
+			this.active.delete(record.childId);
+			this.publishWaitState();
 			this.scheduleDelivery();
 		}
 	}
@@ -892,14 +948,15 @@ export class SubagentManager {
 		running.grant.status = running.cancelReason ? "cancelled" : "failed";
 		running.grant.reason = running.cancelReason ?? (error instanceof Error ? error.message : String(error));
 		running.grant.settledAt = new Date().toISOString();
+		running.grant.delivery = { state: "pending" };
 		running.record.updatedAt = running.grant.settledAt;
 		await this.store!.update(running.record);
-		this.active.delete(running.record.childId);
-		this.publishWaitState();
 		this.recordGrantUsage(running.record, running.grant);
 		const result = this.resultFrom(running.record, running.grant);
 		this.recent.push(result);
 		this.deliveryQueue.push(result);
+		this.active.delete(running.record.childId);
+		this.publishWaitState();
 		this.scheduleDelivery();
 	}
 
@@ -917,14 +974,15 @@ export class SubagentManager {
 			running.grant.status = "cancelled";
 			running.grant.reason = reason;
 			running.grant.settledAt = new Date().toISOString();
+			running.grant.delivery = { state: "pending" };
 			running.record.updatedAt = running.grant.settledAt;
 			await this.store!.update(running.record);
-			this.active.delete(running.record.childId);
-			this.publishWaitState();
 			this.recordGrantUsage(running.record, running.grant);
 			const result = this.resultFrom(running.record, running.grant);
 			this.recent.push(result);
 			this.deliveryQueue.push(result);
+			this.active.delete(running.record.childId);
+			this.publishWaitState();
 			this.scheduleDelivery();
 			return;
 		}
@@ -958,7 +1016,7 @@ export class SubagentManager {
 	}
 
 	private scheduleDelivery(): void {
-		if (this.shuttingDown || !this.ownerAttached || !this.wakeAllowed || this.deliveryTimer) return;
+		if (this.shuttingDown || !this.ownerAttached || !this.wakeAllowed || this.deliveryTimer || !this.ctx?.isIdle()) return;
 		this.deliveryTimer = setTimeout(() => {
 			this.deliveryTimer = undefined;
 			this.flushDelivery();
@@ -967,7 +1025,7 @@ export class SubagentManager {
 	}
 
 	private flushDelivery(): void {
-		if (this.shuttingDown || !this.ownerAttached || !this.wakeAllowed || !this.deliveryQueue.length || !this.ctx) return;
+		if (this.shuttingDown || !this.ownerAttached || !this.wakeAllowed || !this.deliveryQueue.length || !this.ctx?.isIdle()) return;
 		const readyBatches = new Set(
 			this.deliveryQueue
 				.map((result) => result.batchId)
@@ -981,25 +1039,26 @@ export class SubagentManager {
 			this.advisorBriefControllers.delete(batchId);
 		}
 		const text = formatDelivery(results).slice(0, MAX_BATCH_DELIVERY_CHARS);
-		// One code-owned safe-boundary delivery: an idle parent gets exactly one
-		// result-bearing turn; an active parent receives the results as a follow-up
-		// right after its current run settles, never spliced into a provider request
-		// and never parked until the next user message.
+		// One built-in safe-boundary delivery. Active parents never receive this in
+		// Pi's intra-run follow-up queue; notifyParentSettled releases it through the
+		// session arbiter after Goal has observed the pending-result state.
 		const nonce = randomUUID();
 		this.inFlightDeliveries.set(nonce, results);
+		this.publishWaitState();
 		try {
-			this.pi.sendMessage(
+			(this.pi as BuiltInSessionAPI).requestContinuation(
 				{
 					customType: "mypi-subagent-results",
 					content: text,
 					display: true,
 					details: { version: 1, nonce, results },
 				},
-				{ triggerTurn: true, deliverAs: "followUp" },
+				subagentResultIntent(),
 			);
 		} catch {
 			this.inFlightDeliveries.delete(nonce);
 			this.deliveryQueue.unshift(...results);
+			this.publishWaitState();
 		}
 	}
 
@@ -1014,7 +1073,7 @@ export class SubagentManager {
 	}
 }
 
-export default function subagentsExtension(pi: ExtensionAPI): void {
+export default function subagentsBuiltIn(pi: BuiltInSessionAPI): void {
 	const childRole = process.env[CHILD_RUNTIME_MARKER];
 	if (childRole) {
 		installChildOwnerWatch(pi);
@@ -1460,6 +1519,22 @@ function isPlanningBranch(ctx: ExtensionContext): boolean {
 		return state?.workflow === "planning" || state?.workflow === "goal-planning";
 	}
 	return false;
+}
+
+function deliveredSubagentGrantIds(entries: readonly unknown[]): Set<string> {
+	const delivered = new Set<string>();
+	for (const entry of entries) {
+		if (!entry || typeof entry !== "object") continue;
+		const candidate = entry as { type?: unknown; customType?: unknown; details?: unknown };
+		if (candidate.type !== "custom_message" || candidate.customType !== "mypi-subagent-results") continue;
+		const details = candidate.details as { version?: unknown; results?: unknown } | undefined;
+		if (details?.version !== 1 || !Array.isArray(details.results)) continue;
+		for (const result of details.results) {
+			const grantId = (result as { grantId?: unknown } | undefined)?.grantId;
+			if (isOpaqueSubagentId(grantId, "sg")) delivered.add(grantId);
+		}
+	}
+	return delivered;
 }
 
 function latestRequirementState(entries: readonly unknown[]): { requireAdvisor: boolean; requireReviewer: boolean } | undefined {

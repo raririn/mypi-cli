@@ -44,6 +44,8 @@ export interface SubagentGrantRecord {
 	usage?: SubagentUsage;
 	pid?: number;
 	stderrTail?: string;
+	/** Present only for grants written by the durable result-inbox runtime. */
+	delivery?: { state: "pending" | "delivered" };
 }
 
 export interface SubagentChildRecord {
@@ -254,7 +256,10 @@ function isChild(value: unknown, parentSessionId: string): value is SubagentChil
 		&& Array.isArray(child.grants) && child.grants.length <= 128
 		&& child.grants.every((grant) => isOpaqueSubagentId(grant?.grantId, "sg")
 			&& isOpaqueSubagentId(grant?.batchId, "sb") && typeof grant.prompt === "string"
-			&& grant.prompt.length <= 16_384 && typeof grant.status === "string");
+			&& grant.prompt.length <= 16_384 && typeof grant.status === "string"
+			&& (grant.delivery === undefined
+				|| grant.delivery?.state === "pending"
+				|| grant.delivery?.state === "delivered"));
 }
 
 async function ensureDirectory(path: string): Promise<void> {

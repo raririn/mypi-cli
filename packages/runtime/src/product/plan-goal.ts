@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { Type } from "typebox";
-import type { ExtensionAPI, ExtensionContext, RegisteredCommand } from "../core/extensions/types.ts";
+import type { BuiltInSessionAPI, ExtensionContext, RegisteredCommand } from "../core/extensions/types.ts";
 import { goalPlanningPrompt, renderGoalContinuationPrompt } from "./goal-prompts.ts";
+import { goalContinuationIntent } from "./session-continuation.ts";
 import { SUBAGENT_WAIT_STATE_EVENT } from "./subagents.ts";
 import {
 	type ActiveGoalState,
@@ -173,7 +174,7 @@ const GoalPlanOperationSchema = Type.Union([
 	Type.Object({ op: Type.Literal("strengthen_item"), itemId: Type.String(), task: Type.String({ minLength: 1, maxLength: 20_000 }), acceptance: Type.Array(Type.String({ minLength: 1, maxLength: 10_000 }), { minItems: 1, maxItems: 50 }), verify: Type.Array(Type.String({ minLength: 1, maxLength: 10_000 }), { minItems: 1, maxItems: 50 }) }, { additionalProperties: false }),
 ]);
 
-export default function planGoalExtension(pi: ExtensionAPI): void {
+export default function planGoalBuiltIn(pi: BuiltInSessionAPI): void {
 	let state: GoalRuntimeState = createIdleGoalState();
 	let corruptStoredGoal = false;
 	let runStartedAt: number | undefined;
@@ -187,11 +188,14 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 	// dependency, code parks Goal/Plan continuation instead of waking the
 	// provider; the authoritative completion delivery releases the park.
 	let activeSubagents = 0;
+	let pendingSubagentResults = 0;
 	pi.events?.on?.(SUBAGENT_WAIT_STATE_EVENT, (data) => {
-		const value = (data as { active?: unknown } | undefined)?.active;
-		activeSubagents = typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+		const value = data as { active?: unknown; pending?: unknown } | undefined;
+		activeSubagents = typeof value?.active === "number" && Number.isFinite(value.active) && value.active > 0 ? Math.floor(value.active) : 0;
+		pendingSubagentResults = typeof value?.pending === "number" && Number.isFinite(value.pending) && value.pending > 0 ? Math.floor(value.pending) : 0;
 	});
-	const parkedOnSubagents = (hasPendingMessages: () => boolean): boolean => activeSubagents > 0 && !hasPendingMessages();
+	const hasSubagentDependencies = (): boolean => activeSubagents > 0 || pendingSubagentResults > 0;
+	const parkedOnSubagents = (hasPendingMessages: () => boolean): boolean => hasSubagentDependencies() && !hasPendingMessages();
 
 	const now = () => new Date().toISOString();
 	const enqueueMutation = <T>(operation: () => T | Promise<T>): Promise<T> => {
@@ -345,7 +349,10 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 		if (!validation.valid) return validation.error ?? "Stored Goal plan is invalid.";
 		if (validation.remaining > 0) return `${validation.remaining} plan items remain incomplete`;
 		const missingEvidence = goal.plan.items.filter((item) => item.evidence.length === 0).map((item) => item.id);
-		return missingEvidence.length > 0 ? `Verification evidence is missing for ${missingEvidence.join(", ")}` : undefined;
+		if (missingEvidence.length > 0) return `Verification evidence is missing for ${missingEvidence.join(", ")}`;
+		if (activeSubagents > 0) return `${activeSubagents} owned subagent grant${activeSubagents === 1 ? " is" : "s are"} still active; consume its result or cancel it before completing the Goal`;
+		if (pendingSubagentResults > 0) return `${pendingSubagentResults} owned subagent result${pendingSubagentResults === 1 ? " is" : "s are"} still unconsumed`;
+		return undefined;
 	}
 
 	function completeGoal(ctx: ExtensionContext): { success: boolean; error?: string } {
@@ -816,12 +823,16 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 			if (attempts >= MAX_PLAN_AGENT_ENDS) { restoreTools(state.toolsBeforePlan); setState(createIdleGoalState(now())); updateStatus(ctx); ctx.ui.notify("Goal planning aborted because set_goal_plan was not called after two settled attempts.", "error"); return; }
 			state = { ...state, planAgentEnds: attempts, updatedAt: now() };
 			persist();
-			pi.sendMessage({ customType: "mypi-goal-plan-correction", content: "The structured Goal plan has not been installed. Finish the complete dependency-ordered plan with acceptance requirements and direct verification evidence, then call set_goal_plan. Do not implement.", display: false }, { deliverAs: "followUp", triggerTurn: true });
+			pi.requestContinuation({ customType: "mypi-goal-plan-correction", content: "The structured Goal plan has not been installed. Finish the complete dependency-ordered plan with acceptance requirements and direct verification evidence, then call set_goal_plan. Do not implement.", display: false }, goalContinuationIntent());
 			return;
 		}
 		if (state.workflow !== "goal") return;
 		const validation = validateStructuredGoalPlan(state.plan);
 		if (!validation.valid) { blockCorruptGoal(ctx, validation.error ?? "Stored Goal plan is invalid."); return; }
+		if (validation.remaining === 0 && state.status === "active" && hasSubagentDependencies()) {
+			updateStatus(ctx);
+			return;
+		}
 		if (validation.remaining === 0 && state.status === "active") {
 			const result = completeGoal(ctx);
 			if (!result.success) { pauseActiveGoal(ctx, "error:completion-evidence", `Goal cannot complete: ${result.error}`); }
@@ -857,7 +868,7 @@ export default function planGoalExtension(pi: ExtensionAPI): void {
 		state = { ...state, revision: state.revision + 1, continuationPending: true, updatedAt: now() };
 		persist();
 		updateStatus(ctx);
-		try { pi.sendMessage({ customType: "mypi-goal-continuation", content: "Continue the active structured Goal from its next open item and current evidence.", display: false, details: { schemaVersion: GOAL_SCHEMA_VERSION, goalId: state.goalId, revision: state.revision } }, { triggerTurn: true }); } catch (error) { stopAfterDispatchFailure(ctx, error); }
+		try { pi.requestContinuation({ customType: "mypi-goal-continuation", content: "Continue the active structured Goal from its next open item and current evidence.", display: false, details: { schemaVersion: GOAL_SCHEMA_VERSION, goalId: state.goalId, revision: state.revision } }, goalContinuationIntent()); } catch (error) { stopAfterDispatchFailure(ctx, error); }
 	});
 
 	pi.on("session_start", (_event, ctx) => {

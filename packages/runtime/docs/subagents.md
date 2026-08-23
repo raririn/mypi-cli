@@ -73,6 +73,23 @@ cryptographically random capabilities and cannot be chosen by either model.
   retains child storage; permanent delete removes it.
 - Results are delivered only at safe provider-turn boundaries and can wake one
   still-attached idle parent turn.
+- Goal and subagents are sealed built-in session participants. Child lifecycle
+  events remain private to the manager; only the parent session arbiter may
+  start a result-review turn.
+
+When a child settles during an active parent run, its result stays in the
+session-owned result inbox. It is not added to Pi's intra-run `followUp` queue.
+At the next true settlement the arbiter orders user guidance first, delegated
+results before Goal continuation, and then starts at most one parent run.
+`agent_settled.continuationPending` therefore describes the decision before the
+following `agent_start`. An active Goal cannot complete until its owned child
+work is settled and delivered results have been accepted into context.
+
+Terminal grants written by this runtime persist `pending|delivered` inbox state
+in the child manifest. Resume replays a pending result only when the current
+parent branch does not already contain its accepted typed result message.
+Historical grants without inbox state are treated as delivered, so an upgrade
+does not replay old consultations or work reports.
 
 ## Advisor model
 

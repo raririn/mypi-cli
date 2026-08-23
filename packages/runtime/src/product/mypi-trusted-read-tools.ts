@@ -17,7 +17,7 @@ export function isTrustedWebReadTool(pi: ExtensionAPI, toolName: string): boolea
 export function isTrustedUserInteractionTool(pi: ExtensionAPI, toolName: string): boolean {
 	if (!MYPI_USER_INTERACTION_TOOLS.has(toolName) && !MYPI_SUBAGENT_CONTROL_TOOLS.has(toolName)) return false;
 	const tool = pi.getAllTools().find((candidate) => candidate.name === toolName);
-	return hasProductAuthority(tool?.sourceInfo, ["capability"]);
+	return hasProductAuthority(tool?.sourceInfo, MYPI_SUBAGENT_CONTROL_TOOLS.has(toolName) ? ["session"] : ["capability"]);
 }
 
 export function isTrustedReadOnlyTool(pi: ExtensionAPI, toolName: string): boolean {
@@ -25,6 +25,6 @@ export function isTrustedReadOnlyTool(pi: ExtensionAPI, toolName: string): boole
 	if (!tool) return false;
 	if (BUILTIN_READ_TOOLS.has(toolName)) return tool.sourceInfo.source === "builtin";
 	if (MYPI_SESSION_READ_TOOLS.has(toolName)) return hasProductAuthority(tool.sourceInfo, ["required"]);
-	if (MYPI_SUBAGENT_READ_TOOLS.has(toolName)) return hasProductAuthority(tool.sourceInfo, ["capability"]);
+	if (MYPI_SUBAGENT_READ_TOOLS.has(toolName)) return hasProductAuthority(tool.sourceInfo, ["session"]);
 	return isTrustedWebReadTool(pi, toolName) || isTrustedUserInteractionTool(pi, toolName);
 }

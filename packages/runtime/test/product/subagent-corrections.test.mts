@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { mypiShouldContinueAfterThresholdCompaction } from "../../src/core/agent-session.ts";
 import { getSubagentGrantUsage } from "../../src/core/usage-totals.ts";
@@ -6,6 +9,7 @@ import {
 	createSubagentBatchId,
 	createSubagentChildId,
 	createSubagentGrantId,
+	SubagentStore,
 	type SubagentChildRecord,
 	type SubagentGrantRecord,
 } from "../../src/core/subagents/storage.ts";
@@ -47,17 +51,22 @@ function grant(status: SubagentGrantRecord["status"], extra: Partial<SubagentGra
 	};
 }
 
-test("settled results deliver as one follow-up-or-turn safe-boundary message, never a next-user-turn park (BUG-099)", () => {
+test("settled results wait for the parent settlement arbiter and then wake exactly once (BUG-099/115)", () => {
 	const sends: Array<{ message: any; options: any }> = [];
-	const pi = { sendMessage(message: any, options: any) { sends.push({ message, options }); } } as unknown as ExtensionAPI;
+	const pi = { requestContinuation(message: any, options: any) { sends.push({ message, options }); } } as unknown as ExtensionAPI;
 	const manager = new SubagentManager(pi);
-	(manager as any).ctx = { isIdle: () => false };
+	let idle = false;
+	(manager as any).ctx = { isIdle: () => idle };
 	const child = record("explore");
 	const settled = grant("completed", { answer: "done" });
 	(manager as any).deliveryQueue.push((manager as any).resultFrom(child, settled));
 	(manager as any).flushDelivery();
+	assert.equal(sends.length, 0, "an active parent never receives an intra-run follow-up");
+	assert.equal((manager as any).deliveryQueue.length, 1);
+	idle = true;
+	manager.notifyParentSettled();
 	assert.equal(sends.length, 1);
-	assert.deepEqual(sends[0]!.options, { triggerTurn: true, deliverAs: "followUp" });
+	assert.deepEqual(sends[0]!.options, { arbitrationGroup: "mypi:parent-work", priority: 100 });
 	assert.equal(typeof sends[0]!.message.details.nonce, "string");
 	assert.equal((manager as any).inFlightDeliveries.size, 1);
 
@@ -77,7 +86,7 @@ test("failed or unconfirmed delivery stays durably pending and retries at the ne
 	let failing = true;
 	const sends: any[] = [];
 	const pi = {
-		sendMessage(message: any, options: any) {
+		requestContinuation(message: any, options: any) {
 			if (failing) throw new Error("boundary unavailable");
 			sends.push({ message, options });
 		},
@@ -115,6 +124,74 @@ test("failed or unconfirmed delivery stays durably pending and retries at the ne
 	assert.equal(sends.length, 3, "reattachment releases the capped retry");
 });
 
+test("the durable result inbox replays pending grants and reconciles accepted transcript delivery (BUG-115)", async () => {
+	const root = await mkdtemp(join(tmpdir(), "mypi-subagent-delivery-inbox-"));
+	const agentDir = join(root, "agent");
+	const previousAgentDir = process.env.MYPI_AGENT_DIR;
+	const previousCodingAgentDir = process.env.MYPI_CODING_AGENT_DIR;
+	process.env.MYPI_AGENT_DIR = agentDir;
+	process.env.MYPI_CODING_AGENT_DIR = agentDir;
+	const child = record("explore");
+	const pending = grant("completed", { answer: "durable result", delivery: { state: "pending" } });
+	child.grants.push(pending);
+	const store = await SubagentStore.open(agentDir, child.parentSessionId);
+	await store.create(child);
+	const sends: any[] = [];
+	const pi = {
+		requestContinuation: (message: any, options: any) => sends.push({ message, options }),
+		events: { emit() {}, on() { return () => {}; } },
+		setBackgroundWait() {},
+	} as unknown as ExtensionAPI;
+	const baseCtx = {
+		isIdle: () => true,
+		sessionManager: {
+			getSessionFile: () => join(root, "parent.jsonl"),
+			getSessionId: () => child.parentSessionId,
+			getBranch: () => [],
+		},
+	} as any;
+	try {
+		const manager = new SubagentManager(pi);
+		await manager.initialize(baseCtx);
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		assert.equal(sends.length, 1, "a persisted pending result wakes the idle parent");
+		manager.confirmDelivery(sends[0]!.message.details);
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		assert.equal((await SubagentStore.open(agentDir, child.parentSessionId)).get(child.childId)?.grants[0]?.delivery?.state, "delivered");
+		await manager.shutdown("test_complete");
+
+		const replay = (await SubagentStore.open(agentDir, child.parentSessionId)).get(child.childId)!;
+		replay.grants[0]!.delivery = { state: "pending" };
+		await store.update(replay);
+		const replaySends: any[] = [];
+		const reconciler = new SubagentManager({
+			...pi,
+			requestContinuation: (message: any, options: any) => replaySends.push({ message, options }),
+		} as unknown as ExtensionAPI);
+		await reconciler.initialize({
+			...baseCtx,
+			sessionManager: {
+				...baseCtx.sessionManager,
+				getBranch: () => [{
+					type: "custom_message",
+					customType: "mypi-subagent-results",
+					details: sends[0]!.message.details,
+				}],
+			},
+		});
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		assert.equal(replaySends.length, 0, "an accepted transcript result is never replayed");
+		assert.equal((await SubagentStore.open(agentDir, child.parentSessionId)).get(child.childId)?.grants[0]?.delivery?.state, "delivered");
+		await reconciler.shutdown("test_complete");
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.MYPI_AGENT_DIR;
+		else process.env.MYPI_AGENT_DIR = previousAgentDir;
+		if (previousCodingAgentDir === undefined) delete process.env.MYPI_CODING_AGENT_DIR;
+		else process.env.MYPI_CODING_AGENT_DIR = previousCodingAgentDir;
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
 test("active-children wait state is published to the event bus and the session background-wait hook (BUG-097)", () => {
 	const emitted: Array<{ channel: string; data: any }> = [];
 	const waits: boolean[] = [];
@@ -129,7 +206,7 @@ test("active-children wait state is published to the event bus and the session b
 	(manager as any).active.clear();
 	(manager as any).publishWaitState();
 	assert.deepEqual(emitted.map((entry) => entry.channel), [SUBAGENT_WAIT_STATE_EVENT, SUBAGENT_WAIT_STATE_EVENT]);
-	assert.deepEqual(emitted.map((entry) => entry.data), [{ active: 1 }, { active: 0 }]);
+	assert.deepEqual(emitted.map((entry) => entry.data), [{ active: 1, pending: 0 }, { active: 0, pending: 0 }]);
 	assert.deepEqual(waits, [true, false]);
 	assert.equal(manager.hasActiveChildren(), false);
 });
@@ -195,7 +272,7 @@ test("advisor and reviewer availability failures produce one exact stable outcom
 
 test("post-admission consultation failure delivers the stable unavailable outcome (BUG-098)", () => {
 	const sends: any[] = [];
-	const pi = { sendMessage(message: any, options: any) { sends.push({ message, options }); } } as unknown as ExtensionAPI;
+	const pi = { requestContinuation(message: any, options: any) { sends.push({ message, options }); } } as unknown as ExtensionAPI;
 	const manager = new SubagentManager(pi);
 	(manager as any).ctx = { isIdle: () => true };
 	const child = record("advisor");

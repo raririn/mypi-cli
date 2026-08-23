@@ -87,7 +87,7 @@ test("session-owned subagent manager runs a package-pinned async RPC child and d
   let delivered;
   const delivery = new Promise((resolvePromise) => { delivered = resolvePromise; });
   const pi = {
-    sendMessage(message, options) { delivered({ message, options }); },
+    requestContinuation(message, options) { delivered({ message, options }); },
   };
   const sessionFile = join(root, "parent.jsonl");
   await writeFile(sessionFile, "{}\n");
@@ -116,7 +116,7 @@ test("session-owned subagent manager runs a package-pinned async RPC child and d
     ]).finally(() => clearTimeout(timeoutHandle));
     assert.equal(result.message.customType, "mypi-subagent-results");
     assert.match(String(result.message.content), /child-rpc-ok/);
-    assert.equal(result.options.triggerTurn, true);
+    assert.deepEqual(result.options, { arbitrationGroup: "mypi:parent-work", priority: 100 });
     const childId = accepted.jobs[0].childId;
     const childSession = join(agentDir, "subagents", "by-parent", "parent-rpc-test", "children", childId, "session.jsonl");
     const history = await readFile(childSession, "utf8");
@@ -165,7 +165,7 @@ test("last-client detach cancels an RPC grant without delivery and follow-up rev
   process.env.MYPI_AGENT_DIR = agentDir;
   process.env.MYPI_CODING_AGENT_DIR = agentDir;
   const deliveries = [];
-  const pi = { sendMessage(message, options) { deliveries.push({ message, options }); } };
+  const pi = { requestContinuation(message, options) { deliveries.push({ message, options }); } };
   const sessionFile = join(root, "parent.jsonl");
   await writeFile(sessionFile, "{}\n");
   const ctx = {
@@ -236,7 +236,7 @@ test("work grants hold the parent write lease and force child Bash through the p
   process.env.MYPI_AGENT_DIR = agentDir;
   process.env.MYPI_CODING_AGENT_DIR = agentDir;
   const deliveries = [];
-  const pi = { sendMessage(message, options) { deliveries.push({ message, options }); } };
+  const pi = { requestContinuation(message, options) { deliveries.push({ message, options }); } };
   const sessionFile = join(root, "parent.jsonl");
   await writeFile(sessionFile, "{}\n");
   const ctx = {
@@ -343,7 +343,7 @@ test("advisor uses a caller-model neutral brief and evidence ledger without forw
     timestamp: Date.now(),
   });
   const deliveries = [];
-  const pi = { sendMessage(message, options) { deliveries.push({ message, options }); } };
+  const pi = { requestContinuation(message, options) { deliveries.push({ message, options }); } };
   const ctx = {
     cwd,
     model,
@@ -426,7 +426,7 @@ test("reviewer uses project policy, complete working-tree evidence, and marks a 
   process.env.MYPI_AGENT_DIR = agentDir;
   process.env.MYPI_CODING_AGENT_DIR = agentDir;
   const deliveries = [];
-  const pi = { sendMessage(message, options) { deliveries.push({ message, options }); } };
+  const pi = { requestContinuation(message, options) { deliveries.push({ message, options }); } };
   const sessionFile = join(root, "parent.jsonl");
   await writeFile(sessionFile, "{}\n");
   const ctx = {

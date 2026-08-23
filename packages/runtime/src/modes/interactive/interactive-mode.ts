@@ -2917,6 +2917,12 @@ export class InteractiveMode {
 				if (!confirmed) return;
 			}
 			const result = await actions.executeRewind(preview.operationToken, preview.affectedOtherTasks > 0);
+			// Truncate the session transcript to before the checkpoint's user
+			// message so the agent does not see post-rewind conversation history.
+			const checkpointEntryId = listed.checkpoints[index]!.userMessageId;
+			if (checkpointEntryId) {
+				try { await this.runtimeHost.fork(checkpointEntryId, { position: "before" }); } catch { /* transcript truncation is best-effort */ }
+			}
 			this.showStatus(`Rewound workspace; removed ${result.removed} later checkpoint${result.removed === 1 ? "" : "s"}.`);
 		} catch (error) {
 			this.showError(`Rewind failed: ${error instanceof Error ? error.message : String(error)}`);

@@ -16,7 +16,8 @@ describe("sealed MyPi product composition", () => {
 	});
 
 	it("classifies only registry-created modules as product authority", () => {
-		expect(getProductModuleClass(productModules.find((module) => module.name === "goal")!)).toBe("required");
+		expect(getProductModuleClass(productModules.find((module) => module.name === "goal")!)).toBe("session");
+		expect(getProductModuleClass(productModules.find((module) => module.name === "subagents")!)).toBe("session");
 		expect(getProductModuleClass({
 			name: "goal",
 			factory: () => {},
@@ -65,7 +66,7 @@ describe("sealed MyPi product composition", () => {
 		const extensions = loader.getExtensions().extensions;
 		expect(extensions.some((extension) => extension.path.includes("legacy-core"))).toBe(false);
 		expect(extensions.flatMap((extension) => [...extension.tools.keys()])).not.toContain("spoof_product");
-		const goal = extensions.find((extension) => extension.path === "<product:required:goal>");
-		expect(hasProductAuthority(goal?.sourceInfo, ["required"])).toBe(true);
+		const goal = extensions.find((extension) => extension.path === "<product:session:goal>");
+		expect(hasProductAuthority(goal?.sourceInfo, ["session"])).toBe(true);
 	});
 });

@@ -557,7 +557,7 @@ Inside `before_agent_start`, `event.systemPrompt` and `ctx.getSystemPrompt()` bo
 
 #### agent_start / agent_end / agent_settled
 
-`agent_start` fires when a low-level agent run begins. `agent_end` fires when that run ends, but Pi may still auto-retry, auto-compact and retry, or continue with queued follow-up messages. Use `agent_settled` for status integrations that need to know Pi will not continue running automatically.
+`agent_start` fires when a low-level agent run begins. `agent_end` fires when that run ends, but Pi may still auto-retry, auto-compact and retry, or continue with queued follow-up messages. Use `agent_settled` for status integrations that need the final session boundary. Its optional `continuationPending` field is true when a sealed built-in session participant has already won arbitration for another parent run; the settlement event is emitted before that run's `agent_start`.
 
 ```typescript
 pi.on("agent_start", async (_event, ctx) => {});
@@ -567,7 +567,8 @@ pi.on("agent_end", async (event, ctx) => {
 });
 
 pi.on("agent_settled", async (_event, ctx) => {
-  // ctx.isIdle() is true here unless another extension started a new run.
+  // ctx.isIdle() is true here unless an ordinary extension started a new run.
+  // Custom extensions do not receive the built-in session continuation API.
 });
 ```
 

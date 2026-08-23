@@ -374,10 +374,19 @@ export default function guiControlExtension(pi: ExtensionAPI): void {
   }
 
   function sendEvent(eventName: string, event: unknown): void {
+    let eventPayload = event
     if (eventName === 'agent_start') agentBusy = true
-    else if (eventName === 'agent_settled') agentBusy = false
+    else if (eventName === 'agent_settled') {
+      const continuationPending = Boolean(
+        (event && typeof event === 'object' && (event as { continuationPending?: unknown }).continuationPending === true)
+        || currentCtx?.hasPendingMessages()
+        || (currentCtx && !currentCtx.isIdle()),
+      )
+      agentBusy = continuationPending
+      if (continuationPending) eventPayload = { ...(event && typeof event === 'object' ? event as object : {}), continuationPending: true }
+    }
     if (controller?.getState() !== 'connected') return
-    const normalized = sanitize({ type: eventName, ...(event && typeof event === 'object' ? event as object : { value: event }) }) as Record<string, unknown>
+    const normalized = sanitize({ type: eventName, ...(eventPayload && typeof eventPayload === 'object' ? eventPayload as object : { value: eventPayload }) }) as Record<string, unknown>
     const frame: ClientFrame = { type: 'event', connectionId, sequence: ++sequence, event: normalized }
     eventQueue.enqueue(frame)
     eventQueue.drain(send)

@@ -151,7 +151,7 @@ export function isTrustedSafetyTool(name: string, sourceInfo: SourceInfo | undef
 		return sourceInfo.source === "builtin" && sourceInfo.path === `<builtin:${name}>`;
 	}
 	if (TRUSTED_PRODUCT_TOOLS.has(name)) {
-		return hasProductAuthority(sourceInfo, ["required", "capability"]);
+		return hasProductAuthority(sourceInfo, ["session", "required", "capability"]);
 	}
 	if (name === "ask_user" || name === "set_status") {
 		return hasProductAuthority(sourceInfo, ["capability"]);

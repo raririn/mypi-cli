@@ -32,6 +32,7 @@ import { execCommand } from "../exec.ts";
 import { createSyntheticSourceInfo, type SourceInfo } from "../source-info.ts";
 import { time } from "../timings.ts";
 import type {
+	BuiltInContinuationOptions,
 	EntryRenderer,
 	Extension,
 	ExtensionAPI,
@@ -43,6 +44,7 @@ import type {
 	RegisteredCommand,
 	ToolDefinition,
 } from "./types.ts";
+import type { CustomMessage } from "../messages.ts";
 
 /** Modules available to extensions via virtualModules (for compiled Bun binary) */
 const VIRTUAL_MODULES: Record<string, unknown> = {
@@ -181,6 +183,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 	const runtime: ExtensionRuntime = {
 		sendMessage: notInitialized,
 		sendUserMessage: notInitialized,
+		requestBuiltInContinuation: notInitialized,
 		appendEntry: notInitialized,
 		setSessionName: notInitialized,
 		getSessionName: notInitialized,
@@ -315,6 +318,17 @@ function createExtensionAPI(
 		sendUserMessage(content, options): void {
 			runtime.assertActive();
 			runtime.sendUserMessage(content, options);
+		},
+
+		requestContinuation(
+			message: Pick<CustomMessage<unknown>, "customType" | "content" | "display" | "details">,
+			options: BuiltInContinuationOptions,
+		): void {
+			runtime.assertActive();
+			if (extension.sourceInfo.productClass !== "session") {
+				throw new Error("Lifecycle-owned continuations are restricted to sealed session product modules.");
+			}
+			runtime.requestBuiltInContinuation(message, options);
 		},
 
 		appendEntry(customType: string, data?: unknown): void {
