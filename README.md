@@ -3,8 +3,7 @@
 MyPi is an agentic coding CLI with a customized,
 source-built [Pi](https://github.com/earendil-works/pi) runtime.
 
-The first stable release is **MyPi 1.6.0 (Roma)**. Stable MyPi releases follow
-a chronological Roman-city naming series, beginning with Roma.
+The first stable release is **MyPi 1.6.0 (Roma)**.
 
 ## Features
 
