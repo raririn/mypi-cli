@@ -1,5 +1,54 @@
 # MyPi CLI changelog
 
+## Unreleased protocol-2 stabilization — 2026-08-23
+
+### Project lifecycle and tracking
+
+- Project archive/delete now closes every idle engine attached only by the
+  requesting client before history maintenance. Active turns and any other
+  attached client remain hard blockers, with a complete preflight before any
+  attachment is changed.
+- Project removal no longer requires the former workspace directory to exist:
+  tracker storage is removed by its stable project identity without reopening
+  a work tree, and missing descendants canonicalize through their nearest
+  existing ancestor so macOS `/var` aliases cannot strand trust decisions.
+- Persisted-session listings now report whether the recorded working directory
+  still exists, allowing clients to explain stale temporary-project history.
+- The TUI settle footer is intentionally minimal: one separator followed by
+  `X files changed.` Detailed review remains in the Changes-capable client.
+
+### Provider-neutral service tier
+
+- Removed the provider-specific `/fast` command and its branch-local
+  `mypi-cliproxy-fast` state.
+- Added `serviceTier: default|priority` to the version-1 global
+  `$MYPI_AGENT_DIR/config.yaml` contract. `/settings` owns the control;
+  `/thinking` remains the separate reasoning-level control and thinking level
+  was removed from `/settings`.
+- CLIProxyAPI consumes the generic tier only at turn boundaries and only for a
+  model advertising `supportsPriorityServiceTier`; unsupported models and
+  in-flight requests remain unchanged.
+
+### Startup feedback and discovery naming
+
+- Interactive launches paint `Starting MyPi...` immediately, then
+  `Connecting...`, `Loading session...`, and `Rendering interface...` while
+  the existing runtime work proceeds.
+- Added a bounded `startup-timings.jsonl` profile log carrying launcher,
+  module-graph, daemon/preattach, runtime/session, extension-factory, shell,
+  and fully-ready-interface deltas. This is observability/feedback; the larger
+  module-graph optimization remains a separate task.
+- Added clear `metadataProtocol: 1` to `mypi __remote-info`; retained
+  `protocol: 1` as the compatibility alias while bridge/workspace stay 2.
+
+### Verification
+
+- Full CLI gate: 206 product, 13 host, 39 daemon, 13 hosted, 2 RPC-dialog,
+  5 preattach, and 6 distribution tests, plus coordinated build/typecheck,
+  public-tree and runtime-customization verification.
+- PTY startup probe observed every staged label and a complete timing record
+  ending at `main-interface-first-frame` (1.448 s in the warm embedded sample).
+
 ## 2.0.0-beta.1 — 2026-08-23
 
 This is a breaking daemon/control-protocol release. MyPi CLI/daemon 2.x and

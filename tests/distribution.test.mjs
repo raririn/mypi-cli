@@ -49,6 +49,8 @@ test("remote host metadata advertises the workspace index implemented by the hel
   const info = JSON.parse(result.stdout);
   assert.equal(info.application, "mypi-remote-host");
   assert.equal(info.bridgeProtocol, 2);
+	assert.equal(info.metadataProtocol, 1);
+	assert.equal(info.protocol, 1, "legacy discovery-schema alias remains compatible");
   assert.equal(info.releaseName, "Roma");
   assert.equal(info.workspaceProtocol, 2);
   assert.ok(info.workspaceCapabilities.includes("workspace-index"));

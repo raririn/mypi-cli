@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, resolve as nodeResolvePath, relative, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve as nodeResolvePath, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnProcessSync } from "./child-process.ts";
 
@@ -21,15 +21,22 @@ export interface PathInputOptions {
 
 /**
  * Resolve a path to its canonical (real) form, following symlinks.
- * Falls back to the raw path if resolution fails (e.g. the target does
- * not exist yet), so that callers never crash on missing filesystem
- * entries.
+ * For a missing target, resolves the nearest existing ancestor and appends
+ * the absent suffix. This keeps trust/project identities stable across
+ * symlinked parents such as macOS /var -> /private/var.
  */
 export function canonicalizePath(path: string): string {
-	try {
-		return realpathSync(path);
-	} catch {
-		return path;
+	let current = nodeResolvePath(path);
+	const suffix: string[] = [];
+	while (true) {
+		try {
+			return join(realpathSync(current), ...suffix.reverse());
+		} catch {
+			const parent = dirname(current);
+			if (parent === current) return nodeResolvePath(path);
+			suffix.push(basename(current));
+			current = parent;
+		}
 	}
 }
 

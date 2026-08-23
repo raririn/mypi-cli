@@ -96,7 +96,7 @@ for (const fragment of [
   }
 }
 const globalConfig = await readFile(join(packageRoot, "dist", "product", "global-config.js"), "utf8");
-for (const fragment of ["config.yaml", "shortTestMaxWords: 10", "maxActive: 10", "maxArchived: 10", "maxSessionCheckpoints: 3", "maxDetachedCheckpoints: 1", "warningFiles: 10_000", 'advisorModel: "inherit"', "requireAdvisor: false", "requireReviewer: false", "defaults are active", 'registerCommand("config"']) {
+for (const fragment of ["config.yaml", 'serviceTier: "default"', "shortTestMaxWords: 10", "maxActive: 10", "maxArchived: 10", "maxSessionCheckpoints: 3", "maxDetachedCheckpoints: 1", "warningFiles: 10_000", 'advisorModel: "inherit"', "requireAdvisor: false", "requireReviewer: false", "defaults are active", 'registerCommand("config"']) {
   if (!globalConfig.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing global YAML configuration behavior (${fragment}).`);
   }

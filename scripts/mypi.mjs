@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
+import { appendFileSync, mkdirSync, statSync, truncateSync } from "node:fs";
 import { readMyPiRuntimeVersion } from "./mypi-version-contract.mjs";
 
 // MyPi uses its own state namespace. MYPI_AGENT_DIR is the only
@@ -18,6 +19,45 @@ delete process.env.MYPI_RUNTIME_PROFILE;
 
 const { productVersion, releaseName, piCoreVersion, displayVersion, protocolGeneration } = readMyPiRuntimeVersion();
 process.env.MYPI_RUNTIME_DISPLAY_VERSION = displayVersion;
+
+const startupArgs = process.argv.slice(2);
+const startupNonInteractive =
+  startupArgs[0] === "chat" ||
+  startupArgs.some((arg) => ["--help", "-h", "--version", "-v", "--list-models", "--export", "--print", "-p", "--mode"].includes(arg));
+const startupProgressActive = !startupNonInteractive && process.stdin.isTTY && process.stdout.isTTY;
+if (startupProgressActive) {
+  const startedAt = Date.now();
+  let previousAt = startedAt;
+  let finished = false;
+  const events = [];
+  const render = (message) => process.stderr.write(`\r\x1b[2K${message}`);
+  const mark = (stage, message) => {
+    const now = Date.now();
+    events.push({ stage, elapsedMs: now - startedAt, deltaMs: now - previousAt });
+    previousAt = now;
+    process.env.MYPI_STARTUP_STARTED_AT = String(startedAt);
+    process.env.MYPI_STARTUP_LOG = join(agentDir, "startup-timings.jsonl");
+    process.env.MYPI_STARTUP_VERSION = displayVersion;
+    process.env.MYPI_STARTUP_EVENTS = JSON.stringify(events);
+    if (message) render(message);
+  };
+  const finish = (stage = "main-interface-first-frame") => {
+    if (finished) return;
+    finished = true;
+    mark(stage);
+    render("");
+    try {
+      mkdirSync(agentDir, { recursive: true, mode: 0o700 });
+      const logPath = join(agentDir, "startup-timings.jsonl");
+      try {
+        if (statSync(logPath).size > 1024 * 1024) truncateSync(logPath, 0);
+      } catch {}
+      appendFileSync(logPath, `${JSON.stringify({ version: displayVersion, pid: process.pid, at: new Date().toISOString(), events })}\n`, { mode: 0o600 });
+    } catch {}
+  };
+  globalThis.__MYPI_STARTUP_PROGRESS__ = { mark, finish };
+  mark("launcher-start", "Starting MyPi...");
+}
 
 // Private, protocol-versioned entry points used by MyPi control clients over SSH.
 // They deliberately run inside this launcher's Node runtime so a remote login
@@ -34,6 +74,7 @@ if (internalCommand === "__remote-info") {
   const invokedPath = invokedPathIndex >= 0 ? process.argv[invokedPathIndex + 1] : undefined;
   process.stdout.write(`${JSON.stringify({
     application: "mypi-remote-host",
+	metadataProtocol: 1,
     protocol: 1,
     bridgeProtocol: protocolGeneration,
     workspaceProtocol: 2,
@@ -94,12 +135,8 @@ if (internalCommand === "__remote-node-eval") {
   // any surface exiting. MYPI_TUI_HOSTED=0 forces the embedded runtime,
   // which also remains the automatic fallback for ineligible launches and
   // every failure here.
-  const cliArgs = process.argv.slice(2);
-  const nonSessionInvocation =
-    cliArgs[0] === "chat" ||
-    cliArgs.some((arg) =>
-      ["--help", "-h", "--version", "-v", "--list-models", "--export", "--print", "-p", "--mode"].includes(arg),
-    );
+  const cliArgs = startupArgs;
+  const nonSessionInvocation = startupNonInteractive;
   if (process.env.MYPI_TUI_HOSTED !== "0" && !nonSessionInvocation && process.stdin.isTTY && process.stdout.isTTY) {
     try {
       const { MYPI_DAEMON_PROTOCOL, ensureDaemonRunning } = await import("./mypi-daemon-discovery.mjs");
@@ -111,10 +148,13 @@ if (internalCommand === "__remote-node-eval") {
       // the moment the daemon is up — overlapping the remaining import.
       process.env.MYPI_TUI_HOSTED = "1";
       process.env.MYPI_DAEMON_PROTOCOL = String(MYPI_DAEMON_PROTOCOL);
+      globalThis.__MYPI_STARTUP_PROGRESS__?.mark("daemon-ensure-start");
       globalThis.__MYPI_DAEMON_READY__ = ensureDaemonRunning(process.argv[1])
         .then(async (socketPath) => {
+          globalThis.__MYPI_STARTUP_PROGRESS__?.mark("daemon-ready");
           process.env.MYPI_DAEMON_SOCKET = socketPath;
           const { startPreattach } = await import("./mypi-preattach.mjs");
+          globalThis.__MYPI_STARTUP_PROGRESS__?.mark("preattach-start");
           startPreattach({ socketPath, protocol: MYPI_DAEMON_PROTOCOL, argv: cliArgs });
           return socketPath;
         })
@@ -150,6 +190,7 @@ if (internalCommand === "__remote-node-eval") {
     try {
       await import("./pi-cli.mjs");
     } catch (error) {
+      globalThis.__MYPI_STARTUP_PROGRESS__?.finish("startup-error");
       process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
       process.exitCode = 1;
     }

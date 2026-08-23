@@ -21,7 +21,7 @@ The first stable release is **MyPi 1.6.0 (Roma)**.
 - Workspace trust preflight plus workspace-confined read/write tools in bounded modes
 - Model-aware `/reasoning` control with the existing thinking-level colors
 - Native CLIProxyAPI provider support with secure `/login cliproxyapi`, bounded
-  model discovery, and session-owned `/fast on|off|status`
+  model discovery, and capability-scoped service tiers configured through `/settings`
 - Web search/fetch with Brave search API or curl
 - Atomic lifecycle and session leases for daemon-hosted and external control surfaces
 - Read-only mode and deprecated safe-mode compatibility

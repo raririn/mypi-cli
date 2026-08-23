@@ -49,6 +49,7 @@ import { assertValidSessionId, SessionManager } from "./core/session-manager.ts"
 import { SettingsManager } from "./core/settings-manager.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { ProjectTrustStore, resolveProjectTrustRoot } from "./core/trust-manager.ts";
+import { markStartupProgress } from "./core/startup-progress.ts";
 import { productModules } from "./product/index.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.ts";
@@ -555,6 +556,7 @@ export interface MainOptions {
 }
 
 export async function main(args: string[], options?: MainOptions) {
+	markStartupProgress("runtime-import-ready", "Connecting...");
 	resetTimings();
 	const extensionFactories = options?.extensionFactories ?? [];
 	const commandExtensionFactories = [...productModules, ...extensionFactories];
@@ -849,7 +851,9 @@ export async function main(args: string[], options?: MainOptions) {
 	const daemonReadyHandoff = (
 		globalThis as { __MYPI_DAEMON_READY__?: Promise<string | null> }
 	).__MYPI_DAEMON_READY__;
+	markStartupProgress("daemon-handoff-wait", "Connecting...");
 	if (daemonReadyHandoff) await daemonReadyHandoff;
+	markStartupProgress("daemon-handoff-ready", "Loading session...");
 	const hostedEnv = readHostedDaemonEnv();
 	let hostedStdinContent: string | undefined;
 	let hostedStdinRead = false;
@@ -951,6 +955,7 @@ export async function main(args: string[], options?: MainOptions) {
 					},
 					productProfile: process.env.MYPI_RUNTIME_PROFILE === "chat" ? "chat" : "coding",
 				});
+				markStartupProgress("hosted-services-ready", "Connecting to session...");
 				reportDiagnostics([
 					...hostedServices.diagnostics,
 					...collectSettingsDiagnostics(hostedSettingsManager, "hosted runtime creation"),
@@ -968,6 +973,7 @@ export async function main(args: string[], options?: MainOptions) {
 					let hostedOwnershipCancelled = false;
 					while (!hostedRuntime) {
 						try {
+							markStartupProgress("hosted-session-attach-start", "Connecting to session...");
 							hostedRuntime = await createHostedRuntime({
 								services: hostedServices,
 								sessionId: hostedSessionId,
@@ -988,6 +994,7 @@ export async function main(args: string[], options?: MainOptions) {
 					}
 					if (hostedOwnershipCancelled) return;
 				if (hostedRuntime) {
+					markStartupProgress("hosted-session-ready", "Rendering interface...");
 					time("createHostedRuntime");
 					if (parsed.thinking !== undefined) {
 						hostedRuntime.session.setThinkingLevel(parsed.thinking);
@@ -1039,12 +1046,13 @@ export async function main(args: string[], options?: MainOptions) {
 	const daemonSessionStartEvent = readDaemonSessionStartEvent();
 	let runtime: Awaited<ReturnType<typeof createAgentSessionRuntime>>;
 	try {
-		runtime = await createAgentSessionRuntime(createRuntime, {
+	runtime = await createAgentSessionRuntime(createRuntime, {
 			cwd: sessionManager.getCwd(),
 			agentDir,
 			sessionManager,
 			...(daemonSessionStartEvent ? { sessionStartEvent: daemonSessionStartEvent } : {}),
-		});
+	});
+	markStartupProgress("embedded-session-ready", "Rendering interface...");
 	} catch (error) {
 		if (error instanceof ProjectTrustDeclinedError) {
 			return;

@@ -1,4 +1,4 @@
-import { constants, realpathSync } from "node:fs";
+import { constants, existsSync, realpathSync } from "node:fs";
 import { lstat, mkdir, open, readdir, realpath, rename, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
@@ -16,6 +16,7 @@ import { purgeSessionSnapshotsAcrossTrackers, WorkspaceTracker } from "./workspa
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { loadGlobalConfig, type GlobalConfigDiagnostic, type HistoryConfig } from "./global-config.ts";
+import { canonicalizePath } from "../utils/paths.ts";
 
 const MAX_DISCOVERED_FILES = 10_000;
 const MAX_SCAN_DEPTH = 4;
@@ -34,6 +35,8 @@ export interface PersistedSessionSummary {
 	readonly id: string;
 	readonly sessionFile: string;
 	readonly cwd: string;
+	/** Whether the recorded working directory still exists on this host. */
+	readonly cwdExists: boolean;
 	/** Product profile that owns this session: ordinary coding sessions live
 	 *  under sessions/, MyPi Chat sessions under the chat root. */
 	readonly profile: "coding" | "chat";
@@ -776,6 +779,7 @@ async function summarizeSessionFile(file: string, root: string, archived: boolea
 			id: String(header.id),
 			sessionFile: await canonicalPath(file),
 			cwd: typeof header.cwd === "string" ? await canonicalPath(header.cwd) : "",
+			cwdExists: typeof header.cwd === "string" && existsSync(resolve(header.cwd)),
 			profile,
 			...(name ? { name } : {}),
 			firstUserText,
@@ -898,11 +902,7 @@ function compareOldestSession(left: PersistedSessionSummary, right: PersistedSes
 }
 
 async function canonicalPath(path: string): Promise<string> {
-	try {
-		return await realpath(resolve(path));
-	} catch {
-		return resolve(path);
-	}
+	return canonicalizePath(resolve(path));
 }
 
 function textOnlyUserContent(content: unknown): boolean {

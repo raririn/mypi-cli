@@ -79,6 +79,7 @@ import type {
 } from "../../core/extensions/index.ts";
 import { FooterDataProvider, type ReadonlyFooterDataProvider } from "../../core/footer-data-provider.ts";
 import { configureHttpDispatcher, formatHttpIdleTimeoutMs } from "../../core/http-dispatcher.ts";
+import { finishStartupProgress, markStartupProgress } from "../../core/startup-progress.ts";
 import { type AppKeybinding, KeybindingsManager } from "../../core/keybindings.ts";
 import { createCompactionSummaryMessage } from "../../core/messages.ts";
 import {
@@ -103,6 +104,7 @@ import {
 } from "../../core/hosted/ownership-conflict-ui.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import type { WorkspaceChangeSet } from "../../product/workspace-tracker.ts";
+import { loadGlobalConfig, updateServiceTier } from "../../product/global-config.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
 import {
 	hasTrustRequiringProjectResources,
@@ -862,6 +864,7 @@ export class InteractiveMode {
 			this.headerContainer.addChild(this.builtInHeader);
 		}
 		this.ui.requestRender();
+		markStartupProgress("main-interface-shell-frame");
 
 		// Initialize extensions first so resources are shown before messages
 		await this.rebindCurrentSession();
@@ -883,6 +886,8 @@ export class InteractiveMode {
 
 		// Initialize available provider count for footer display
 		await this.updateAvailableProviderCount();
+		markStartupProgress("main-interface-ready");
+		finishStartupProgress("main-interface-first-frame");
 	}
 
 	/**
@@ -2866,21 +2871,13 @@ export class InteractiveMode {
 
 	private renderTurnChanges(changes: WorkspaceChangeSet): void {
 		if (changes.files.length === 0) return;
-		const additions = changes.files.reduce((sum, file) => sum + (file.additions ?? 0), 0);
-		const deletions = changes.files.reduce((sum, file) => sum + (file.deletions ?? 0), 0);
-		const estimate = changes.estimated ? "Estimated · " : "";
-		const heading = `${estimate}Changed ${changes.files.length} file${changes.files.length === 1 ? "" : "s"} · +${additions} −${deletions}`;
 		this.chatContainer.addChild(new Spacer(1));
-		this.chatContainer.addChild(new Text(theme.fg(changes.estimated ? "warning" : "muted", heading), 1, 0));
-		for (const file of changes.files.slice(0, 5)) {
-			const counts = file.opaque ? "opaque" : `+${file.additions ?? 0} −${file.deletions ?? 0}`;
-			this.chatContainer.addChild(new Text(theme.fg("dim", `  • ${file.path}  ${counts}`), 1, 0));
-		}
-		if (changes.files.length > 5) this.chatContainer.addChild(new Text(theme.fg("dim", `  … ${changes.files.length - 5} more`), 1, 0));
-		if (changes.intersection === "concurrent-session") {
-			this.chatContainer.addChild(new Text(theme.fg("warning", "  Changes may include work from another task using this workspace."), 1, 0));
-		}
-		for (const omission of changes.omissions.slice(0, 2)) this.chatContainer.addChild(new Text(theme.fg("warning", `  ${omission}`), 1, 0));
+		this.chatContainer.addChild(new DynamicBorder());
+		this.chatContainer.addChild(new Text(
+			theme.fg(changes.estimated ? "warning" : "muted", `${changes.files.length} file${changes.files.length === 1 ? "" : "s"} changed.`),
+			1,
+			0,
+		));
 		this.ui.requestRender();
 	}
 
@@ -2934,7 +2931,7 @@ export class InteractiveMode {
 
 			// Handle commands
 			if (text === "/settings") {
-				this.showSettingsSelector();
+				await this.showSettingsSelector();
 				this.editor.setText("");
 				return;
 			}
@@ -4539,7 +4536,9 @@ export class InteractiveMode {
 		this.ui.requestRender();
 	}
 
-	private showSettingsSelector(): void {
+	private async showSettingsSelector(): Promise<void> {
+		const globalConfig = await loadGlobalConfig();
+		if (globalConfig.diagnostic) this.showWarning(globalConfig.diagnostic.message);
 		this.showSelector((done) => {
 			const selector = new SettingsSelectorComponent(
 				{
@@ -4553,8 +4552,7 @@ export class InteractiveMode {
 					followUpMode: this.session.followUpMode,
 					transport: this.settingsManager.getTransport(),
 					httpIdleTimeoutMs: this.settingsManager.getHttpIdleTimeoutMs(),
-					thinkingLevel: this.session.thinkingLevel,
-					availableThinkingLevels: this.session.getAvailableThinkingLevels(),
+					serviceTier: globalConfig.config.serviceTier,
 					currentTheme: this.settingsManager.getThemeSetting() || "dark",
 					terminalTheme: this.themeController.getTerminalTheme(),
 					availableThemes: getAvailableThemes(),
@@ -4621,10 +4619,10 @@ export class InteractiveMode {
 						configureHttpDispatcher(timeoutMs);
 						this.showStatus(`HTTP idle timeout: ${formatHttpIdleTimeoutMs(timeoutMs)}`);
 					},
-					onThinkingLevelChange: (level) => {
-						this.session.setThinkingLevel(level);
-						this.footer.invalidate();
-						this.updateEditorBorderColor();
+					onServiceTierChange: (tier) => {
+						void updateServiceTier(tier)
+							.then(() => this.showStatus(`Service tier: ${tier} (applies next turn)`))
+							.catch((error) => this.showError(`Service tier update failed: ${error instanceof Error ? error.message : String(error)}`));
 					},
 					onThemeChange: (themeSetting) => {
 						this.settingsManager.setTheme(themeSetting);

@@ -118,6 +118,7 @@ import {
   resolveProjectTrustRoot,
   prepareChatEngineLaunch,
   readPersistedSession,
+	removeWorkspaceTracker,
   runNewSessionMaintenance,
   setPersistedSessionArchived,
   WorkspaceTracker,
@@ -1575,18 +1576,26 @@ function handleClientFrame(client, frame) {
       if (!prepared || prepared.client !== client || prepared.expiresAt < Date.now()) throw new Error("Project removal preview expired or is invalid.");
       if (frame.confirm !== true) throw new Error("Project removal requires confirm=true after preview.");
       const root = prepared.preview.project;
-      if ([...sessions.values()].some((session) => !session.exited && canonicalTrackingRoot(session.cwd) === root && (session.clients.size > 0 || session.turnActive))) throw new Error("Project removal is blocked while a matching session is attached or active.");
       if (projectMaintenanceRoots.has(root)) throw new Error("Another project maintenance operation is active.");
       projectMaintenanceRoots.add(root);
       try {
+		const matchingLive = [...sessions.values()].filter((session) => !session.exited && canonicalTrackingRoot(session.cwd) === root);
+		// The requesting client commonly has idle reader/owner attachments to the
+		// project it is deleting. Close those engines through the same safe path
+		// as single-session archive; active turns and other attached clients remain
+		// hard blockers. Without this, a GUI could never remove its selected idle
+		// project because its own attachment kept the lease alive.
+		if (matchingLive.some((live) => live.turnActive)) throw new Error("Project removal is blocked while a matching session is working.");
+		if (matchingLive.some((live) => [...live.clients].some((attached) => attached !== client))) {
+		  throw new Error("Project removal is blocked while another client is attached to this workspace.");
+		}
+		for (const live of matchingLive) await closeIdleSessionForArchive(live, client);
         const result = await executeProjectRemoval(prepared.preview, { agentDir: daemonAgentDir });
         if (result.failures.length > 0) {
           broadcastAll({ type: "project_removal_partial", project: root, historyMode: prepared.preview.historyMode, ...result });
           return { project: root, historyMode: prepared.preview.historyMode, projectStateRemoved: false, ...result };
         }
-        const loaded = await loadGlobalConfig(daemonGlobalConfigPath);
-        const tracker = await WorkspaceTracker.open(daemonAgentDir, root, loaded.config.tracking);
-        await tracker.removeAll();
+		await removeWorkspaceTracker(daemonAgentDir, root);
         new ProjectTrustStore(daemonAgentDir).removeProject(root);
         projectRemovalPreviews.delete(token);
         clearDaemonServiceCache();

@@ -10,11 +10,13 @@ import globalConfigExtension from "../../src/product/global-config.ts";
 import sessionMaintenanceExtension from "../../src/product/session-maintenance.ts";
 import {
   DEFAULT_GLOBAL_CONFIG,
+	loadConfiguredServiceTier,
   loadGlobalConfig,
   resetGlobalConfig,
 	updateAdvisorModel,
 	updateSubagentRequirement,
   updateHistoryConfig,
+	updateServiceTier,
 } from "../../src/product/global-config.ts";
 
 test("global YAML config defaults without creating a file and preserves unrelated configuration", async () => {
@@ -39,6 +41,11 @@ test("global YAML config defaults without creating a file and preserves unrelate
     assert.deepEqual(source.future, { enabled: true });
     assert.equal(source.history.maxActive, 17);
     assert.equal(source.history.maxArchived, 23);
+	const tierUpdate = updateServiceTier("priority", path);
+	assert.equal(await loadConfiguredServiceTier(path), "priority", "turn-boundary read waits for an in-flight settings write");
+	const tier = await tierUpdate;
+	assert.equal(tier.serviceTier, "priority");
+	assert.equal(parse(await readFile(path, "utf8")).serviceTier, "priority");
 	await updateAdvisorModel("anthropic/claude-haiku-4-5", path);
 	await updateSubagentRequirement("requireAdvisor", true, path);
 	const advisor = await loadGlobalConfig(path);
@@ -62,6 +69,7 @@ test("malformed, unsupported, and partially invalid YAML use complete defaults a
       "version: 1\nhistory:\n  maxActive: 42\n  maxArchived: zero\n",
 	  "version: 1\nhistory:\n  maxActive: 42\nsubagents:\n  advisorModel: invalid\n",
       "version: 1\nhistory:\n  maxActive: 42\nsubagents:\n  requireAdvisor: yes\n",
+	  "version: 1\nserviceTier: fastest\n",
 	  "version: 1\ntracking:\n  maxSessionCheckpoints: 2\n  maxDetachedCheckpoints: 3\n",
       `version: 1\nfuture: ${"x".repeat(1024 * 1024)}\n`,
     ]) {

@@ -31,8 +31,12 @@ export interface TrackingConfig {
 	readonly warningBytes: number;
 }
 
+export type ServiceTier = "default" | "priority";
+
 export interface GlobalConfig {
 	readonly version: 1;
+	/** Provider-neutral request tier. Unsupported models ignore `priority`. */
+	readonly serviceTier: ServiceTier;
 	readonly history: HistoryConfig;
 	readonly subagents: SubagentsConfig;
 	readonly tracking: TrackingConfig;
@@ -53,6 +57,7 @@ export interface GlobalConfigLoadResult {
 
 export const DEFAULT_GLOBAL_CONFIG: GlobalConfig = Object.freeze({
 	version: GLOBAL_CONFIG_VERSION,
+	serviceTier: "default",
 	history: Object.freeze({
 		autoArchive: true,
 		shortTestMaxWords: 10,
@@ -70,6 +75,7 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfig = Object.freeze({
 
 type ConfigRecord = Record<string, unknown>;
 type HistoryKey = "autoArchive" | "shortTestMaxWords" | "maxActive" | "maxArchived";
+let pendingServiceTierUpdate: Promise<GlobalConfig> | undefined;
 
 const HELP = `# /config — inspect or update global MyPi configuration
 
@@ -88,7 +94,8 @@ Use /advisor [on|off] and /reviewer [on|off] to change mandatory consultation
 guidance for the current session and the default for new sessions.
 
 Configuration is stored in $MYPI_AGENT_DIR/config.yaml. Changes are global to
-that MyPi profile and affect the next new-session maintenance pass. Malformed or
+that MyPi profile. The service tier applies at the next turn boundary; history
+changes affect the next new-session maintenance pass. Malformed or
 unsafe configuration applies complete defaults and is never overwritten unless
 you explicitly run /config reset --confirm on a regular file.`;
 
@@ -132,6 +139,32 @@ export async function updateHistoryConfig(
 		await atomicWriteConfig(path, stringify(next, { lineWidth: 0 }));
 		return parsed.config;
 	});
+}
+
+export async function updateServiceTier(
+	serviceTier: ServiceTier,
+	path = resolveGlobalConfigPath(),
+): Promise<GlobalConfig> {
+	if (serviceTier !== "default" && serviceTier !== "priority") throw new Error("Service tier must be default or priority.");
+	const update = withConfigLock(path, async () => {
+		const source = await readConfigSourceForMutation(path);
+		const next = { ...source, version: GLOBAL_CONFIG_VERSION, serviceTier };
+		const parsed = parseConfigRecord(stringify(next), path);
+		if ("diagnostic" in parsed) throw new Error(parsed.diagnostic.message);
+		await atomicWriteConfig(path, stringify(next, { lineWidth: 0 }));
+		return parsed.config;
+	});
+	pendingServiceTierUpdate = update;
+	try {
+		return await update;
+	} finally {
+		if (pendingServiceTierUpdate === update) pendingServiceTierUpdate = undefined;
+	}
+}
+
+export async function loadConfiguredServiceTier(path = resolveGlobalConfigPath()): Promise<ServiceTier> {
+	await pendingServiceTierUpdate?.catch(() => undefined);
+	return (await loadGlobalConfig(path)).config.serviceTier;
 }
 
 export async function updateAdvisorModel(
@@ -211,7 +244,7 @@ export default function globalConfigExtension(pi: ExtensionAPI): void {
 	const show = async (ctx: ExtensionContext) => {
 		const loaded = await loadGlobalConfig();
 		if (loaded.diagnostic) ctx.ui.notify(loaded.diagnostic.message, "warning");
-		ctx.ui.notify(`${formatHistoryConfig(loaded.config.history)} ${formatSubagentsConfig(loaded.config.subagents)}`, "info");
+		ctx.ui.notify(`${formatServiceTier(loaded.config.serviceTier)} ${formatHistoryConfig(loaded.config.history)} ${formatSubagentsConfig(loaded.config.subagents)}`, "info");
 	};
 	const handle = async (args: string, ctx: ExtensionContext) => {
 		const tokens = args.trim().split(/\s+/u).filter(Boolean);
@@ -300,6 +333,7 @@ function parseConfigRecord(
 		if (!isRecord(tracking)) return { diagnostic: invalidOwnedConfig(path) };
 		const config: GlobalConfig = {
 			version: GLOBAL_CONFIG_VERSION,
+			serviceTier: source.serviceTier === "priority" ? "priority" : DEFAULT_GLOBAL_CONFIG.serviceTier,
 			history: {
 				autoArchive: readBoolean(history.autoArchive, DEFAULT_GLOBAL_CONFIG.history.autoArchive),
 				shortTestMaxWords: readBoundedInteger(history.shortTestMaxWords, 1, 100, DEFAULT_GLOBAL_CONFIG.history.shortTestMaxWords),
@@ -322,6 +356,7 @@ function parseConfigRecord(
 			...(source.mcp !== undefined ? { mcp: source.mcp } : {}),
 		};
 		if (
+			(source.serviceTier !== undefined && source.serviceTier !== "default" && source.serviceTier !== "priority") ||
 			(history.autoArchive !== undefined && typeof history.autoArchive !== "boolean") ||
 			!validOptionalInteger(history.shortTestMaxWords, 1, 100) ||
 			!validOptionalInteger(history.maxActive, 1, 1_000) ||
@@ -433,6 +468,10 @@ function formatHistoryConfig(config: HistoryConfig): string {
 	return `History: auto-archive ${config.autoArchive ? "on" : "off"}; short-test words <${config.shortTestMaxWords}; max active ${config.maxActive}; max archived ${config.maxArchived}.`;
 }
 
+function formatServiceTier(serviceTier: ServiceTier): string {
+	return `Service tier: ${serviceTier}.`;
+}
+
 function formatSubagentsConfig(config: SubagentsConfig): string {
 	return `Advisor/reviewer model: ${config.advisorModel}; mandatory advisor ${config.requireAdvisor ? "on" : "off"}; mandatory reviewer ${config.requireReviewer ? "on" : "off"}.`;
 }
@@ -440,6 +479,7 @@ function formatSubagentsConfig(config: SubagentsConfig): string {
 function cloneDefaults(): GlobalConfig {
 	return {
 		version: GLOBAL_CONFIG_VERSION,
+		serviceTier: DEFAULT_GLOBAL_CONFIG.serviceTier,
 		history: { ...DEFAULT_GLOBAL_CONFIG.history },
 		subagents: { ...DEFAULT_GLOBAL_CONFIG.subagents },
 		tracking: { ...DEFAULT_GLOBAL_CONFIG.tracking },

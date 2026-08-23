@@ -1519,6 +1519,7 @@ test("project removal preview and execution clear consent, tracker data, and his
     client.send({ id: "trust", type: "set_project_trust", cwd: workspace, trusted: true });
     client.send({ id: "track", type: "set_project_tracking", cwd: workspace, tracking: "track" });
     await waitFor(() => response("trust") && response("track"), 5_000, "project consent");
+	await rm(workspace, { recursive: true, force: true });
     client.send({ id: "preview", type: "prepare_project_removal", cwd: workspace, historyMode: "delete" });
     await waitFor(() => response("preview"), 5_000, "project removal preview");
     assert.equal(response("preview").data.active.length, 1);
@@ -1557,6 +1558,35 @@ test("project removal archive mode preserves histories while clearing project st
     client.send({ id: "list", type: "list_persisted_sessions", cwd: workspace, includeArchived: true });
     await waitFor(() => response("list"), 5_000, "archived project listing");
     assert.equal(response("list").data.sessions[0].archived, true);
+    client.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("project removal closes the requesting client's own idle project attachment", async () => {
+  const daemon = await startDaemon();
+  try {
+    const workspace = join(daemon.daemonDir, "remove-attached-workspace");
+	const sessionDir = join(daemon.agentDir, "sessions", "remove-attached-workspace");
+    await mkdir(workspace, { recursive: true });
+	await mkdir(sessionDir, { recursive: true });
+	await writeFile(join(sessionDir, "attached.jsonl"), persistedSession({ id: "remove-attached-1", cwd: workspace }));
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    const response = (id) => client.frames.find((frame) => frame.type === "response" && frame.id === id);
+    client.send({ type: "attach", sessionId: "remove-attached-1", cwd: workspace });
+    await waitFor(() => client.ofType("attached").length === 1, 5_000, "attached project session");
+
+    client.send({ id: "preview", type: "prepare_project_removal", cwd: workspace, historyMode: "delete" });
+    await waitFor(() => response("preview"), 5_000, "attached project removal preview");
+    assert.equal(response("preview").data.liveSessions, 1);
+    client.send({ id: "remove", type: "execute_project_removal", operationToken: response("preview").data.operationToken, confirm: true });
+    await waitFor(() => response("remove"), 15_000, "attached project removal");
+    assert.equal(response("remove").success, true, response("remove").error);
+    assert.deepEqual(response("remove").data.deleted, ["remove-attached-1"]);
+    assert.equal(response("remove").data.projectStateRemoved, true);
     client.socket.destroy();
   } finally {
     await daemon.cleanup();

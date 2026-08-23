@@ -352,6 +352,7 @@ export {
 	estimateWorkspaceTracking,
 	estimatePersistedSessionChanges,
 	estimatedChangeSet,
+	removeWorkspaceTracker,
 	type ChangeQuality,
 	type TrackedChangeFile,
 	type TrackerHealth,

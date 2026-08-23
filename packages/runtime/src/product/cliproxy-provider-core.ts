@@ -54,7 +54,7 @@ export interface CliProxyProviderDependencies {
   readonly fetch?: typeof fetch;
   readonly now?: () => number;
   readonly environment?: Readonly<Record<string, string | undefined>>;
-  readonly isFastEnabled?: () => boolean;
+  readonly isPriorityEnabled?: () => boolean;
   /** Test seam; production uses the pinned Codex Responses implementation. */
   readonly codexStreams?: ProviderStreams;
 }
@@ -265,7 +265,7 @@ async function resolveAuthConnection(
   };
 }
 
-export function applyCliProxyFastPayload(payload: unknown): unknown {
+export function applyCliProxyPriorityPayload(payload: unknown): unknown {
   return payload && typeof payload === "object" && !Array.isArray(payload)
     ? { ...(payload as Record<string, unknown>), service_tier: "priority" }
     : payload;
@@ -278,18 +278,18 @@ function withPriorityPayload(
   return {
     ...options,
     onPayload: async (payload, model) => {
-      const prioritized = applyCliProxyFastPayload(payload);
+      const prioritized = applyCliProxyPriorityPayload(payload);
       const replacement = await onPayload?.(prioritized, model);
       return replacement === undefined ? prioritized : replacement;
     },
   };
 }
 
-function fastCapable(model: Model<"openai-codex-responses">, isFastEnabled: () => boolean): boolean {
-  return isFastEnabled() && model.compat?.supportsPriorityServiceTier === true;
+function priorityEnabled(model: Model<"openai-codex-responses">, isPriorityEnabled: () => boolean): boolean {
+  return isPriorityEnabled() && model.compat?.supportsPriorityServiceTier === true;
 }
 
-function cliProxyStreams(isFastEnabled: () => boolean, codex = openAICodexResponsesApi()): ProviderStreams {
+function cliProxyStreams(isPriorityEnabled: () => boolean, codex = openAICodexResponsesApi()): ProviderStreams {
   return {
     stream(model, context, options) {
       const codexModel = model as Model<"openai-codex-responses">;
@@ -302,12 +302,12 @@ function cliProxyStreams(isFastEnabled: () => boolean, codex = openAICodexRespon
       return codex.stream(
         model,
         context,
-        fastCapable(codexModel, isFastEnabled) ? priorityOptions : options,
+        priorityEnabled(codexModel, isPriorityEnabled) ? priorityOptions : options,
       );
     },
     streamSimple(model, context, options) {
       const codexModel = model as Model<"openai-codex-responses">;
-      return codex.streamSimple(model, context, fastCapable(codexModel, isFastEnabled) ? withPriorityPayload(options) : options);
+      return codex.streamSimple(model, context, priorityEnabled(codexModel, isPriorityEnabled) ? withPriorityPayload(options) : options);
     },
   };
 }
@@ -329,8 +329,8 @@ export function createCliProxyProvider(dependencies: CliProxyProviderDependencie
   const fetchImpl = dependencies.fetch ?? fetch;
   const now = dependencies.now ?? Date.now;
   const environment = dependencies.environment ?? process.env;
-  const isFastEnabled = dependencies.isFastEnabled ?? (() => false);
-  const streams = cliProxyStreams(isFastEnabled, dependencies.codexStreams);
+  const isPriorityEnabled = dependencies.isPriorityEnabled ?? (() => false);
+  const streams = cliProxyStreams(isPriorityEnabled, dependencies.codexStreams);
   let models: CliProxyModel[] = [];
 
   const login = async (interaction: AuthInteraction): Promise<ApiKeyCredential> => {

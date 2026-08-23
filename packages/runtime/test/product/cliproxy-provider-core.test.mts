@@ -6,7 +6,7 @@ import {
   CLIPROXY_CATALOG_MAX_BYTES,
   CLIPROXY_CATALOG_TIMEOUT_MS,
   CLIPROXY_PROVIDER_ID,
-  applyCliProxyFastPayload,
+  applyCliProxyPriorityPayload,
   createCliProxyProvider,
   fetchCliProxyModels,
   mapCliProxyCatalog,
@@ -211,10 +211,10 @@ test("offline fallback preserves an already checked catalog for ambient-only aut
   assert.equal(provider.getModels()[0]?.id, "gpt-fast");
 });
 
-test("Fast payload injection is exact and leaves non-object payloads unchanged", () => {
-  assert.deepEqual(applyCliProxyFastPayload({ model: "gpt-fast", service_tier: "default" }), {
+test("priority payload injection is exact and leaves non-object payloads unchanged", () => {
+  assert.deepEqual(applyCliProxyPriorityPayload({ model: "gpt-fast", service_tier: "default" }), {
     model: "gpt-fast",
     service_tier: "priority",
   });
-  assert.equal(applyCliProxyFastPayload("opaque"), "opaque");
+  assert.equal(applyCliProxyPriorityPayload("opaque"), "opaque");
 });

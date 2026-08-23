@@ -596,6 +596,14 @@ export class WorkspaceTracker {
 	}
 }
 
+/** Remove tracker storage even when the recorded project directory no longer
+ * exists. Project cleanup must not require reopening the former work tree. */
+export async function removeWorkspaceTracker(agentDir: string, root: string): Promise<void> {
+	const directory = join(resolve(agentDir), "trackers", trackerKey(resolve(root)));
+	await rm(directory, { recursive: true, force: true });
+	await rm(`${directory}.lock`, { recursive: true, force: true }).catch(() => undefined);
+}
+
 /** Remove a session's recovery snapshots from every project tracker. Sessions
  * may outlive or move away from their workspace, so archive cannot rely on
  * resolving one currently-existing cwd. */

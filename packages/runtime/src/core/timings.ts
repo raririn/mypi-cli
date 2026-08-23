@@ -2,6 +2,7 @@
  * Central timing instrumentation for startup profiling.
  * Enable with PI_TIMING=1 environment variable.
  */
+import { markStartupProgress } from "./startup-progress.ts";
 
 const ENABLED = process.env.PI_TIMING === "1";
 interface TimingNamespace {
@@ -19,6 +20,7 @@ export function resetTimings(namespace: TimingLabel = "main"): void {
 }
 
 export function time(label: string, namespace: TimingLabel = "main"): void {
+	markStartupProgress(`component:${namespace}:${label}`);
 	if (!ENABLED) return;
 	const now = Date.now();
 
