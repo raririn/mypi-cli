@@ -1,6 +1,10 @@
 # MyPi CLI changelog
 
-## Unreleased protocol-2 stabilization — 2026-08-23
+## 2.0.0-beta.2 — 2026-08-23
+
+This protocol-2 stabilization build must be paired with the 2.x desktop GUI.
+It does not change the exact-match daemon protocol; it completes the project,
+tracking, service-tier, and startup behavior shipped for dogfood after beta.1.
 
 ### Project lifecycle and tracking
 
