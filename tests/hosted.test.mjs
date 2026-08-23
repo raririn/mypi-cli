@@ -18,7 +18,7 @@ const HOSTED_DIST = new URL(
   "../node_modules/@earendil-works/pi-coding-agent/dist/core/hosted/hosted-runtime-host.js",
   import.meta.url,
 ).href;
-const PROTOCOL = 1;
+const PROTOCOL = 2;
 
 function waitFor(predicate, timeoutMs = 5_000, label = "condition") {
   return new Promise((resolve, reject) => {

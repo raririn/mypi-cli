@@ -588,7 +588,7 @@ export default function guiControlExtension(pi: ExtensionAPI): void {
     // private and exposes only sanitized owner diagnostics to clients.
     if (conflict && process.env.MYPI_DAEMON_ENGINE === '1') {
       process.stderr.write(`@@MYPI_OWNERSHIP_CONFLICT@@${JSON.stringify({
-        protocol: 1,
+        protocol: 2,
         sessionFile: conflict.sessionFile,
         owner: conflict.holder,
       })}\n`)

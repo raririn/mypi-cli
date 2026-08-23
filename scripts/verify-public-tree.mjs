@@ -68,10 +68,10 @@ assert(findings.length === 0, `public tree contains sensitive markers:\n${findin
 const manifest = readJson("package.json");
 assert(manifest.private === true, "repository root must remain private to prevent accidental npm publication");
 assert(manifest.name === "@raririn/mypi-source", "repository root has unexpected identity");
-assert(manifest.version === "1.10.0-beta.5", "repository root has unexpected version");
+assert(manifest.version === "2.0.0-beta.1", "repository root has unexpected version");
 assert(manifest.mypiRelease?.name === "Roma", "repository root has unexpected release name");
 assert(manifest.mypiRelease?.chronicle === 1, "repository root has unexpected release chronicle");
-assert(manifest.mypiRelease?.protocol === 1, "repository root has unexpected protocol generation");
+assert(manifest.mypiRelease?.protocol === 2, "repository root has unexpected protocol generation");
 
 const sourceProvenance = readJson("SOURCE_PROVENANCE.json");
 const piProvenance = readJson("PI_UPSTREAM_PROVENANCE.json");

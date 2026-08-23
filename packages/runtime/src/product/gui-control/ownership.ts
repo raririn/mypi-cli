@@ -10,7 +10,7 @@ export const SESSION_LOCK_STALE_MS = 30_000
 export const SESSION_LOCK_UPDATE_MS = 10_000
 
 export interface SessionOwnershipControlInfo {
-  protocol: 1
+  protocol: 2
   socketPath: string
   token: string
 }
@@ -91,7 +91,7 @@ function parseLease(leasePath: string): { state: 'missing' } | { state: 'invalid
       (value.control !== undefined && (
         typeof value.control !== 'object' ||
         value.control === null ||
-        value.control.protocol !== 1 ||
+        value.control.protocol !== 2 ||
         typeof value.control.socketPath !== 'string' ||
         typeof value.control.token !== 'string'
       ))
@@ -294,7 +294,7 @@ function createOwnershipControl(
       }
       if (
         frame.type !== 'handoff_request' ||
-        frame.protocol !== 1 ||
+        frame.protocol !== 2 ||
         frame.token !== token ||
         frame.ownerId !== ownerId ||
         resolve(String(frame.sessionFile ?? '')) !== resolve(sessionFile) ||
@@ -328,7 +328,7 @@ function createOwnershipControl(
 
   let stopped = false
   return {
-    info: { protocol: 1, socketPath, token },
+    info: { protocol: 2, socketPath, token },
     stop() {
       if (stopped) return
       stopped = true

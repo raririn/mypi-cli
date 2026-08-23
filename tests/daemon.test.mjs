@@ -13,7 +13,7 @@ const PROXY_SCRIPT = fileURLToPath(new URL("../scripts/mypi-proxy.mjs", import.m
 const ATTACH_SCRIPT = fileURLToPath(new URL("../scripts/mypi-attach.mjs", import.meta.url));
 const FAKE_TUI = fileURLToPath(new URL("./fixtures/fake-tui.cjs", import.meta.url));
 const FAKE_ENGINE = fileURLToPath(new URL("./fixtures/fake-rpc-engine.cjs", import.meta.url));
-const PROTOCOL = 1;
+const PROTOCOL = 2;
 
 function waitFor(predicate, timeoutMs = 5_000, label = "condition") {
   return new Promise((resolve, reject) => {
@@ -163,9 +163,9 @@ test("handshake: a matching protocol is acked, a mismatch is refused and closed"
     const bad = connect(daemon.socketPath);
     await bad.connected();
     const closed = new Promise((resolve) => bad.socket.once("close", resolve));
-    await bad.hello(PROTOCOL + 99);
+    await bad.hello(1);
     assert.equal(bad.ofType("hello_error").length, 1, "mismatch is refused with a typed frame");
-    assert.match(bad.ofType("hello_error")[0].reason, /protocol/i);
+    assert.match(bad.ofType("hello_error")[0].reason, /speaks protocol 2.*speaks 1/i);
     await closed;
   } finally {
     await daemon.cleanup();
@@ -488,7 +488,7 @@ test("an external writer produces a typed conflict and authenticated handoff rou
     startedAt: new Date().toISOString(),
     surface: "pi-cli",
     ownerId,
-    control: { protocol: 1, socketPath, token },
+    control: { protocol: 2, socketPath, token },
   };
   await writeFile(sessionFile, "{}\n");
   await writeFile(`${sessionFile}.lease`, `${JSON.stringify(owner)}\n`);
@@ -948,7 +948,7 @@ test("a dead daemon's discovery files are pruned so a fresh one can bind", async
   const sidecar = join(daemon.daemonDir, "daemon.json");
   await waitFor(() => existsSync(sidecar), 3_000, "sidecar");
   const recorded = JSON.parse(readFileSync(sidecar, "utf8"));
-  assert.equal(recorded.protocol, 1);
+  assert.equal(recorded.protocol, 2);
 
   daemon.child.kill("SIGKILL");
   await new Promise((resolve) => setTimeout(resolve, 150));

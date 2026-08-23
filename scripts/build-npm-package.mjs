@@ -103,6 +103,7 @@ const finalManifest = {
     "lib",
     "scripts",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE",
     "LICENSES",
     "THIRD_PARTY_NOTICES.md",
@@ -223,6 +224,7 @@ function copyTemplateTree() {
   copyTree(join(repositoryRoot, "npm", "bin"), join(stageRoot, "bin"));
   copyTree(join(repositoryRoot, "npm", "lib"), join(stageRoot, "lib"));
   copyFile(join(repositoryRoot, "README.md"), join(stageRoot, "README.md"));
+  copyFile(join(repositoryRoot, "CHANGELOG.md"), join(stageRoot, "CHANGELOG.md"));
   copyFile(join(repositoryRoot, "THIRD_PARTY_NOTICES.md"), join(stageRoot, "THIRD_PARTY_NOTICES.md"));
   chmodSync(join(stageRoot, "bin", "mypi.mjs"), 0o755);
 }

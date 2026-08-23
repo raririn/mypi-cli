@@ -279,7 +279,7 @@ async function handleCommand(command) {
         if (process.env.FAKE_ENGINE_OWNERSHIP_CONFLICT) {
           const conflict = JSON.parse(process.env.FAKE_ENGINE_OWNERSHIP_CONFLICT);
           await new Promise((resolve) => process.stderr.write(
-            `@@MYPI_OWNERSHIP_CONFLICT@@${JSON.stringify({ protocol: 1, ...conflict })}\n`,
+            `@@MYPI_OWNERSHIP_CONFLICT@@${JSON.stringify({ protocol: 2, ...conflict })}\n`,
             resolve,
           ));
         }

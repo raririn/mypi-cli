@@ -23,7 +23,7 @@ async function requestHandoff(
     socket.setEncoding('utf8')
     socket.on('connect', () => socket.write(`${JSON.stringify({
       type: 'handoff_request',
-      protocol: 1,
+      protocol: 2,
       token: control.token,
       ownerId,
       sessionFile,

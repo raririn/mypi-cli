@@ -9,7 +9,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 /** Bumped only for breaking wire changes; clients exact-match it. */
-export const MYPI_DAEMON_PROTOCOL = 1;
+export const MYPI_DAEMON_PROTOCOL = 2;
 
 const STARTUP_LOCK_STALE_MS = 30_000;
 

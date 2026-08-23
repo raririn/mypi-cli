@@ -303,7 +303,7 @@ function publicOwnershipConflict(record) {
   const owner = record.owner;
   return {
     type: "ownership_conflict",
-    protocol: 1,
+    protocol: 2,
     sessionId: record.sessionId,
     sessionFile: record.sessionFile,
     owner: {
@@ -313,7 +313,7 @@ function publicOwnershipConflict(record) {
       surface: typeof owner.surface === "string" ? owner.surface : "unknown",
       ownerId: typeof owner.ownerId === "string" ? owner.ownerId : null,
       processStartTime: typeof owner.processStartTime === "number" ? owner.processStartTime : null,
-      cooperativeHandoffAvailable: owner.control?.protocol === 1,
+      cooperativeHandoffAvailable: owner.control?.protocol === 2,
     },
   };
 }
@@ -327,7 +327,7 @@ function handleOwnershipConflictLine(session, text) {
     return true;
   }
   if (
-    value?.protocol !== 1 ||
+    value?.protocol !== 2 ||
     typeof value.sessionFile !== "string" ||
     !value.owner ||
     typeof value.owner !== "object" ||
@@ -1226,7 +1226,7 @@ async function verifySignalTarget(record) {
 function requestOwnerControl(record, client, force) {
   const control = record.owner.control;
   if (
-    control?.protocol !== 1 ||
+    control?.protocol !== 2 ||
     typeof control.socketPath !== "string" ||
     typeof control.token !== "string" ||
     typeof record.owner.ownerId !== "string"
@@ -1257,7 +1257,7 @@ function requestOwnerControl(record, client, force) {
     socket.on("connect", () => {
       socket.write(`${JSON.stringify({
         type: "handoff_request",
-        protocol: 1,
+        protocol: 2,
         token: control.token,
         ownerId: record.owner.ownerId,
         sessionFile: record.sessionFile,

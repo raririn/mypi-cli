@@ -1,11 +1,11 @@
 {
   "name": "@raririn/mypi-source",
   "private": true,
-  "version": "1.10.0-beta.5",
+  "version": "2.0.0-beta.1",
   "mypiRelease": {
     "name": "Roma",
     "chronicle": 1,
-    "protocol": 1
+    "protocol": 2
   },
   "description": "Source and release tooling for the MyPi CLI",
   "license": "MIT",

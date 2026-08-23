@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const APPLICATION = "mypi-gui-tui-bridge";
 const ARTIFACT_HASH = "__ARTIFACT_HASH__";
-const BRIDGE_PROTOCOL = 1;
+const BRIDGE_PROTOCOL = 2;
 const MAX_ARGUMENT = 4_096;
 
 function fail(message) {
