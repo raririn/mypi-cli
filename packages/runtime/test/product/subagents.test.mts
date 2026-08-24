@@ -157,10 +157,10 @@ test("follow-up calls enforce the stored child role", async () => {
 	await assert.rejects(manager.followup(review.childId, "Continue", ctx), /reviewer_followup/);
 	await assert.rejects(manager.advisorFollowup("Continue", ctx), /requires a previous consult_advisor/);
 	(manager as any).active.set(review.childId, { record: review });
-	await assert.rejects(manager.reviewerFollowup("Continue", ctx), /Reviewer conversation already active/);
+	await assert.rejects(manager.reviewerFollowup("Continue", ctx), /still active/);
 	review.role = "advisor";
 	await assert.rejects(manager.followup(review.childId, "Continue", ctx), /advisor_followup/);
-	await assert.rejects(manager.advisorFollowup("Continue", ctx), /Advisor conversation already active/);
+	await assert.rejects(manager.advisorFollowup("Continue", ctx), /still active/);
 	await assert.rejects(manager.reviewerFollowup("Continue", ctx), /requires a previous ask_for_review/);
 });
 

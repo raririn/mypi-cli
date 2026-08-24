@@ -38,9 +38,11 @@ same question/request within the same user epoch and two-minute window confirms
 replacement; a changed objective starts a new confirmation. A running
 conversation is cancelled and settled before confirmed replacement starts.
 
-`subagent_followup` continues an exact explore/work child. `advisor_followup`
-continues the most recent advisor; `reviewer_followup` continues the most recent
-reviewer. Each starts another asynchronous grant over retained role and history.
+`subagent_followup` creates a new grant continuing an exact explore/work child.
+`advisor_followup` continues the most recent advisor; `reviewer_followup`
+continues the most recent reviewer. These tools never retrieve output. They
+reject while the child is active or its previous result is unconsumed, then
+start another asynchronous grant over retained role and history.
 Starting a fresh advisor or reviewer after settlement makes that conversation
 the target of future role-specific follow-ups. Older histories stay available
 for manual inspection while model tools address the current conversation only.
@@ -78,8 +80,11 @@ cryptographically random capabilities and cannot be chosen by either model.
   start a result-review turn.
 
 When a child settles during an active parent run, its result stays in the
-session-owned result inbox. It is not added to Pi's intra-run `followUp` queue.
-At the next true settlement the arbiter orders user guidance first, delegated
+session-owned result inbox. It is not added to Pi's steer/follow-up queues. The
+next provider context projects the typed result directly; a successful parent
+assistant message acknowledges it, persists the same typed internal notice,
+and broadcasts that notice without starting another turn. If no parent provider
+run is active, the settlement arbiter orders user guidance first, delegated
 results before Goal continuation, and then starts at most one parent run.
 `agent_settled.continuationPending` therefore describes the decision before the
 following `agent_start`. An active Goal cannot complete until its owned child

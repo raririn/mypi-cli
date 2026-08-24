@@ -14,8 +14,8 @@ The first stable release is **MyPi 1.6.0 (Roma)**.
 - `commentary` tool: shares brief user-visible progress, assumptions, partial
   findings, and non-blocking questions without presenting private reasoning
 - Hooks: user policy hooks via `hooks.json` (block/observe tool calls, inject
-  context, notify on settle) plus agent-registered timer and file-watch hooks
-  (`schedule_prompt`, `watch_files`); see `/hooks --help`
+  context, notify on settle). Model-callable timer/file-watch hook tools are
+  temporarily disabled pending a lifecycle redesign; see `/hooks --help`
 - Plan and goal workflows
 - Turn-scoped Safe, Sandboxed, approval, and Full Access modes via `/safety`
 - Workspace trust preflight plus workspace-confined read/write tools in bounded modes

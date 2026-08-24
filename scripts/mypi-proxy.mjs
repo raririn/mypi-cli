@@ -38,6 +38,7 @@ const MUTATING_FRAME_TYPES = new Set([
   "set_project_trust",
   "set_project_tracking",
   "rebuild_project_tracker",
+  "force_prepare_rewind",
   "execute_rewind",
   "execute_project_removal",
   "bash",

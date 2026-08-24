@@ -134,7 +134,9 @@ test("/plan creates a branch-local structured plan, stops, and /goal executes it
 	assert.equal(harness.activeTools.includes("subagent_followup"), true);
 	assert.equal(harness.activeTools.includes("bash"), false);
 	const before = await harness.emit("before_agent_start", { prompt: "plan", systemPrompt: "base" });
-	assert.match(before.systemPrompt, /complete dependency-ordered structured plan/);
+	assert.match(before.systemPrompt, /smallest complete dependency-ordered structured plan/);
+	assert.match(before.systemPrompt, /final response is not a plan item/);
+	assert.match(before.systemPrompt, /Do not require a compiler/);
 	assert.match(before.systemPrompt, /acceptance requirements/);
 	assert.match(before.systemPrompt, /direct evidence needed to verify completion/);
 	assert.match(harness.sent.at(-1) ?? "", /Follow the Goal planning contract/);
@@ -176,8 +178,9 @@ test("planning correction repeats the evidence-complete plan requirement without
 	await harness.emit("agent_settled", { outcome: { kind: "success" } });
 	const correction = harness.customMessages.at(-1);
 	assert.equal(correction.message.customType, "mypi-goal-plan-correction");
-	assert.match(correction.message.content, /complete dependency-ordered plan/);
+	assert.match(correction.message.content, /smallest proportional dependency-ordered plan/);
 	assert.match(correction.message.content, /acceptance requirements and direct verification evidence/);
+	assert.match(correction.message.content, /Do not add bookkeeping artifacts or a final-response item/);
 	assert.match(correction.message.content, /Do not implement/);
 });
 

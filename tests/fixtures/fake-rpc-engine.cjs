@@ -247,6 +247,12 @@ async function runTurn(promptText, structuredOutput, requestId) {
       },
     });
   }
+  if (!aborted && typeof promptText === 'string' && promptText.includes('continuation-pending')) {
+    out({ type: 'agent_settled', outcome: { kind: 'success' }, continuationPending: true });
+    await sleep(Math.max(20, Number(process.env.FAKE_ENGINE_TURN_MS || 40)));
+    out({ type: 'agent_start' });
+    await sleep(Math.max(20, Number(process.env.FAKE_ENGINE_TURN_MS || 40)));
+  }
   out({ type: 'agent_settled', outcome: { kind: aborted ? 'aborted' : 'success' } });
   turnActive = false;
   aborted = false;
@@ -354,6 +360,21 @@ async function handleCommand(command) {
       sessionId = `fake-new-${(newSessionCounter += 1)}`;
       out({ id, type: 'response', command: 'new_session', success: true, data: { cancelled: false } });
       return;
+    case 'fork': {
+      const sourcePath = sessionPath();
+      const sourceEntries = readEntries();
+      const selected = sourceEntries.find((entry) => entry.id === command.entryId);
+      if (!selected || selected.type !== 'message' || selected.message?.role !== 'user') {
+        out({ id, type: 'response', command: 'fork', success: false, error: 'Invalid entry ID for forking' });
+        return;
+      }
+      const position = command.position || 'before';
+      const targetLeafId = position === 'at' ? selected.id : selected.parentId;
+      const target = materializeTarget(branchTo(sourceEntries, targetLeafId), sourcePath);
+      sessionId = target.sessionId;
+      out({ id, type: 'response', command: 'fork', success: true, data: { text: messageText(selected.message.content), cancelled: false } });
+      return;
+    }
     case 'prepare_new_session': {
       const data = { cancelled: false };
       if (command.materialize === true) {

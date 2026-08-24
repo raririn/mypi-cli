@@ -101,6 +101,27 @@ function extractUserMessageText(content: string | Array<{ type: string; text?: s
 /** The `Agent` members the interactive TUI touches. */
 export type InteractiveAgentSurface = Pick<Agent, "abort" | "signal" | "transport">;
 
+export interface RewindBlocker {
+	readonly kind: "daemon-session" | "external-writer";
+	readonly sessionId: string;
+	readonly reason: string;
+	readonly surfaces?: readonly string[];
+	readonly pid?: number;
+	readonly canStop: boolean;
+	readonly canTakeOver: boolean;
+}
+
+export type PreparedRewind =
+	| { status: "blocked"; forceToken: string; blockers: readonly RewindBlocker[] }
+	| {
+		status: "ready";
+		operationToken: string;
+		checkpoint: WorkspaceCheckpoint;
+		files: WorkspaceChangeSet["files"];
+		affectedOtherTasks: number;
+		laterOwned: number;
+	};
+
 export interface DaemonWorkspaceActions {
 	getProjectTracking(cwd: string): Promise<{
 		root: string;
@@ -112,14 +133,18 @@ export interface DaemonWorkspaceActions {
 	setProjectTracking(cwd: string, tracking: "track" | "dont-track"): Promise<void>;
 	setProjectTrust(cwd: string, trusted: boolean): Promise<void>;
 	listCheckpoints(): Promise<{ status: string; checkpoints: WorkspaceCheckpoint[] }>;
-	prepareRewind(checkpointId: string): Promise<{
-		operationToken: string;
-		checkpoint: WorkspaceCheckpoint;
-		files: WorkspaceChangeSet["files"];
+	prepareRewind(checkpointId: string): Promise<PreparedRewind>;
+	forcePrepareRewind(forceToken: string): Promise<Extract<PreparedRewind, { status: "ready" }>>;
+	executeRewind(operationToken: string, confirmAffected: boolean): Promise<{
+		removed: number;
 		affectedOtherTasks: number;
-		laterOwned: number;
+		generation: number;
+		clearedChangeSets: number;
+		previousSessionId: string;
+		sessionId: string;
+		nativeSessionId: string | null;
+		sessionFile: string | null;
 	}>;
-	executeRewind(operationToken: string, confirmAffected: boolean): Promise<{ removed: number; affectedOtherTasks: number; generation: number }>;
 }
 
 /**

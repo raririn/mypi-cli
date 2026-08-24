@@ -86,16 +86,58 @@ test("checkpoint retention is per session and rewind preserves foreign checkpoin
 
     const preview = await tracker.previewRewind("a", a3.id);
     const result = await tracker.rewind({ sessionId: "a", checkpointId: a3.id, expectedSequence: preview.sequence, expectedGeneration: preview.generation });
-    assert.equal(result.removed, 1);
+    assert.equal(result.removed, 2, "the selected checkpoint and every later owned checkpoint are removed");
     assert.equal(await readFile(join(workspace, "value.txt"), "utf8"), "three\n");
     assert.equal((await tracker.listCheckpoints("b")).length, 1, "foreign checkpoint remains available");
 
     const lowerLimit = await WorkspaceTracker.open(agentDir, workspace, { ...config, maxSessionCheckpoints: 1 });
-    assert.equal((await lowerLimit.listCheckpoints("a")).length, 2, "opening with a new limit performs no proactive sweep beyond prior lifecycle changes");
+    assert.equal((await lowerLimit.listCheckpoints("a")).length, 1, "the checkpoint preceding the inclusive rewind remains");
     await lowerLimit.createCheckpoint({ sessionId: "a", userMessageId: "a5", promptPreview: "A five" });
     assert.equal((await lowerLimit.listCheckpoints("a")).length, 1, "the new limit applies at the next checkpoint");
     await lowerLimit.pruneDetached("a");
     assert.equal((await lowerLimit.listCheckpoints("a")).length, 1);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("rewind rolls workspace back when transcript truncation fails and clears all owned tracking state on success", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mypi-workspace-rewind-transaction-"));
+  const workspace = join(root, "workspace");
+  const agentDir = join(root, "agent");
+  await mkdir(workspace, { recursive: true });
+  await writeFile(join(workspace, "value.txt"), "before\n");
+  try {
+    const tracker = await WorkspaceTracker.open(agentDir, workspace, DEFAULT_GLOBAL_CONFIG.tracking);
+    const first = await tracker.createCheckpoint({ sessionId: "s1", userMessageId: "u1", promptPreview: "first" });
+    await writeFile(join(workspace, "value.txt"), "after first\n");
+    await tracker.finalizeChangeSet({ sessionId: "s1", checkpointId: first.id });
+    const second = await tracker.createCheckpoint({ sessionId: "s1", userMessageId: "u2", promptPreview: "second" });
+    await writeFile(join(workspace, "value.txt"), "current\n");
+    const preview = await tracker.previewRewind("s1", first.id);
+
+    await assert.rejects(
+      tracker.rewind(
+        { sessionId: "s1", checkpointId: first.id, expectedSequence: preview.sequence, expectedGeneration: preview.generation },
+        async () => { throw new Error("fork failed"); },
+      ),
+      /fork failed/,
+    );
+    assert.equal(await readFile(join(workspace, "value.txt"), "utf8"), "current\n");
+    assert.deepEqual((await tracker.listCheckpoints("s1")).map((checkpoint) => checkpoint.id), [second.id, first.id]);
+    assert.equal((await tracker.listChangeSets("s1")).length, 1);
+
+    let transcriptTruncated = false;
+    const result = await tracker.rewind(
+      { sessionId: "s1", checkpointId: first.id, expectedSequence: preview.sequence, expectedGeneration: preview.generation },
+      async () => { transcriptTruncated = true; },
+    );
+    assert.equal(transcriptTruncated, true);
+    assert.equal(result.removed, 2);
+    assert.equal(result.clearedChangeSets, 1);
+    assert.equal(await readFile(join(workspace, "value.txt"), "utf8"), "before\n");
+    assert.deepEqual(await tracker.listCheckpoints("s1"), []);
+    assert.deepEqual(await tracker.listChangeSets("s1"), []);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

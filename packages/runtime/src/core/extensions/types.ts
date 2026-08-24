@@ -1478,6 +1478,9 @@ export interface BuiltInSessionAPI extends ExtensionAPI {
 		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
 		options: BuiltInContinuationOptions,
 	): void;
+	publishInternalMessage<T = unknown>(
+		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
+	): void;
 }
 
 // ============================================================================
@@ -1646,6 +1649,10 @@ export type SetGlobalSafetyModeHandler = (mode: SafetyMode) => void;
 /** Reports whether this session owns still-running background children (for example subagents). */
 export type SetBackgroundWaitHandler = (active: boolean) => void;
 
+export type PublishInternalMessageHandler = <T = unknown>(
+	message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
+) => void;
+
 export type SetLabelHandler = (entryId: string, label: string | undefined) => void;
 
 /**
@@ -1681,6 +1688,7 @@ export interface ExtensionActions {
 	sendMessage: SendMessageHandler;
 	sendUserMessage: SendUserMessageHandler;
 	requestBuiltInContinuation: RequestBuiltInContinuationHandler;
+	publishInternalMessage: PublishInternalMessageHandler;
 	appendEntry: AppendEntryHandler;
 	setSessionName: SetSessionNameHandler;
 	getSessionName: GetSessionNameHandler;

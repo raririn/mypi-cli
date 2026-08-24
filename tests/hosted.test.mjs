@@ -32,7 +32,7 @@ function waitFor(predicate, timeoutMs = 5_000, label = "condition") {
   });
 }
 
-async function startDaemon({ mode, failSession, ownershipConflict } = {}) {
+async function startDaemon({ mode, failSession, ownershipConflict, persistTurns = false } = {}) {
   const daemonDir = await mkdtemp(join(tmpdir(), "mypi-hosted-test-"));
   const child = spawn(process.execPath, [DAEMON_SCRIPT, "__daemon", "--idle-grace-ms", "300"], {
     env: {
@@ -43,6 +43,7 @@ async function startDaemon({ mode, failSession, ownershipConflict } = {}) {
       MYPI_DAEMON_ENGINE_CMD: JSON.stringify([process.execPath, FAKE_ENGINE]),
       FAKE_ENGINE_MODE: mode ?? "",
       FAKE_ENGINE_FAIL_SESSION: failSession ?? "",
+      ...(persistTurns ? { FAKE_ENGINE_PERSIST_TURNS: "1" } : {}),
       ...(ownershipConflict !== undefined
         ? { FAKE_ENGINE_OWNERSHIP_CONFLICT: JSON.stringify(ownershipConflict) }
         : {}),
@@ -224,7 +225,7 @@ test("a hosted runtime attaches, mirrors state, and drives a turn through the da
 });
 
 test("hosted workspace actions expose consent, settled changes, checkpoints, and rewind", async () => {
-  const daemon = await startDaemon();
+  const daemon = await startDaemon({ persistTurns: true });
   try {
     const host = await createHosted(daemon, { sessionId: "tracking-hosted" });
     const session = host.session;
@@ -245,9 +246,15 @@ test("hosted workspace actions expose consent, settled changes, checkpoints, and
     assert.ok(changes[0].files.some((file) => file.path === "tracked.txt"));
     const listed = await actions.listCheckpoints();
     assert.equal(listed.checkpoints.length, 1);
+    assert.match(listed.checkpoints[0].userMessageId, /^user-/, JSON.stringify(listed.checkpoints[0]));
     const preview = await actions.prepareRewind(listed.checkpoints[0].id);
+    assert.equal(preview.status, "ready");
+    if (preview.status !== "ready") throw new Error("rewind unexpectedly blocked");
     const result = await actions.executeRewind(preview.operationToken, preview.affectedOtherTasks > 0);
-    assert.equal(result.removed, 0);
+    assert.equal(result.removed, 1, "the selected checkpoint is removed inclusively");
+    assert.equal(result.clearedChangeSets, 1);
+    assert.equal(result.previousSessionId, "tracking-hosted");
+    assert.notEqual(result.sessionId, result.previousSessionId);
     unsubscribe();
     await host.dispose();
   } finally {

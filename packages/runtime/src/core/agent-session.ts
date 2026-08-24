@@ -512,6 +512,7 @@ export class AgentSession {
 	private _mypiBackgroundWait = false;
 	private _mypiSettledOutcome: AgentSettledOutcome = { kind: "success" };
 	private _mypiSettlementEpoch = 0;
+	private _mypiRunId = randomUUID();
 	private _structuredOutputAbortController: AbortController | undefined;
 
 	// Branch summarization state
@@ -804,6 +805,7 @@ export class AgentSession {
 			// run, so clients never observe agent_start followed by an apparently
 			// terminal settlement from the preceding run.
 			const continuationPending = this._isAgentRunActive || this.agent.hasQueuedMessages() || continuations.length > 0;
+			this.sessionManager.appendRunBoundary(this._mypiRunId, event.outcome, continuationPending);
 			this._emit(continuationPending ? { ...event, continuationPending } : event);
 			this._isEmittingAgentSettled = false;
 			if (continuations.length > 0) this._dispatchSessionContinuations(continuations);
@@ -837,6 +839,23 @@ export class AgentSession {
 			});
 			await this._mypiEmitDispatchFailureIfUnsettled(settlementEpoch, error);
 		});
+	}
+
+	private _publishInternalMessage<T>(
+		message: Pick<CustomMessage<T>, "customType" | "content" | "display" | "details">,
+	): void {
+		const appMessage = this._createCustomMessage(message);
+		this.sessionManager.appendCustomMessageEntry(
+			message.customType,
+			message.content,
+			message.display,
+			message.details,
+		);
+		// This is a durable program-owned notice, not model input for a new turn.
+		// The result was already projected into the active provider context; these
+		// frames let live surfaces render the same typed message without queueing.
+		this._emit({ type: "message_start", message: appMessage });
+		this._emit({ type: "message_end", message: appMessage });
 	}
 
 	private _takeSessionContinuations(): PendingSessionContinuation[] {
@@ -1585,6 +1604,7 @@ export class AgentSession {
 		messages: AgentMessage | AgentMessage[],
 		structuredOutput?: PreparedStructuredOutputRequest,
 	): Promise<void> {
+		this._mypiRunId = randomUUID();
 		this._mypiSettledOutcome = { kind: "success" };
 		this._mypiProactiveContinuationBudget = 1;
 		this._mypiProactiveContinuationTokens.clear();
@@ -3227,6 +3247,9 @@ export class AgentSession {
 				},
 				requestBuiltInContinuation: (message, options) => {
 					this._requestBuiltInContinuation(message, options);
+				},
+				publishInternalMessage: (message) => {
+					this._publishInternalMessage(message);
 				},
 				sendUserMessage: (content, options) => {
 					const settlementEpoch = this._mypiSettlementEpoch;

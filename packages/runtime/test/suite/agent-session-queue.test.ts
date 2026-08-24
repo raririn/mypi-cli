@@ -151,6 +151,46 @@ describe("AgentSession queue characterization", () => {
 		expect(harness.events.filter((event) => event.type === "agent_start" || event.type === "agent_settled").map((event) =>
 			event.type === "agent_settled" ? `settled:${event.continuationPending === true}` : "start"
 		)).toEqual(["start", "settled:true", "start", "settled:false"]);
+		const boundaries = harness.sessionManager.getBranch().filter((entry) => entry.type === "run_boundary");
+		expect(boundaries.map((entry) => entry.continuationPending)).toEqual([true, false]);
+		expect(new Set(boundaries.map((entry) => entry.runId)).size).toBe(2);
+		expect(harness.sessionManager.buildSessionContext().messages.some((message) =>
+			message.role === "custom" && message.customType === "run_boundary"
+		)).toBe(false);
+	});
+
+	it("publishes sealed internal notices durably without a user message, queue entry, or extra run", async () => {
+		let published = false;
+		const harness = await createHarness({
+			extensionFactories: [
+				defineSessionProductModule("internal-notice", (pi) => {
+					pi.on("agent_end", () => {
+						if (published) return;
+						published = true;
+						pi.publishInternalMessage({
+							customType: "mypi-subagent-results",
+							content: "typed child result",
+							display: true,
+							details: { version: 1 },
+						});
+					});
+				}),
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("done")]);
+
+		await harness.session.prompt("start");
+
+		expect(harness.faux.state.callCount).toBe(1);
+		expect(harness.session.pendingMessageCount).toBe(0);
+		expect(getUserTexts(harness)).toEqual(["start"]);
+		expect(harness.sessionManager.getBranch().filter((entry) => entry.type === "custom_message")).toMatchObject([
+			{ customType: "mypi-subagent-results", content: "typed child result", display: true },
+		]);
+		expect(harness.eventsOfType("message_end").some((event) =>
+			event.message.role === "custom" && event.message.customType === "mypi-subagent-results"
+		)).toBe(true);
 	});
 
 	it("delivers extension-origin steering messages before the next LLM call", async () => {

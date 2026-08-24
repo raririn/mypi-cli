@@ -37,6 +37,7 @@ async function startDaemon({
   signalGraceMs,
   ownerControlTimeoutMs,
   configContent,
+  persistTurns = false,
 } = {}) {
   const daemonDir = await mkdtemp(join(tmpdir(), "mypi-daemon-test-"));
   const agentDir = join(daemonDir, "agent");
@@ -64,6 +65,7 @@ async function startDaemon({
         ...(ownerControlTimeoutMs !== undefined
           ? { MYPI_DAEMON_OWNER_CONTROL_TIMEOUT_MS: String(ownerControlTimeoutMs) }
           : {}),
+        ...(persistTurns ? { FAKE_ENGINE_PERSIST_TURNS: "1" } : {}),
       },
       stdio: ["ignore", "pipe", "pipe"],
     },
@@ -441,6 +443,36 @@ test("daemon routes stable per-item queue updates, edits, and removal", async ()
     assert.equal(client.frames.find((frame) => frame.id === "update").data.message, "edited queued");
     assert.equal(client.frames.find((frame) => frame.id === "remove").data.id, followId);
     await waitFor(() => client.ofType("queue_update").some((frame) => frame.steeringItems?.[0]?.message === "edited queued" && frame.followUpItems?.length === 0), 3_000, "mutated queue update");
+    client.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("continuation-pending settlement keeps daemon tracking and busy state open until the terminal boundary", async () => {
+  const daemon = await startDaemon({ idleGraceMs: 5_000, turnMs: 120 });
+  try {
+    const workspace = join(daemon.daemonDir, "continuation-workspace");
+    await mkdir(workspace, { recursive: true });
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    const response = (id) => client.frames.find((frame) => frame.type === "response" && frame.id === id);
+    client.send({ id: "trust", type: "set_project_trust", cwd: workspace, trusted: true });
+    client.send({ id: "track", type: "set_project_tracking", cwd: workspace, tracking: "track" });
+    await waitFor(() => response("trust") && response("track"), 5_000, "continuation tracking setup");
+    client.send({ type: "attach", sessionId: "continuation-session", cwd: workspace });
+    await waitFor(() => client.ofType("attached").length === 1, 5_000, "continuation attach");
+    client.send({ id: "prompt", type: "prompt", message: "write-tracked continuation-pending", sessionId: "continuation-session" });
+    await waitFor(() => client.ofType("agent_settled").some((frame) => frame.continuationPending === true), 5_000, "continuation boundary");
+    const intermediate = client.ofType("agent_settled").find((frame) => frame.continuationPending === true);
+    assert.equal(intermediate.changes, undefined, "tracking remains open at an intermediate boundary");
+    client.send({ type: "list_sessions" });
+    await waitFor(() => client.ofType("sessions").length === 1, 5_000, "continuation live listing");
+    assert.equal(client.ofType("sessions")[0].sessions[0].busy, true);
+    await waitFor(() => client.ofType("agent_settled").some((frame) => frame.continuationPending !== true), 5_000, "terminal boundary");
+    const terminal = client.ofType("agent_settled").find((frame) => frame.continuationPending !== true);
+    assert.ok(terminal.changes?.files.some((file) => file.path === "tracked.txt"), "tracking finalizes once at terminal settlement");
     client.socket.destroy();
   } finally {
     await daemon.cleanup();
@@ -1071,11 +1103,12 @@ test("attach without a sessionId creates a fresh session keyed by its native id"
     await client.connected();
     await client.hello();
 
-    client.send({ type: "attach", cwd: daemon.daemonDir });
+    client.send({ type: "attach", cwd: daemon.daemonDir, clientDraftId: "new:renderer-draft" });
     await waitFor(() => client.ofType("attached").length === 1, 5_000, "attached");
     const attached = client.ofType("attached")[0];
     assert.equal(attached.sessionId, "fake-session-1", "the attached frame carries the engine's native id");
     assert.equal(attached.nativeSessionId, "fake-session-1");
+    assert.equal(attached.clientDraftId, "new:renderer-draft", "the creating renderer receives its exact draft correlation");
 
     // The adopted id routes commands to the fresh child.
     client.send({ id: "s", type: "get_state", sessionId: attached.sessionId });
@@ -1389,7 +1422,7 @@ test("set_project_trust writes and clears trust decisions", async () => {
 });
 
 test("daemon owns tracking consent, checkpoints, net changes, and rewind", async () => {
-  const daemon = await startDaemon({ idleGraceMs: 5_000, turnMs: 500 });
+  const daemon = await startDaemon({ idleGraceMs: 5_000, turnMs: 500, persistTurns: true });
   try {
     const workspace = join(daemon.daemonDir, "tracked-workspace");
     await mkdir(workspace, { recursive: true });
@@ -1416,22 +1449,31 @@ test("daemon owns tracking consent, checkpoints, net changes, and rewind", async
     assert.equal(response("list1").data.checkpoints.length, 1);
     const firstCheckpoint = response("list1").data.checkpoints[0];
     assert.equal(typeof firstCheckpoint.userMessageId, "string");
+    assert.match(firstCheckpoint.userMessageId, /^user-/, JSON.stringify(firstCheckpoint));
 
     client.send({ id: "p2", type: "prompt", message: "write-tracked second", sessionId: "s1" });
     await waitFor(() => client.ofType("agent_start").length === 2, 5_000, "second tracked start");
     client.send({ id: "busy-preview", type: "prepare_rewind", sessionId: "s1", checkpointId: firstCheckpoint.id });
-    await waitFor(() => response("busy-preview"), 5_000, "busy rewind refusal");
-    assert.equal(response("busy-preview").success, false);
-    assert.match(response("busy-preview").error, /working/i);
-    await waitFor(() => client.ofType("agent_settled").length === 2, 10_000, "second tracked settle");
-    assert.ok(client.ofType("agent_settled")[1].changes.files.some((file) => file.path === "tracked.txt" && file.status === "modified"));
+    await waitFor(() => response("busy-preview"), 5_000, "busy rewind blockers");
+    assert.equal(response("busy-preview").success, true);
+    assert.equal(response("busy-preview").data.status, "blocked");
+    assert.equal(response("busy-preview").data.blockers.length, 1);
+    assert.equal(response("busy-preview").data.blockers[0].sessionId, "s1");
+    assert.equal(response("busy-preview").data.blockers[0].canStop, true);
 
-    client.send({ id: "preview", type: "prepare_rewind", sessionId: "s1", checkpointId: firstCheckpoint.id });
-    await waitFor(() => response("preview"), 10_000, "rewind preview");
-    assert.equal(response("preview").success, true);
-    client.send({ id: "rewind", type: "execute_rewind", sessionId: "s1", operationToken: response("preview").data.operationToken, confirm: true, confirmAffected: true });
+    client.send({ id: "forced-preview", type: "force_prepare_rewind", sessionId: "s1", forceToken: response("busy-preview").data.forceToken, confirm: true });
+    await waitFor(() => response("forced-preview"), 10_000, "forced rewind preview");
+    assert.equal(response("forced-preview").success, true);
+    assert.equal(response("forced-preview").data.status, "ready");
+    await waitFor(() => client.ofType("agent_settled").length === 2, 10_000, "forced stop settlement");
+
+    client.send({ id: "rewind", type: "execute_rewind", sessionId: "s1", operationToken: response("forced-preview").data.operationToken, confirm: true, confirmAffected: true });
     await waitFor(() => response("rewind"), 10_000, "rewind execution");
-    assert.equal(response("rewind").success, true);
+    assert.equal(response("rewind").success, true, JSON.stringify(response("rewind")));
+    assert.equal(response("rewind").data.previousSessionId, "s1");
+    assert.notEqual(response("rewind").data.sessionId, "s1");
+    assert.ok(response("rewind").data.removed >= 1, "selected checkpoint is removed inclusively");
+    assert.ok(response("rewind").data.clearedChangeSets >= 1, "session tracking history is cleared");
     assert.equal(existsSync(join(workspace, "tracked.txt")), false, "rewind restored the pre-prompt checkpoint");
     client.socket.destroy();
   } finally {

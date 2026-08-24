@@ -127,6 +127,14 @@ export interface SessionInfoEntry extends SessionEntryBase {
 	name?: string;
 }
 
+/** Authoritative end of one parent AgentSession run; never enters model context. */
+export interface RunBoundaryEntry extends SessionEntryBase {
+	type: "run_boundary";
+	runId: string;
+	outcome: { kind: "success" | "aborted" | "error" | "compaction-error"; errorMessage?: string };
+	continuationPending: boolean;
+}
+
 /**
  * Custom message entry for extensions to inject messages into LLM context.
  * Use customType to identify your extension's entries.
@@ -156,6 +164,7 @@ export type SessionEntry =
 	| BranchSummaryEntry
 	| CustomEntry
 	| CustomMessageEntry
+	| RunBoundaryEntry
 	| LabelEntry
 	| SessionInfoEntry;
 
@@ -1210,6 +1219,24 @@ export class SessionManager {
 			content,
 			display,
 			details,
+			id: generateId(this.byId),
+			parentId: this.leafId,
+			timestamp: new Date().toISOString(),
+		};
+		this._appendEntry(entry);
+		return entry.id;
+	}
+
+	appendRunBoundary(
+		runId: string,
+		outcome: RunBoundaryEntry["outcome"],
+		continuationPending: boolean,
+	): string {
+		const entry: RunBoundaryEntry = {
+			type: "run_boundary",
+			runId,
+			outcome,
+			continuationPending,
 			id: generateId(this.byId),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),

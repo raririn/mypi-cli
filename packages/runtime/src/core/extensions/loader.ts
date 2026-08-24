@@ -184,6 +184,7 @@ export function createExtensionRuntime(): ExtensionRuntime {
 		sendMessage: notInitialized,
 		sendUserMessage: notInitialized,
 		requestBuiltInContinuation: notInitialized,
+		publishInternalMessage: notInitialized,
 		appendEntry: notInitialized,
 		setSessionName: notInitialized,
 		getSessionName: notInitialized,
@@ -329,6 +330,16 @@ function createExtensionAPI(
 				throw new Error("Lifecycle-owned continuations are restricted to sealed session product modules.");
 			}
 			runtime.requestBuiltInContinuation(message, options);
+		},
+
+		publishInternalMessage(
+			message: Pick<CustomMessage<unknown>, "customType" | "content" | "display" | "details">,
+		): void {
+			runtime.assertActive();
+			if (extension.sourceInfo.productClass !== "session") {
+				throw new Error("Internal transcript messages are restricted to sealed session product modules.");
+			}
+			runtime.publishInternalMessage(message);
 		},
 
 		appendEntry(customType: string, data?: unknown): void {

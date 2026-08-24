@@ -2887,10 +2887,6 @@ export class InteractiveMode {
 			this.showWarning("Rewind is available only for daemon-hosted sessions.");
 			return;
 		}
-		if (!this.session.isIdle) {
-			this.showWarning("Wait for the active task to finish before rewinding.");
-			return;
-		}
 		try {
 			const listed = await actions.listCheckpoints();
 			if (listed.checkpoints.length === 0) {
@@ -2901,7 +2897,20 @@ export class InteractiveMode {
 			const choice = await this.showExtensionSelector("Rewind to checkpoint", labels);
 			const index = choice === undefined ? -1 : labels.indexOf(choice);
 			if (index < 0) return;
-			const preview = await actions.prepareRewind(listed.checkpoints[index]!.id);
+			let preview = await actions.prepareRewind(listed.checkpoints[index]!.id);
+			if (preview.status === "blocked") {
+				const blockerLines = preview.blockers.map((blocker) => {
+					const process = blocker.pid ? ` (pid ${blocker.pid})` : "";
+					const surfaces = blocker.surfaces?.length ? ` via ${blocker.surfaces.join(", ")}` : "";
+					return `• ${blocker.sessionId}${process}${surfaces}: ${blocker.reason}`;
+				});
+				const confirmed = await this.showExtensionConfirm(
+					"Stop blocking work and rewind?",
+					`${blockerLines.join("\n")}\n\nForce rewind will abort these runs, cancel their subagents, and wait for them to settle before showing the file preview.`,
+				);
+				if (!confirmed) return;
+				preview = await actions.forcePrepareRewind(preview.forceToken);
+			}
 			const opaque = preview.files.filter((file) => file.opaque).length;
 			const summary = [
 				`${preview.files.length} tracked file${preview.files.length === 1 ? "" : "s"} will change.`,
@@ -2917,13 +2926,7 @@ export class InteractiveMode {
 				if (!confirmed) return;
 			}
 			const result = await actions.executeRewind(preview.operationToken, preview.affectedOtherTasks > 0);
-			// Truncate the session transcript to before the checkpoint's user
-			// message so the agent does not see post-rewind conversation history.
-			const checkpointEntryId = listed.checkpoints[index]!.userMessageId;
-			if (checkpointEntryId) {
-				try { await this.runtimeHost.fork(checkpointEntryId, { position: "before" }); } catch { /* transcript truncation is best-effort */ }
-			}
-			this.showStatus(`Rewound workspace; removed ${result.removed} later checkpoint${result.removed === 1 ? "" : "s"}.`);
+			this.showStatus(`Rewound workspace and transcript; removed ${result.removed} checkpoint${result.removed === 1 ? "" : "s"} and cleared ${result.clearedChangeSets} tracked change set${result.clearedChangeSets === 1 ? "" : "s"}.`);
 		} catch (error) {
 			this.showError(`Rewind failed: ${error instanceof Error ? error.message : String(error)}`);
 		}

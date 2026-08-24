@@ -82,6 +82,49 @@ test("settled results wait for the parent settlement arbiter and then wake exact
 	assert.equal((manager as any).deliveryQueue.length, 0);
 });
 
+test("an active parent consumes ready results through context without waiting for settlement (BUG-115)", () => {
+	const published: any[] = [];
+	const manager = new SubagentManager({
+		sendMessage() {},
+		publishInternalMessage(message: any) { published.push(message); },
+	} as unknown as ExtensionAPI);
+	const child = record("explore");
+	const settled = grant("completed", { answer: "ready now", delivery: { state: "pending" } });
+	(manager as any).deliveryQueue.push((manager as any).resultFrom(child, settled));
+	assert.match(manager.followupBlockReason(child.childId) ?? "", /unconsumed result/u);
+	const projected = manager.pendingResultMessage();
+	assert.ok(projected);
+	assert.match(projected.content, /ready now/u);
+	assert.equal((manager as any).deliveryQueue.length, 1, "delivery stays pending until a provider response proves acceptance");
+	manager.confirmContextProjection();
+	assert.equal((manager as any).deliveryQueue.length, 0);
+	assert.equal(published.length, 1);
+	assert.equal(published[0]!.customType, "mypi-subagent-results");
+	assert.equal(published[0]!.details.delivery, "active-context-confirmed");
+	assert.equal(manager.followupBlockReason(child.childId), undefined);
+});
+
+test("results owned by a paused Goal persist without waking another provider run (BUG-115)", () => {
+	const appended: any[] = [];
+	const wakes: any[] = [];
+	const manager = new SubagentManager({
+		sendMessage: (message: any, options: any) => appended.push({ message, options }),
+		requestContinuation: (message: any, options: any) => wakes.push({ message, options }),
+	} as unknown as ExtensionAPI);
+	(manager as any).ctx = {
+		isIdle: () => true,
+		sessionManager: { getBranch: () => [{ type: "custom", customType: "mypi-goal", data: { workflow: "goal", status: "paused", goalId: "goal-1" } }] },
+	};
+	const child = record("work");
+	const settled = grant("completed", { answer: "finished while paused", ownerGoalId: "goal-1", delivery: { state: "pending" } });
+	(manager as any).deliveryQueue.push((manager as any).resultFrom(child, settled));
+	(manager as any).flushDelivery();
+	assert.equal(wakes.length, 0);
+	assert.equal(appended.length, 1);
+	assert.deepEqual(appended[0]!.options, { triggerTurn: false });
+	assert.equal(appended[0]!.message.details.delivery, "deferred-no-wake");
+});
+
 test("failed or unconfirmed delivery stays durably pending and retries at the next settle boundary (BUG-099)", async () => {
 	let failing = true;
 	const sends: any[] = [];
@@ -341,7 +384,7 @@ test("/advisor and /reviewer free text dispatches the matching consultation flow
 	assert.match(notices.at(-1)!.message, /^\/reviewer failed: Subagents require a persisted parent session\./u);
 });
 
-test("settle guidance appears only after consecutive status polls with live children (BUG-097 refinement)", () => {
+test("unchanged status polling requests a clean yield even when other tools interleave (BUG-115)", () => {
 	const pi = { sendMessage() {} } as unknown as ExtensionAPI;
 	const manager = new SubagentManager(pi);
 	(manager as any).active.set("sa_live", {});
@@ -353,19 +396,16 @@ test("settle guidance appears only after consecutive status polls with live chil
 	manager.recordToolCall("subagent_status");
 	assert.equal(manager.pollGuidance(), undefined, "one or two polls draw no instruction");
 	manager.recordToolCall("subagent_status");
-	assert.match(manager.pollGuidance() ?? "", /settle now/u);
-	assert.match(manager.pollGuidance() ?? "", /3 times in a row/u);
-	assert.match(manager.pollGuidance() ?? "", /otherwise continue independent work/u);
+	assert.match(manager.pollGuidance() ?? "", /ending the parent tool loop cleanly/u);
+	assert.match(manager.pollGuidance() ?? "", /3 times/u);
 
-	// Any other tool call resets the streak; guidance is poll-conditional, not standing.
+	// UI/independent tools cannot evade the lifecycle churn audit.
 	manager.recordToolCall("read");
-	assert.equal(manager.pollGuidance(), undefined);
+	assert.match(manager.pollGuidance() ?? "", /ending the parent tool loop cleanly/u);
 
-	// Without live children there is nothing to wait for.
-	manager.recordToolCall("subagent_status");
-	manager.recordToolCall("subagent_status");
-	manager.recordToolCall("subagent_status");
+	// A real lifecycle change resets the audit.
 	(manager as any).active.clear();
+	(manager as any).publishWaitState();
 	assert.equal(manager.pollGuidance(), undefined);
 });
 

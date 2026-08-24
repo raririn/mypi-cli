@@ -44,6 +44,8 @@ export interface SubagentGrantRecord {
 	usage?: SubagentUsage;
 	pid?: number;
 	stderrTail?: string;
+	/** Goal active when this grant was admitted; absent for ordinary session work. */
+	ownerGoalId?: string;
 	/** Present only for grants written by the durable result-inbox runtime. */
 	delivery?: { state: "pending" | "delivered" };
 }
@@ -257,6 +259,7 @@ function isChild(value: unknown, parentSessionId: string): value is SubagentChil
 		&& child.grants.every((grant) => isOpaqueSubagentId(grant?.grantId, "sg")
 			&& isOpaqueSubagentId(grant?.batchId, "sb") && typeof grant.prompt === "string"
 			&& grant.prompt.length <= 16_384 && typeof grant.status === "string"
+			&& (grant.ownerGoalId === undefined || typeof grant.ownerGoalId === "string")
 			&& (grant.delivery === undefined
 				|| grant.delivery?.state === "pending"
 				|| grant.delivery?.state === "delivered"));

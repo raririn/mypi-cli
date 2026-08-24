@@ -193,6 +193,8 @@ test("last-client detach cancels an RPC grant without delivery and follow-up rev
     assert.equal(deliveries.length, 0, "a dead parent is never auto-woken for cancellation delivery");
 
     manager.markAttached();
+    await waitFor(() => deliveries.some((entry) => String(entry.message.content).includes("parent_detached")));
+    manager.confirmDelivery(deliveries.at(-1).message.details);
     await manager.followup(childId, "Return revived-ok.", ctx);
     await waitFor(() => deliveries.some((entry) => String(entry.message.content).includes("revived-ok")), 20_000);
     assert.equal(manager.status([childId])[0].status, "completed");
@@ -376,6 +378,7 @@ test("advisor uses a caller-model neutral brief and evidence ledger without forw
     assert.match(await readFile(join(childDir, evidenceFile), "utf8"), /Preserve sessions/);
     await assert.rejects(manager.followup(childId, "Reconcile the advice.", ctx), /advisor_followup/);
     await assert.rejects(manager.reviewerFollowup("Review it.", ctx), /requires a previous ask_for_review/);
+    manager.confirmDelivery(deliveries.at(-1).message.details);
     await manager.advisorFollowup("Reconcile the advice against the preserved-session evidence.", ctx);
     await waitFor(() => deliveries.some((entry) => String(entry.message.content).includes("advisor-followup-ok")), 20_000);
     assert.equal(requestBodies.length, 5);

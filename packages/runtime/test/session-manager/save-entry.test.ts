@@ -53,3 +53,19 @@ describe("SessionManager.saveCustomEntry", () => {
 		expect(ctx.messages).toHaveLength(2); // only message entries
 	});
 });
+
+describe("SessionManager.appendRunBoundary", () => {
+	it("persists authoritative run settlement without entering model context", () => {
+		const session = SessionManager.inMemory();
+		session.appendMessage({ role: "user", content: "hello", timestamp: 1 });
+		const boundaryId = session.appendRunBoundary("run-1", { kind: "success" }, true);
+		const boundary = session.getEntry(boundaryId);
+		expect(boundary).toMatchObject({
+			type: "run_boundary",
+			runId: "run-1",
+			outcome: { kind: "success" },
+			continuationPending: true,
+		});
+		expect(session.buildSessionContext().messages).toEqual([{ role: "user", content: "hello", timestamp: 1 }]);
+	});
+});

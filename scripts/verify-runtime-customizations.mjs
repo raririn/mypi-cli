@@ -133,16 +133,34 @@ for (const fragment of [
   "advisor_evidence",
   "neutral_brief",
   "arrivedAfterMutation",
+  "pendingResultMessage",
+  "followupBlockReason",
+  "active-context-confirmed",
 ]) {
   if (!subagents.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing async subagent behavior (${fragment}).`);
   }
 }
+const hooks = await readFile(join(packageRoot, "dist", "product", "hooks.js"), "utf8");
+for (const fragment of ['registerCommand("hooks"', "loadMyPiHooksConfig", "runMyPiHook", "Agent hook tools are temporarily disabled"]) {
+  if (!hooks.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} is missing user hook policy behavior (${fragment}).`);
+  }
+}
+for (const forbidden of ['registerTool({ name: "schedule_prompt"', 'registerTool({ name: "watch_files"', "sendUserMessage("]) {
+  if (hooks.includes(forbidden)) {
+    throw new Error(`Installed Pi ${expectedVersion} still exposes disabled model agent-hook behavior (${forbidden}).`);
+  }
+}
 const continuationSession = await readFile(join(packageRoot, "dist", "core", "agent-session.js"), "utf8");
-for (const fragment of ["_pendingSessionContinuations", "_takeSessionContinuations", "continuationPending", "requestBuiltInContinuation"]) {
+for (const fragment of ["_pendingSessionContinuations", "_takeSessionContinuations", "continuationPending", "requestBuiltInContinuation", "publishInternalMessage", "appendRunBoundary"]) {
   if (!continuationSession.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing built-in session continuation arbitration (${fragment}).`);
   }
+}
+const runBoundarySessionManager = await readFile(join(packageRoot, "dist", "core", "session-manager.js"), "utf8");
+for (const fragment of ["appendRunBoundary", 'type: "run_boundary"']) {
+  if (!runBoundarySessionManager.includes(fragment)) throw new Error(`Installed Pi ${expectedVersion} is missing durable run-boundary behavior (${fragment}).`);
 }
 const reviewPolicy = await readFile(join(packageRoot, "dist", "product", "review-policy.js"), "utf8");
 for (const fragment of [".mypi", "REVIEW.md", "REVIEW_POLICY_INVALID", "MAX_REVIEW_POLICY_BYTES"]) {

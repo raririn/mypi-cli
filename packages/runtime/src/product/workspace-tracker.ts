@@ -558,26 +558,39 @@ export class WorkspaceTracker {
 		});
 	}
 
-	async rewind(input: { sessionId: string; checkpointId: string; expectedSequence: number; expectedGeneration: number }): Promise<{ removed: number; affectedOtherTasks: number; generation: number }> {
+	async rewind(
+		input: { sessionId: string; checkpointId: string; expectedSequence: number; expectedGeneration: number },
+		afterMaterialize?: () => Promise<void>,
+	): Promise<{ removed: number; affectedOtherTasks: number; generation: number; clearedChangeSets: number }> {
 		return this.locked(async (state) => {
 			if (state.sequence !== input.expectedSequence || state.generation !== input.expectedGeneration) throw new Error("Tracker changed after preview; preview rewind again.");
 			const checkpoint = state.checkpoints.find((item) => item.id === input.checkpointId && item.sessionId === input.sessionId);
 			if (!checkpoint) throw new Error("Checkpoint is unavailable for this session.");
 			const later = state.checkpoints.filter((item) => item.sequence > checkpoint.sequence);
+			const ownedToRemove = state.checkpoints.filter((item) => item.sessionId === input.sessionId && item.sequence >= checkpoint.sequence);
 			const affectedSessions = new Set(later.filter((item) => item.sessionId !== input.sessionId).map((item) => item.sessionId));
-			await this.capture(); // synchronize the private index with current eligible text paths
+			const before = await this.capture();
 			await execGit(this.gitDirectory, this.root, ["read-tree", "--reset", "-u", `${checkpoint.snapshot}^{tree}`]);
-			for (const item of later.filter((entry) => entry.sessionId === input.sessionId)) {
-				state.checkpoints = state.checkpoints.filter((entry) => entry.id !== item.id);
+			try {
+				await afterMaterialize?.();
+			} catch (error) {
+				await execGit(this.gitDirectory, this.root, ["read-tree", "--reset", "-u", `${before.snapshot}^{tree}`]).catch(() => undefined);
+				throw error;
+			}
+			for (const item of ownedToRemove) {
 				state.tombstones.push({ checkpointId: item.id, sessionId: item.sessionId, sequence: item.sequence, removedAt: new Date().toISOString() });
 				await execGit(this.gitDirectory, this.root, ["update-ref", "-d", `refs/mypi/checkpoints/${item.id}`]).catch(() => undefined);
 			}
+			state.checkpoints = state.checkpoints.filter((entry) => !ownedToRemove.some((removed) => removed.id === entry.id));
 			state.checkpoints = state.checkpoints.map((item) => item.sequence > checkpoint.sequence && item.sessionId !== input.sessionId ? { ...item, affectedByRewind: true } : item);
+			const removedChangeSets = state.changeSets.filter((item) => item.sessionId === input.sessionId);
+			state.changeSets = state.changeSets.filter((item) => item.sessionId !== input.sessionId);
+			await Promise.all(removedChangeSets.map((item) => rm(this.changeSetPath(item.id), { force: true })));
 			state.generation += 1;
 			state.sequence += 1;
 			state.currentSnapshot = checkpoint.snapshot;
 			await atomicWrite(this.statePath, state);
-			return { removed: later.filter((item) => item.sessionId === input.sessionId).length, affectedOtherTasks: affectedSessions.size, generation: state.generation };
+			return { removed: ownedToRemove.length, affectedOtherTasks: affectedSessions.size, generation: state.generation, clearedChangeSets: removedChangeSets.length };
 		});
 	}
 

@@ -189,6 +189,7 @@ interface DeliveredResult {
 	stale?: boolean;
 	arrivedAfterMutation?: boolean;
 	unavailablePhase?: ConsultationFailurePhase;
+	ownerGoalId?: string;
 }
 
 type ConsultationStartResult =
@@ -214,8 +215,10 @@ export class SubagentManager {
 	private runningWork?: string;
 	private deliveryQueue: DeliveredResult[] = [];
 	private readonly inFlightDeliveries = new Map<string, DeliveredResult[]>();
+	private readonly contextProjectedGrantIds = new Set<string>();
 	private deliveryRetryStrikes = 0;
-	private consecutiveStatusPolls = 0;
+	private statusPollsWithoutLifecycleChange = 0;
+	private waitStateFingerprint = "";
 	private deliveryTimer?: ReturnType<typeof setTimeout>;
 	private recent: DeliveredResult[] = [];
 	private shuttingDown = false;
@@ -267,6 +270,11 @@ export class SubagentManager {
 	private publishWaitState(): void {
 		const active = this.active.size;
 		const pending = this.pendingDeliveryCount();
+		const fingerprint = `${active}:${pending}`;
+		if (fingerprint !== this.waitStateFingerprint) {
+			this.waitStateFingerprint = fingerprint;
+			this.statusPollsWithoutLifecycleChange = 0;
+		}
 		this.pi.events?.emit?.(SUBAGENT_WAIT_STATE_EVENT, { active, pending });
 		this.pi.setBackgroundWait?.(active > 0 || pending > 0);
 	}
@@ -293,6 +301,7 @@ export class SubagentManager {
 		const results = this.inFlightDeliveries.get(nonce);
 		if (!results) return;
 		this.inFlightDeliveries.delete(nonce);
+		for (const result of results) this.contextProjectedGrantIds.delete(result.grantId);
 		this.deliveryRetryStrikes = 0;
 		this.recent = this.recent.filter((recent) => !results.some((result) => result.grantId === recent.grantId));
 		this.publishWaitState();
@@ -323,6 +332,30 @@ export class SubagentManager {
 			record.updatedAt = new Date().toISOString();
 			await this.store.update(record);
 		}
+	}
+
+	hasActiveChild(childId: string): boolean {
+		return this.active.has(childId);
+	}
+
+	hasPendingResultForChild(childId: string): boolean {
+		return this.deliveryQueue.some((result) => result.childId === childId)
+			|| [...this.inFlightDeliveries.values()].some((results) => results.some((result) => result.childId === childId));
+	}
+
+	followupBlockReason(childId: string): string | undefined {
+		if (this.hasActiveChild(childId)) {
+			return "The child is still active. No continuation was started. This tool creates new child work and never retrieves a result; settle the parent run and wait for automatic delivery.";
+		}
+		if (this.hasPendingResultForChild(childId)) {
+			return "This child has an unconsumed result awaiting delivery. No continuation was started. Consume the delivered result before creating any new child work.";
+		}
+		return undefined;
+	}
+
+	followupBlockReasonForRole(role: "advisor" | "review"): string | undefined {
+		const record = this.latestRoleRecord(role);
+		return record ? this.followupBlockReason(record.childId) : undefined;
 	}
 
 	/** Persist one typed, parent-accountable usage contribution per settled grant. */
@@ -510,6 +543,7 @@ export class SubagentManager {
 		this.assertRoleAllowed(role, ctx);
 		const model = await this.resolveModel(role, ctx);
 		const batchId = createSubagentBatchId();
+		const ownerGoalId = activeGoalId(ctx.sessionManager.getBranch());
 		if (role === "advisor") {
 			const controller = new AbortController();
 			const brief = prepareAdvisorBrief(ctx, this.effectiveParentSystemPrompt, controller.signal);
@@ -522,7 +556,7 @@ export class SubagentManager {
 			const childId = createSubagentChildId();
 			const grantId = createSubagentGrantId();
 			const now = new Date().toISOString();
-			const grant: SubagentGrantRecord = { grantId, batchId, prompt: job.task.trim(), status: "queued", createdAt: now };
+			const grant: SubagentGrantRecord = { grantId, batchId, prompt: job.task.trim(), status: "queued", createdAt: now, ...(ownerGoalId ? { ownerGoalId } : {}) };
 			const record: SubagentChildRecord = {
 				version: 1,
 				childId,
@@ -593,7 +627,8 @@ export class SubagentManager {
 
 	private async followupRecord(record: SubagentChildRecord, prompt: string, ctx: ExtensionContext): Promise<unknown> {
 		const childId = record.childId;
-		if (this.active.has(childId)) throw new Error(`${record.role === "advisor" ? "Advisor" : record.role === "review" ? "Reviewer" : "Subagent"} conversation already active. Its result will be delivered automatically.`);
+		const blocked = this.followupBlockReason(childId);
+		if (blocked) throw new Error(blocked);
 		this.assertRoleAllowed(record.role, ctx);
 		await assertReusableSession(this.store!.childSessionPath(childId));
 		const batchId = createSubagentBatchId();
@@ -604,12 +639,14 @@ export class SubagentManager {
 			this.advisorBriefs.set(batchId, brief);
 			this.advisorBriefControllers.set(batchId, controller);
 		}
+		const ownerGoalId = activeGoalId(ctx.sessionManager.getBranch());
 		const grant: SubagentGrantRecord = {
 			grantId: createSubagentGrantId(),
 			batchId,
 			prompt: prompt.trim(),
 			status: "queued",
 			createdAt: new Date().toISOString(),
+			...(ownerGoalId ? { ownerGoalId } : {}),
 		};
 		record.task = prompt.trim();
 		record.updatedAt = grant.createdAt;
@@ -654,16 +691,15 @@ export class SubagentManager {
 		await Promise.all([...this.active.values()].map((running) => this.cancelRunning(running, reason)));
 	}
 
-	/** Track consecutive status polls; any other tool call resets the streak. */
+	/** Track status polls until child/result lifecycle changes, even if UI tools interleave. */
 	recordToolCall(toolName: string): void {
-		if (toolName === SUBAGENT_STATUS_TOOL) this.consecutiveStatusPolls += 1;
-		else this.consecutiveStatusPolls = 0;
+		if (toolName === SUBAGENT_STATUS_TOOL) this.statusPollsWithoutLifecycleChange += 1;
 	}
 
-	/** After several consecutive polls with live children, name the wait explicitly. */
+	/** After repeated polls with unchanged live children, end the parent tool loop cleanly. */
 	pollGuidance(): string | undefined {
-		if (this.consecutiveStatusPolls < 3 || !this.hasActiveChildren()) return undefined;
-		return `You have checked subagent status ${this.consecutiveStatusPolls} times in a row. Polling does not speed the children up: results are delivered automatically and wake you at a safe boundary. If this wait is blocking your remaining work, settle now; otherwise continue independent work.`;
+		if (this.statusPollsWithoutLifecycleChange < 3 || !this.hasActiveChildren()) return undefined;
+		return `You have checked unchanged subagent status ${this.statusPollsWithoutLifecycleChange} times. This tool result is ending the parent tool loop cleanly so children can finish; their results will be delivered automatically.`;
 	}
 
 	status(childIds?: readonly string[]): unknown[] {
@@ -685,6 +721,7 @@ export class SubagentManager {
 					lastEventAt: grant.lastEventAt,
 					settledAt: grant.settledAt,
 					revivable: !this.active.has(child.childId),
+					resultPending: this.hasPendingResultForChild(child.childId),
 				};
 			});
 	}
@@ -699,7 +736,7 @@ export class SubagentManager {
 			return `- ${record.childId} [${record.role}/${grant.status}${stale}, ${elapsed}s] ${quote(record.label, 80)} task=${quote(record.task, 180)}${lease}`;
 		});
 		const recentLines = this.recent.slice(-8).map((result) =>
-			`- ${result.childId} [${result.status}${result.reason ? `: ${result.reason}` : ""}] ${quote(result.label, 120)} Follow-up can revive retained history.`,
+			`- ${result.childId}/${result.grantId} [${result.status}${result.reason ? `: ${result.reason}` : ""}] ${quote(result.label, 120)} Result pending automatic delivery. Continuation tools create new work and never retrieve output.`,
 		);
 		if (!activeLines.length && !recentLines.length) return undefined;
 		const snapshot = [
@@ -708,6 +745,65 @@ export class SubagentManager {
 			...(recentLines.length ? ["Recent subagent events:", ...recentLines] : []),
 		].join("\n").slice(0, 8_000);
 		return snapshot;
+	}
+
+	private readyDeliveryResults(): DeliveredResult[] {
+		const readyBatches = new Set(
+			this.deliveryQueue
+				.map((result) => result.batchId)
+				.filter((batchId) => ![...this.active.values()].some((running) => running.grant.batchId === batchId)),
+		);
+		return this.deliveryQueue.filter((result) => readyBatches.has(result.batchId));
+	}
+
+	pendingResultMessage(): {
+		customType: string;
+		content: string;
+		display: false;
+		details: { version: 1; delivery: "active-context"; results: DeliveredResult[] };
+	} | undefined {
+		if (this.inFlightDeliveries.size > 0) return undefined;
+		const results = this.readyDeliveryResults();
+		if (results.length === 0) return undefined;
+		for (const result of results) this.contextProjectedGrantIds.add(result.grantId);
+		return {
+			customType: "mypi-subagent-results",
+			content: formatDelivery(results).slice(0, MAX_BATCH_DELIVERY_CHARS),
+			display: false,
+			details: { version: 1, delivery: "active-context", results },
+		};
+	}
+
+	confirmContextProjection(): void {
+		if (this.contextProjectedGrantIds.size === 0) return;
+		const consumed = this.deliveryQueue.filter((result) => this.contextProjectedGrantIds.has(result.grantId));
+		if (consumed.length === 0) {
+			this.contextProjectedGrantIds.clear();
+			return;
+		}
+		const privileged = this.pi as ExtensionAPI & Partial<Pick<BuiltInSessionAPI, "publishInternalMessage">>;
+		if (!privileged.publishInternalMessage) return;
+		try {
+			privileged.publishInternalMessage({
+				customType: "mypi-subagent-results",
+				content: formatDelivery(consumed).slice(0, MAX_BATCH_DELIVERY_CHARS),
+				display: true,
+				details: { version: 1, delivery: "active-context-confirmed", results: consumed },
+			});
+		} catch {
+			// Persistence/broadcast is the acknowledgement boundary. Leave every
+			// result pending so the next provider context can retry it exactly once.
+			return;
+		}
+		this.deliveryQueue = this.deliveryQueue.filter((result) => !this.contextProjectedGrantIds.has(result.grantId));
+		this.contextProjectedGrantIds.clear();
+		this.deliveryRetryStrikes = 0;
+		this.recent = this.recent.filter((recent) => !consumed.some((result) => result.grantId === recent.grantId));
+		this.publishWaitState();
+		const timer = setTimeout(() => {
+			void this.markResultsDelivered(consumed).catch(() => undefined);
+		}, 0);
+		timer.unref?.();
 	}
 
 	hasWorkLease(): boolean {
@@ -1011,6 +1107,7 @@ export class SubagentManager {
 			reason: grant.reason === undefined ? undefined : consultation ? sanitizeUnavailableReason(grant.reason) : grant.reason,
 			answer: grant.answer,
 			usage: grant.usage,
+			...(grant.ownerGoalId ? { ownerGoalId: grant.ownerGoalId } : {}),
 			...(unavailable ? { unavailablePhase: classifyConsultationFailure(grant.status, grant.reason) } : {}),
 		};
 	}
@@ -1039,6 +1136,31 @@ export class SubagentManager {
 			this.advisorBriefControllers.delete(batchId);
 		}
 		const text = formatDelivery(results).slice(0, MAX_BATCH_DELIVERY_CHARS);
+		const branch = (this.ctx as Partial<ExtensionContext>).sessionManager?.getBranch?.() ?? [];
+		if (!goalAllowsAutomaticResultWake(branch, results)) {
+			try {
+				this.pi.sendMessage(
+					{
+						customType: "mypi-subagent-results",
+						content: text,
+						display: true,
+						details: { version: 1, delivery: "deferred-no-wake", results },
+					},
+					{ triggerTurn: false },
+				);
+				this.recent = this.recent.filter((recent) => !results.some((result) => result.grantId === recent.grantId));
+				this.publishWaitState();
+				const timer = setTimeout(() => {
+					void this.markResultsDelivered(results).catch(() => undefined);
+				}, 0);
+				timer.unref?.();
+				return;
+			} catch {
+				this.deliveryQueue.unshift(...results);
+				this.publishWaitState();
+				return;
+			}
+		}
 		// One built-in safe-boundary delivery. Active parents never receive this in
 		// Pi's intra-run follow-up queue; notifyParentSettled releases it through the
 		// session arbiter after Goal has observed the pending-result state.
@@ -1119,19 +1241,20 @@ export default function subagentsBuiltIn(pi: BuiltInSessionAPI): void {
 	});
 	pi.on("context", (event, ctx) => {
 		manager.setContext(ctx);
-		const projection = manager.liveProjection();
-		return projection
-			? {
-				messages: [...event.messages, {
+		const statusProjection = manager.liveProjection();
+		const resultProjection = manager.pendingResultMessage();
+		const additions = [
+			...(statusProjection ? [{
 					role: "custom" as const,
 					customType: "mypi-subagent-status",
-					content: projection,
+					content: statusProjection,
 					display: false,
 					details: { version: 1 },
 					timestamp: Date.now(),
-				}],
-			}
-			: undefined;
+				}] : []),
+			...(resultProjection ? [{ role: "custom" as const, ...resultProjection, timestamp: Date.now() }] : []),
+		];
+		return additions.length > 0 ? { messages: [...event.messages, ...additions] } : undefined;
 	});
 	pi.on("agent_settled", (event) => {
 		if (event.outcome.kind === "aborted") {
@@ -1141,7 +1264,10 @@ export default function subagentsBuiltIn(pi: BuiltInSessionAPI): void {
 		manager.notifyParentSettled();
 	});
 	pi.on("message_end", (event) => {
-		const message = event.message as { role?: string; customType?: string; details?: unknown };
+		const message = event.message as { role?: string; customType?: string; details?: unknown; stopReason?: string };
+		if (message.role === "assistant" && message.stopReason !== "error" && message.stopReason !== "aborted") {
+			manager.confirmContextProjection();
+		}
 		if (message.role === "custom" && message.customType === "mypi-subagent-results") {
 			manager.confirmDelivery(message.details);
 		}
@@ -1213,7 +1339,7 @@ export default function subagentsBuiltIn(pi: BuiltInSessionAPI): void {
 			}
 			const details = consultationAdmission(result);
 			return {
-				content: [{ type: "text", text: "Advisor consultation accepted. The result will be delivered automatically and will wake you at a safe boundary; you can continue independent work meanwhile. advisor_followup continues this advisor after completion." }],
+				content: [{ type: "text", text: "Advisor consultation accepted. The result will be delivered automatically. advisor_followup creates a new grant only after that result is consumed; it never retrieves output." }],
 				details,
 			};
 		},
@@ -1243,7 +1369,7 @@ export default function subagentsBuiltIn(pi: BuiltInSessionAPI): void {
 			}
 			const details = consultationAdmission(result);
 			return {
-				content: [{ type: "text", text: "Code review accepted. The result will be delivered automatically and will wake you at a safe boundary; you can continue independent work meanwhile. reviewer_followup continues this reviewer after completion." }],
+				content: [{ type: "text", text: "Code review accepted. The result will be delivered automatically. reviewer_followup creates a new grant only after that result is consumed; it never retrieves output." }],
 				details,
 			};
 		},
@@ -1251,23 +1377,27 @@ export default function subagentsBuiltIn(pi: BuiltInSessionAPI): void {
 
 	pi.registerTool({
 		name: SUBAGENT_FOLLOWUP_TOOL,
-		label: "Follow Up Subagent",
-		description: "Continue one exact explore or work child owned by this session. Completed, failed, timed-out, owner-lost, and cancelled children can be revived. Advisor history uses advisor_followup; reviewer history uses reviewer_followup. Results are delivered automatically.",
+		label: "Continue Subagent",
+		description: "Create a new grant that continues one exact explore or work child after its prior result has been consumed. This never retrieves a result. Active children and children with unconsumed results reject without starting work. Advisor history uses advisor_followup; reviewer history uses reviewer_followup.",
 		parameters: FollowupSchema,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const blocked = manager.followupBlockReason(params.childId);
+			if (blocked) return { content: [{ type: "text" as const, text: blocked }], details: { accepted: false, childId: params.childId }, terminate: true };
 			const result = await manager.followup(params.childId, params.prompt, ctx);
-			return { content: [{ type: "text", text: "Explore/work follow-up accepted. Results will be delivered automatically and will wake you at a safe boundary; you can continue independent work meanwhile." }], details: result };
+			return { content: [{ type: "text", text: "New explore/work continuation grant accepted. Its result will be delivered automatically; this call created work and did not retrieve prior output." }], details: result };
 		},
 	});
 
 	pi.registerTool({
 		name: ADVISOR_FOLLOWUP_TOOL,
 		label: "Advisor Follow-up",
-		description: "Continue the most recent advisor conversation for clarification, evidence reconciliation, or a revised decision question. A fresh caller-model brief and evidence ledger accompany the retained advisor history. The result is delivered automatically.",
+		description: "Create a new grant continuing the most recent advisor after its prior result has been consumed. This never retrieves a result. A fresh caller-model brief and evidence ledger accompany retained history.",
 		parameters: AdvisorFollowupSchema,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const blocked = manager.followupBlockReasonForRole("advisor");
+			if (blocked) return { content: [{ type: "text" as const, text: blocked }], details: { accepted: false, role: "advisor" }, terminate: true };
 			let result: unknown;
 			try {
 				result = await manager.advisorFollowup(params.question, ctx);
@@ -1282,10 +1412,12 @@ export default function subagentsBuiltIn(pi: BuiltInSessionAPI): void {
 	pi.registerTool({
 		name: REVIEWER_FOLLOWUP_TOOL,
 		label: "Reviewer Follow-up",
-		description: "Continue the most recent reviewer conversation for finding clarification or focused review of a correction with retained review history. The reviewer receives a fresh working-tree snapshot and staleness fingerprint. The result is delivered automatically.",
+		description: "Create a new grant continuing the most recent reviewer after its prior result has been consumed. This never retrieves a result. The reviewer receives a fresh working-tree snapshot and staleness fingerprint.",
 		parameters: ReviewerFollowupSchema,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			const blocked = manager.followupBlockReasonForRole("review");
+			if (blocked) return { content: [{ type: "text" as const, text: blocked }], details: { accepted: false, role: "review" }, terminate: true };
 			let result: unknown;
 			try {
 				result = await manager.reviewerFollowup(params.request, ctx);
@@ -1319,7 +1451,7 @@ export default function subagentsBuiltIn(pi: BuiltInSessionAPI): void {
 			const result = manager.status(params.childIds);
 			const guidance = manager.pollGuidance();
 			const text = guidance ? `${JSON.stringify(result)}\n\n${guidance}` : JSON.stringify(result);
-			return { content: [{ type: "text", text }], details: result };
+			return { content: [{ type: "text", text }], details: result, ...(guidance ? { terminate: true } : {}) };
 		},
 	});
 
@@ -1519,6 +1651,36 @@ function isPlanningBranch(ctx: ExtensionContext): boolean {
 		return state?.workflow === "planning" || state?.workflow === "goal-planning";
 	}
 	return false;
+}
+
+function activeGoalId(entries: readonly unknown[]): string | undefined {
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (!entry || typeof entry !== "object") continue;
+		const candidate = entry as { type?: unknown; customType?: unknown; data?: unknown };
+		if (candidate.type !== "custom" || (candidate.customType !== "mypi-goal" && candidate.customType !== "mypi-plan-goal")) continue;
+		const state = candidate.data as { workflow?: unknown; status?: unknown; goalId?: unknown } | undefined;
+		const active = state?.workflow === "goal-planning" || state?.workflow === "planning"
+			|| state?.workflow === "goal" && state.status === "active";
+		return active && typeof state?.goalId === "string" ? state.goalId : undefined;
+	}
+	return undefined;
+}
+
+function goalAllowsAutomaticResultWake(entries: readonly unknown[], results: readonly DeliveredResult[]): boolean {
+	const ownedGoalIds = new Set(results.map((result) => result.ownerGoalId).filter((value): value is string => Boolean(value)));
+	if (ownedGoalIds.size === 0) return true;
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (!entry || typeof entry !== "object") continue;
+		const candidate = entry as { type?: unknown; customType?: unknown; data?: unknown };
+		if (candidate.type !== "custom" || (candidate.customType !== "mypi-goal" && candidate.customType !== "mypi-plan-goal")) continue;
+		const state = candidate.data as { workflow?: unknown; status?: unknown; goalId?: unknown } | undefined;
+		if (typeof state?.goalId !== "string" || !ownedGoalIds.has(state.goalId)) return true;
+		return state.workflow === "goal-planning" || state.workflow === "planning"
+			|| state.workflow === "goal" && state.status === "active";
+	}
+	return true;
 }
 
 function deliveredSubagentGrantIds(entries: readonly unknown[]): Set<string> {

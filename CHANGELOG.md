@@ -1,5 +1,39 @@
 # MyPi CLI changelog
 
+## 2.0.0-beta.4 — 2026-08-24
+
+- Temporarily removed the model-callable `schedule_prompt` and `watch_files`
+  tools after beta.3 dogfood demonstrated that repeated timer steering could
+  prevent Goal/subagent settlement and exhaust context. User `hooks.json`
+  policy hooks and the user-only `/hooks` command remain active. Agent hooks
+  will return only with a separately reviewed greedy one-trigger lifecycle and
+  typed internal-message delivery.
+- Added durable program-owned `run_boundary` entries. They record the exact
+  outcome and continuation-pending decision for every parent run without
+  entering model context; the daemon keeps tracking and busy state open until
+  the terminal boundary.
+- Active parents now consume ready subagent results directly in the next
+  provider context. Successful acceptance persists and broadcasts a sealed
+  typed internal notice without creating user input, steering/follow-up queue
+  state, or another provider run.
+- Result consumption is grant-idempotent. Continuation/follow-up tools reject
+  active children and unconsumed results, explicitly state that they create new
+  work rather than retrieve output, and terminate repeated unchanged status
+  polling cleanly. Paused Goal-owned results persist without waking a run.
+- Tightened Goal planning toward the smallest deliverable-oriented plan:
+  implementation and verification stay together, bookkeeping artifacts and
+  final-response items are forbidden unless requested, optional toolchains do
+  not become requirements, and routine inspection/delegation cannot grow into
+  separate phases.
+- Rewind is now one daemon transaction. Preparation returns typed blockers;
+  explicit force consent aborts blocking runs and subagents; execution restores
+  the workspace, forks before the selected user message, removes that checkpoint
+  inclusively, clears all session change sets, and returns the replacement
+  session identity. Workspace materialization rolls back if transcript forking
+  fails. Hosted `/rewind` uses the same blocker and consent service.
+- Fresh attach accepts a client draft correlation ID and echoes it only to the
+  creating surface, removing refresh/attach ordering from draft promotion.
+
 ## 2.0.0-beta.3 — 2026-08-23
 
 This exact protocol-2 CLI/GUI pair fixes Goal/subagent continuation ordering

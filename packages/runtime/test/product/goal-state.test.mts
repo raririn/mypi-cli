@@ -102,11 +102,16 @@ test("usage accounting includes uncached input plus output only", () => {
 
 test("Goal v3 prompt makes the structured session plan authoritative", () => {
   const planning = goalPlanningTemplateForTest();
-  assert.equal(createHash("sha256").update(planning).digest("hex"), "4155e7df7bdcc5385891b253b21fb2ca986250052a1c13e1e3bba8c4f1508362");
-  assert.match(planning, /complete dependency-ordered structured plan/i);
+  assert.equal(createHash("sha256").update(planning).digest("hex"), "9d2274068505426abdeec2878d88db7cc3dcf62d1442e0bebd9ebf3f8672b5f3");
+  assert.match(planning, /smallest complete dependency-ordered structured plan/i);
   assert.match(planning, /acceptance requirements/i);
   assert.match(planning, /direct evidence needed to verify completion/i);
-  assert.match(planning, /unresolved facts as research or inspection items/i);
+  assert.match(planning, /Do not create planning notes, specifications, reports, summaries, or other bookkeeping artifacts/i);
+  assert.match(planning, /final response is not a plan item/i);
+  assert.match(planning, /Do not add a separate verification item/i);
+  assert.match(planning, /Do not require a compiler, build system, deployment, or other toolchain that the objective does not require/i);
+  assert.match(planning, /Delegate only when independent work materially benefits the objective/i);
+  assert.match(planning, /Never create follow-up grants to retrieve results/i);
   assert.match(planning, /Do not implement during planning/i);
 
   const template = goalContinuationTemplateForTest();

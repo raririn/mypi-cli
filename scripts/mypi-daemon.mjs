@@ -31,6 +31,7 @@
 //     {type:"get_change_set", sessionId, changeSetId}
 //     {type:"list_checkpoints", sessionId}
 //     {type:"prepare_rewind", sessionId, checkpointId}
+//     {type:"force_prepare_rewind", sessionId, forceToken, confirm:true}
 //     {type:"execute_rewind", sessionId, operationToken, confirm:true, confirmAffected?}
 //     {type:"prepare_project_removal", cwd, historyMode:"archive"|"delete"}
 //     {type:"execute_project_removal", operationToken, confirm:true}
@@ -232,6 +233,7 @@ const externalOwners = new Map();
 const clients = new Set();
 const preparedFreshSessionIds = new Set();
 const rewindPreviews = new Map();
+const rewindForcePreviews = new Map();
 const projectRemovalPreviews = new Map();
 const liveChangeSets = new Map();
 const projectMaintenanceRoots = new Set();
@@ -285,7 +287,7 @@ function boundedError(error) {
 
 function publicTrackerError(error, fallback) {
   const message = error instanceof Error ? error.message : String(error);
-  if (/^(?:Checkpoint is unavailable|Tracker changed after preview)/u.test(message)) return message;
+  if (/^(?:Checkpoint is unavailable|Tracker changed after preview|Transcript truncation was cancelled|Forked session identity was unavailable|Invalid entry ID for forking|Engine (?:fork|get_state) (?:timed out|is unavailable))/u.test(message)) return message;
   return fallback;
 }
 
@@ -432,11 +434,13 @@ function startSession({ sessionId, cwd, model, sessionStart, profile, launchArgs
     sessionFile: null,
     child: null,
     clients: new Set(),
+    clientDraftIds: new Map(),
     pending: new Map(),
     structuredCorrelations: new Map(),
     abandonedEngineRequestIds: new Set(),
     outstandingUi: new Map(),
     turnActive: false,
+    compacting: false,
     exited: false,
     graceTimer: null,
     counter: 0,
@@ -478,6 +482,7 @@ function startSession({ sessionId, cwd, model, sessionStart, profile, launchArgs
 
   session.child.on("exit", (code, signal) => {
     session.exited = true;
+    rejectInternalEngineRequests(session, `Engine exited before completing an internal request (code ${code ?? "null"}, signal ${signal ?? "null"}).`);
     broadcast(session, {
       type: "session_exit",
       sessionId: session.sessionId ?? session.key,
@@ -491,6 +496,7 @@ function startSession({ sessionId, cwd, model, sessionStart, profile, launchArgs
   });
   session.child.on("error", () => {
     session.exited = true;
+    rejectInternalEngineRequests(session, "Engine failed before completing an internal request.");
     broadcast(session, { type: "session_exit", sessionId: session.sessionId ?? session.key, code: null, signal: null, lastErrorNotify: "engine spawn failed" });
     sessions.delete(session.key);
   });
@@ -506,19 +512,57 @@ function startSession({ sessionId, cwd, model, sessionStart, profile, launchArgs
 }
 
 function sendToEngine(session, frame) {
-  if (session.exited || !session.child.stdin.writable) return;
+  if (session.exited || !session.child.stdin.writable) return false;
   session.child.stdin.write(`${JSON.stringify(frame)}\n`);
+  return true;
+}
+
+function requestEngineInternal(session, command, timeoutMs = 15_000) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    if (session.exited || !session.child.stdin.writable) {
+      rejectPromise(new Error(`Engine ${command.type} is unavailable.`));
+      return;
+    }
+    const id = `__daemon_internal_${++session.counter}`;
+    const timer = setTimeout(() => {
+      session.pending.delete(id);
+      rejectPromise(new Error(`Engine ${command.type} timed out.`));
+    }, timeoutMs);
+    timer.unref?.();
+    session.pending.set(id, {
+      internal: true,
+      commandType: command.type,
+      resolve: (frame) => { clearTimeout(timer); resolvePromise(frame); },
+      reject: (error) => { clearTimeout(timer); rejectPromise(error); },
+    });
+    if (!sendToEngine(session, { ...command, id })) {
+      session.pending.delete(id);
+      clearTimeout(timer);
+      rejectPromise(new Error(`Engine ${command.type} is unavailable.`));
+    }
+  });
+}
+
+function rejectInternalEngineRequests(session, reason) {
+  for (const [id, pending] of session.pending) {
+    if (!pending.internal) continue;
+    session.pending.delete(id);
+    pending.reject(new Error(reason));
+  }
 }
 
 /** Shared attach bookkeeping: membership, grace-timer cancel, and the
  *  attached/outstanding-UI replay for already-ready engines. */
-function joinSessionAsClient(client, session) {
+function joinSessionAsClient(client, session, clientDraftId) {
   if (session.graceTimer) {
     clearTimeout(session.graceTimer);
     session.graceTimer = null;
   }
   session.clients.add(client);
   client.sessions.add(session.key);
+  if (typeof clientDraftId === "string" && clientDraftId.startsWith("new:")) {
+    session.clientDraftIds.set(client, clientDraftId);
+  }
   if (session.ready) {
     sendToClient(client, {
       type: "attached",
@@ -528,7 +572,9 @@ function joinSessionAsClient(client, session) {
       cwd: session.cwd,
       clients: session.clients.size,
       profile: session.profile ?? "coding",
+      ...(session.clientDraftIds.get(client) ? { clientDraftId: session.clientDraftIds.get(client) } : {}),
     });
+    session.clientDraftIds.delete(client);
     for (const pendingFrame of session.outstandingUi.values()) {
       sendToClient(client, pendingFrame);
     }
@@ -544,6 +590,42 @@ function sessionsWorkingInRoot(root, except) {
   return [...sessions.values()].filter((candidate) =>
     candidate !== except && !candidate.exited && candidate.turnActive && canonicalTrackingRoot(candidate.cwd) === root,
   );
+}
+
+function describeRewindBlockers(root) {
+  return [...sessions.values()]
+    .filter((candidate) => !candidate.exited && candidate.turnActive && canonicalTrackingRoot(candidate.cwd) === root)
+    .map((candidate) => ({
+      kind: "daemon-session",
+      sessionId: candidate.sessionId ?? candidate.key,
+      reason: candidate.compacting ? "A task is compacting its context." : "A task is currently working in this workspace.",
+      surfaces: [...new Set([...candidate.clients].map((attached) => attached.name).filter(Boolean))],
+      ...(Number.isInteger(candidate.child?.pid) ? { pid: candidate.child.pid } : {}),
+      canStop: true,
+      canTakeOver: false,
+    }));
+}
+
+async function waitForRewindIdle(root, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (describeRewindBlockers(root).length > 0) {
+    if (Date.now() >= deadline) throw new Error("A task did not settle after the stop request.");
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 25));
+  }
+}
+
+async function stopRewindBlockers(root) {
+  const blockers = [...sessions.values()].filter(
+    (candidate) => !candidate.exited && candidate.turnActive && canonicalTrackingRoot(candidate.cwd) === root,
+  );
+  await Promise.all(blockers.map(async (candidate) => {
+    try {
+      await requestEngineInternal(candidate, { type: "abort" }, 30_000);
+    } catch (error) {
+      throw new Error(`Could not stop session ${candidate.sessionId ?? candidate.key}: ${boundedError(error)}`);
+    }
+  }));
+  await waitForRewindIdle(root);
 }
 
 function textFromUserMessage(message) {
@@ -795,15 +877,19 @@ function handleEngineFrame(session, line) {
         session.nativeSessionId = nativeSessionId;
         session.sessionFile = frame.data.sessionFile ?? null;
         if (typeof frame.data.cwd === "string" && frame.data.cwd) session.cwd = frame.data.cwd;
-        broadcast(session, {
-          type: "attached",
-          sessionId: session.sessionId ?? session.key,
-          nativeSessionId: session.nativeSessionId,
-          sessionFile: session.sessionFile,
-          cwd: session.cwd,
-          clients: session.clients.size,
-          profile: session.profile ?? "coding",
-        });
+        for (const attachedClient of session.clients) {
+          sendToClient(attachedClient, {
+            type: "attached",
+            sessionId: session.sessionId ?? session.key,
+            nativeSessionId: session.nativeSessionId,
+            sessionFile: session.sessionFile,
+            cwd: session.cwd,
+            clients: session.clients.size,
+            profile: session.profile ?? "coding",
+            ...(session.clientDraftIds.get(attachedClient) ? { clientDraftId: session.clientDraftIds.get(attachedClient) } : {}),
+          });
+          session.clientDraftIds.delete(attachedClient);
+        }
         if (session.profile !== "chat") {
           void trackingContext(session).then((context) => {
             broadcast(session, {
@@ -867,6 +953,14 @@ function handleEngineFrame(session, line) {
     const pending = session.pending.get(frame.id);
     if (pending) {
       session.pending.delete(frame.id);
+	  if (pending.internal) {
+		if (frame.success) pending.resolve(frame);
+		else pending.reject(new Error(frame.error || `Engine ${pending.commandType} failed.`));
+		if (frame.success && IDENTITY_CHANGING_COMMANDS.has(pending.commandType)) {
+		  sendToEngine(session, { id: "__daemon_state", type: "get_state" });
+		}
+		return;
+	  }
       if (frame.success && pending.commandType === "prompt" && pending.structuredOutput) {
         session.structuredCorrelations.set(frame.id, pending);
       }
@@ -932,7 +1026,14 @@ function handleEngineFrame(session, line) {
   }
 
   if (frame?.type === "agent_start") session.turnActive = true;
+  if (frame?.type === "compaction_start") session.compacting = true;
+  if (frame?.type === "compaction_end") session.compacting = false;
   if (frame?.type === "agent_settled") {
+	if (frame.continuationPending === true) {
+	  session.turnActive = true;
+	  broadcast(session, { ...frame, sessionId: session.sessionId ?? session.key });
+	  return;
+	}
     session.turnActive = false;
     void finalizeTrackingRun(session).then((changes) => {
       broadcast(session, { ...frame, sessionId: session.sessionId ?? session.key, ...(changes ? { changes } : {}) });
@@ -1118,7 +1219,8 @@ function handleRelease(client, session, frame) {
 }
 
 function detachClientFromSession(client, session) {
-  if (!session.clients.delete(client)) return;
+	if (!session.clients.delete(client)) return;
+	session.clientDraftIds.delete(client);
   client.sessions.delete(session.key);
   let cancelledSurfacePreparation = false;
   for (const [id, pending] of session.pending) {
@@ -1745,7 +1847,7 @@ function handleClientFrame(client, frame) {
     return;
   }
 
-  if (frame?.type === "list_checkpoints" || frame?.type === "prepare_rewind" || frame?.type === "execute_rewind") {
+  if (frame?.type === "list_checkpoints" || frame?.type === "prepare_rewind" || frame?.type === "force_prepare_rewind" || frame?.type === "execute_rewind") {
     const sessionId = String(frame.sessionId ?? "");
     const session = sessions.get(sessionId);
     if (!session || !session.clients.has(client)) {
@@ -1763,15 +1865,43 @@ function handleClientFrame(client, frame) {
     if (frame.type === "prepare_rewind") {
       sendDaemonResponse(client, frame, "prepare_rewind", (async () => {
         const root = canonicalTrackingRoot(session.cwd);
-        if (session.turnActive || sessionsWorkingInRoot(root, session).length > 0) throw new Error("Rewind is blocked while a task is working in this workspace.");
+        const context = await trackingContext(session);
+        if (context.storageHealth !== "ready") throw new Error(`Rewind is unavailable because tracker status is ${context.storageHealth}.`);
+        const checkpointId = String(frame.checkpointId ?? "");
+        const blockers = describeRewindBlockers(root);
+        if (blockers.length > 0) {
+          const forceToken = randomUUID();
+          rewindForcePreviews.set(forceToken, { client, sessionId, root, checkpointId, expiresAt: Date.now() + 5 * 60_000 });
+          return { status: "blocked", forceToken, blockers };
+        }
+        let preview;
+        try { preview = await context.tracker.previewRewind(sessionId, checkpointId); }
+        catch (error) { throw new Error(publicTrackerError(error, "Tracker could not prepare rewind.")); }
+        const operationToken = randomUUID();
+        rewindPreviews.set(operationToken, { client, sessionId, root, checkpointId: preview.checkpoint.id, userMessageId: preview.checkpoint.userMessageId, sequence: preview.sequence, generation: preview.generation, affectedOtherTasks: preview.affectedOtherTasks, expiresAt: Date.now() + 5 * 60_000 });
+        return { status: "ready", operationToken, ...preview };
+      })());
+      return;
+    }
+    if (frame.type === "force_prepare_rewind") {
+      sendDaemonResponse(client, frame, "force_prepare_rewind", (async () => {
+        const forceToken = String(frame.forceToken ?? "");
+        const preparedForce = rewindForcePreviews.get(forceToken);
+        if (!preparedForce || preparedForce.client !== client || preparedForce.sessionId !== sessionId || preparedForce.expiresAt < Date.now()) {
+          throw new Error("Force-rewind preparation expired or is invalid.");
+        }
+        if (frame.confirm !== true) throw new Error("Force rewind requires confirm=true after blocker review.");
+        if (projectMaintenanceRoots.has(preparedForce.root)) throw new Error("Another project maintenance operation is active.");
+        await stopRewindBlockers(preparedForce.root);
         const context = await trackingContext(session);
         if (context.storageHealth !== "ready") throw new Error(`Rewind is unavailable because tracker status is ${context.storageHealth}.`);
         let preview;
-        try { preview = await context.tracker.previewRewind(sessionId, String(frame.checkpointId ?? "")); }
+        try { preview = await context.tracker.previewRewind(sessionId, preparedForce.checkpointId); }
         catch (error) { throw new Error(publicTrackerError(error, "Tracker could not prepare rewind.")); }
         const operationToken = randomUUID();
-        rewindPreviews.set(operationToken, { client, sessionId, root, checkpointId: preview.checkpoint.id, sequence: preview.sequence, generation: preview.generation, affectedOtherTasks: preview.affectedOtherTasks, expiresAt: Date.now() + 5 * 60_000 });
-        return { operationToken, ...preview };
+        rewindPreviews.set(operationToken, { client, sessionId, root: preparedForce.root, checkpointId: preview.checkpoint.id, userMessageId: preview.checkpoint.userMessageId, sequence: preview.sequence, generation: preview.generation, affectedOtherTasks: preview.affectedOtherTasks, expiresAt: Date.now() + 5 * 60_000 });
+        rewindForcePreviews.delete(forceToken);
+        return { status: "ready", operationToken, ...preview };
       })());
       return;
     }
@@ -1785,12 +1915,53 @@ function handleClientFrame(client, frame) {
       projectMaintenanceRoots.add(prepared.root);
       try {
         const context = await trackingContext(session);
+        const previousSessionId = sessionId;
         let result;
-        try { result = await context.tracker.rewind({ sessionId, checkpointId: prepared.checkpointId, expectedSequence: prepared.sequence, expectedGeneration: prepared.generation }); }
+        try {
+          result = await context.tracker.rewind(
+            { sessionId, checkpointId: prepared.checkpointId, expectedSequence: prepared.sequence, expectedGeneration: prepared.generation },
+            async () => {
+              const forked = await requestEngineInternal(session, { type: "fork", entryId: prepared.userMessageId, position: "before" }, 30_000);
+              if (forked.data?.cancelled === true) throw new Error("Transcript truncation was cancelled by a session hook.");
+              const state = await requestEngineInternal(session, { type: "get_state" });
+              if (!state.data || typeof state.data.sessionId !== "string") throw new Error("Forked session identity was unavailable.");
+              const nativeSessionId = state.data.sessionId;
+              rekeySession(session, nativeSessionId);
+              session.nativeSessionId = nativeSessionId;
+              session.sessionFile = state.data.sessionFile ?? null;
+              if (typeof state.data.cwd === "string" && state.data.cwd) session.cwd = state.data.cwd;
+              for (const attachedClient of session.clients) {
+                sendToClient(attachedClient, {
+                  type: "attached",
+                  sessionId: nativeSessionId,
+                  nativeSessionId,
+                  previousSessionId,
+                  sessionFile: session.sessionFile,
+                  cwd: session.cwd,
+                  clients: session.clients.size,
+                  profile: session.profile ?? "coding",
+                });
+              }
+            },
+          );
+        }
         catch (error) { throw new Error(publicTrackerError(error, "Tracker could not complete rewind.")); }
+        for (const [changeSetId, entry] of liveChangeSets) {
+          if (entry.changeSet?.sessionId === previousSessionId) liveChangeSets.delete(changeSetId);
+        }
+        session.lastChangeSet = undefined;
+        session.trackingRun = null;
+        session.trackingCapturePromise = null;
+        session.trackingEstimates = new Map();
+        session.trackingToolCalls = new Map();
+        session.trackingOmissions = [];
+        session.trackingIntersection = new Set();
+        session.trackingCaptureRaced = false;
+        session.trackingPendingPrompt = null;
         rewindPreviews.delete(String(frame.operationToken));
-        broadcastAll({ type: "workspace_rewound", project: prepared.root, sessionId, checkpointId: prepared.checkpointId, ...result });
-        return result;
+        const identity = { sessionId: session.sessionId ?? session.key, nativeSessionId: session.nativeSessionId ?? null, sessionFile: session.sessionFile };
+        broadcastAll({ type: "workspace_rewound", project: prepared.root, previousSessionId, ...identity, checkpointId: prepared.checkpointId, ...result });
+        return { ...result, ...identity, previousSessionId };
       } finally { projectMaintenanceRoots.delete(prepared.root); }
     })());
     return;
@@ -1909,7 +2080,7 @@ function handleClientFrame(client, frame) {
             launchEnv: launch.env,
             sessionArg: launch.sessionPath ?? null,
           });
-          joinSessionAsClient(client, chatSession);
+          joinSessionAsClient(client, chatSession, frame.clientDraftId);
         },
         (error) => {
           sendToClient(client, {
@@ -1930,7 +2101,7 @@ function handleClientFrame(client, frame) {
         sessionStart: normalizeSessionStart(frame.sessionStart) ?? (preparedFresh ? { reason: "new" } : null),
       });
     }
-    joinSessionAsClient(client, session);
+    joinSessionAsClient(client, session, frame.clientDraftId);
     return;
   }
 

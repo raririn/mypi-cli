@@ -43,6 +43,7 @@ import type {
 	InteractiveExtensionSurface,
 	InteractiveSessionManagerSurface,
 	InteractiveSessionSurface,
+	PreparedRewind,
 } from "../agent-session-runtime.ts";
 import type { WorkspaceChangeSet, WorkspaceCheckpoint } from "../../product/workspace-tracker.ts";
 import type { BashResult } from "../bash-executor.ts";
@@ -929,14 +930,20 @@ export class HostedAgentSession implements InteractiveSessionSurface {
 			return response.data;
 		},
 		prepareRewind: async (checkpointId: string) => {
-			const response = await this.client.request<{ data: {
-				operationToken: string; checkpoint: WorkspaceCheckpoint; files: WorkspaceChangeSet["files"];
-				affectedOtherTasks: number; laterOwned: number;
-			} }>({ type: "prepare_rewind", checkpointId });
+			const response = await this.client.request<{ data: PreparedRewind }>({ type: "prepare_rewind", checkpointId });
+			return response.data;
+		},
+		forcePrepareRewind: async (forceToken: string) => {
+			const response = await this.client.request<{ data: Extract<PreparedRewind, { status: "ready" }> }>({
+				type: "force_prepare_rewind", forceToken, confirm: true,
+			});
 			return response.data;
 		},
 		executeRewind: async (operationToken: string, confirmAffected: boolean) => {
-			const response = await this.client.request<{ data: { removed: number; affectedOtherTasks: number; generation: number } }>({
+			const response = await this.client.request<{ data: {
+				removed: number; affectedOtherTasks: number; generation: number; clearedChangeSets: number;
+				previousSessionId: string; sessionId: string; nativeSessionId: string | null; sessionFile: string | null;
+			} }>({
 				type: "execute_rewind", operationToken, confirm: true, ...(confirmAffected ? { confirmAffected: true } : {}),
 			});
 			return response.data;

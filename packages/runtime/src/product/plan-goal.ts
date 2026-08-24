@@ -417,7 +417,7 @@ export default function planGoalBuiltIn(pi: BuiltInSessionAPI): void {
 		enableTools(GOAL_PLANNING_TOOLS);
 		updateStatus(ctx);
 		try {
-			pi.sendUserMessage(`Create the authoritative structured Goal plan for the objective below.\n\n<objective>\n${objective}\n</objective>\n\nFollow the Goal planning contract, then call set_goal_plan when the complete dependency-ordered plan is ready. Do not implement.`);
+			pi.sendUserMessage(`Create the authoritative structured Goal plan for the objective below.\n\n<objective>\n${objective}\n</objective>\n\nFollow the Goal planning contract, keep the plan proportional to the requested deliverable, then call set_goal_plan when the smallest complete dependency-ordered plan is ready. Do not implement.`);
 		} catch (error) {
 			ctx.ui.notify(`Goal planning is durable but its first turn could not be dispatched: ${error instanceof Error ? error.message : String(error)}. Use /goal --continue to retry planning.`, "error");
 		}
@@ -435,7 +435,7 @@ export default function planGoalBuiltIn(pi: BuiltInSessionAPI): void {
 		persist();
 		enableTools(GOAL_PLANNING_TOOLS);
 		updateStatus(ctx);
-		pi.sendUserMessage("Resume structured Goal planning. Inspect current evidence, finish the complete dependency-ordered plan with acceptance requirements and direct verification evidence, then call set_goal_plan. Execution will begin automatically after the plan is installed.");
+		pi.sendUserMessage("Resume structured Goal planning. Inspect only material unresolved facts, finish the smallest proportional dependency-ordered plan with acceptance requirements and direct verification evidence, then call set_goal_plan. Execution will begin automatically after the plan is installed.");
 	}
 
 	function beginGoalExecution(ctx: ExtensionContext, request: PendingGoalRequest): void {
@@ -823,7 +823,7 @@ export default function planGoalBuiltIn(pi: BuiltInSessionAPI): void {
 			if (attempts >= MAX_PLAN_AGENT_ENDS) { restoreTools(state.toolsBeforePlan); setState(createIdleGoalState(now())); updateStatus(ctx); ctx.ui.notify("Goal planning aborted because set_goal_plan was not called after two settled attempts.", "error"); return; }
 			state = { ...state, planAgentEnds: attempts, updatedAt: now() };
 			persist();
-			pi.requestContinuation({ customType: "mypi-goal-plan-correction", content: "The structured Goal plan has not been installed. Finish the complete dependency-ordered plan with acceptance requirements and direct verification evidence, then call set_goal_plan. Do not implement.", display: false }, goalContinuationIntent());
+			pi.requestContinuation({ customType: "mypi-goal-plan-correction", content: "The structured Goal plan has not been installed. Finish the smallest proportional dependency-ordered plan with acceptance requirements and direct verification evidence, then call set_goal_plan. Do not add bookkeeping artifacts or a final-response item. Do not implement.", display: false }, goalContinuationIntent());
 			return;
 		}
 		if (state.workflow !== "goal") return;

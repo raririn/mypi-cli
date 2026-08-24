@@ -268,6 +268,24 @@ Extension state persistence. Does NOT participate in LLM context.
 
 Use `customType` to identify your extension's entries on reload. Interactive mode can render custom entries via `pi.registerEntryRenderer(customType, renderer)`, but they still do not participate in LLM context.
 
+### RunBoundaryEntry
+
+Authoritative end of one parent agent run. This entry is written after all
+settlement handlers have selected any built-in continuation and does not
+participate in model context.
+
+```json
+{"type":"run_boundary","id":"h8i9j0k1","parentId":"g7h8i9j0k1","timestamp":"2026-08-24T00:00:00.000Z","runId":"0198...","outcome":{"kind":"success"},"continuationPending":true}
+```
+
+- `runId` identifies exactly one parent run, including its retries and queued
+  within-run messages.
+- `outcome` is the terminal success, abort, provider error, or compaction-error
+  outcome for that run.
+- `continuationPending: true` means a sealed built-in continuation was selected
+  and the next `agent_start` belongs to a new run. Surfaces must keep the
+  execution trace open and must not infer idle settlement at this boundary.
+
 ### CustomMessageEntry
 
 Extension-injected messages that DO participate in LLM context.
