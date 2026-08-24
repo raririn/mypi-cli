@@ -20,6 +20,11 @@
   active children and unconsumed results, explicitly state that they create new
   work rather than retrieve output, and terminate repeated unchanged status
   polling cleanly. Paused Goal-owned results persist without waking a run.
+- Explicit Goal delegation counts are hard new-child caps. Corrections reuse a
+  consumed child's follow-up or stay in the parent; they cannot add replacement
+  children beyond an objective such as one explore plus three work agents.
+  The first unchanged status poll now yields immediately to automatic result
+  delivery instead of spending three provider calls per wait phase.
 - Tightened Goal planning toward the smallest deliverable-oriented plan:
   implementation and verification stay together, bookkeeping artifacts and
   final-response items are forbidden unless requested, optional toolchains do

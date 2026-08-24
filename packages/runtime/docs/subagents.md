@@ -26,6 +26,11 @@ code-owned.
 `subagent_start` accepts one homogeneous batch of one to eight `explore` or
 `work` jobs and returns opaque program-generated child/grant IDs immediately.
 Mixed roles are rejected before admission. Results arrive automatically.
+When an active Goal objective explicitly states an exact explore/work child
+count (for example, "delegate 1 explore agent and 3 work subagents"), that
+count is a code-enforced new-child cap for the Goal lineage. A correction must
+reuse the consumed child's history through its follow-up or be completed by the
+parent; it cannot silently expand the requested delegation topology.
 
 `consult_advisor` accepts one `question` describing the tentative approach,
 assumptions, uncertainty, and decision requested. `ask_for_review` accepts one
@@ -49,7 +54,9 @@ for manual inspection while model tools address the current conversation only.
 
 `subagent_cancel` cancels queued/running grants while retaining revivable
 history. `subagent_status` gives an explicit bounded snapshot; ordinary turns
-already receive compact live status automatically.
+already receive compact live status automatically. A status check while the
+same children remain active ends the parent tool loop immediately so automatic
+delivery, rather than polling, owns the next run.
 
 ## Storage and context
 

@@ -83,6 +83,27 @@ export class SubagentUnavailableError extends Error {
 	}
 }
 
+export class GoalDelegationLimitError extends Error {
+	readonly role: "explore" | "work";
+	readonly limit: number;
+	readonly admitted: number;
+	readonly requested: number;
+
+	constructor(
+		role: "explore" | "work",
+		limit: number,
+		admitted: number,
+		requested: number,
+	) {
+		super(`The active Goal explicitly limits new ${role} children to ${limit}; ${admitted} already exist and this request asks for ${requested} more. No child was started. Consume the existing result and use a follow-up on that same child for correction, or complete the work in the parent.`);
+		this.name = "GoalDelegationLimitError";
+		this.role = role;
+		this.limit = limit;
+		this.admitted = admitted;
+		this.requested = requested;
+	}
+}
+
 /** Exact bounded model-facing outcome for an unavailable advisor or reviewer. */
 export function consultationUnavailableOutcome(role: "advisor" | "review", phase: ConsultationFailurePhase, reason: string): {
 	content: [{ type: "text"; text: string }];
@@ -536,6 +557,21 @@ export class SubagentManager {
 		const roles = new Set(jobs.map((job) => job.role));
 		if (roles.size !== 1) throw new Error("Mixed subagent job roles are prohibited.");
 		const role = jobs[0]!.role;
+		if (role === "explore" || role === "work") {
+			const policy = activeGoalDelegationPolicy(ctx.sessionManager.getBranch());
+			if (policy) {
+				const limit = policy.limits[role];
+				if (limit !== undefined) {
+					const goalId = policy.goalId;
+					const admitted = this.store!.list().filter((child) =>
+						child.role === role && child.grants.some((grant) => grant.ownerGoalId === goalId),
+					).length;
+					if (admitted + jobs.length > limit) {
+						throw new GoalDelegationLimitError(role, limit, admitted, jobs.length);
+					}
+				}
+			}
+		}
 		if ((role === "advisor" || role === "review")
 			&& [...this.active.values()].some((running) => running.record.role === role)) {
 			throw new Error(`${role === "advisor" ? "Advisor" : "Reviewer"} consultation already active. Its result will be delivered automatically.`);
@@ -698,8 +734,8 @@ export class SubagentManager {
 
 	/** After repeated polls with unchanged live children, end the parent tool loop cleanly. */
 	pollGuidance(): string | undefined {
-		if (this.statusPollsWithoutLifecycleChange < 3 || !this.hasActiveChildren()) return undefined;
-		return `You have checked unchanged subagent status ${this.statusPollsWithoutLifecycleChange} times. This tool result is ending the parent tool loop cleanly so children can finish; their results will be delivered automatically.`;
+		if (this.statusPollsWithoutLifecycleChange < 1 || !this.hasActiveChildren()) return undefined;
+		return `You checked subagent status while the same children are still active. This tool result is ending the parent tool loop cleanly so children can finish; their results will be delivered automatically.`;
 	}
 
 	status(childIds?: readonly string[]): unknown[] {
@@ -1302,12 +1338,25 @@ export default function subagentsBuiltIn(pi: BuiltInSessionAPI): void {
 		promptGuidelines: [
 			"Use one self-contained task per subagent job and keep each batch focused on one role.",
 			"Route explore and work jobs here. Route advice to consult_advisor and completed-change review to ask_for_review.",
+			"When an active Goal explicitly requests an exact number of explore or work children, that count is a hard admission cap. Correct an existing child's result with its follow-up after consumption; never start a replacement child beyond the cap.",
 			"After subagent_start returns, continue independent work or settle; status and results are injected automatically.",
 		],
 		parameters: StartSchema,
 		executionMode: "sequential",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			const result = await manager.start(params.jobs as SubmittedJob[], ctx);
+			let result: Awaited<ReturnType<SubagentManager["start"]>>;
+			try {
+				result = await manager.start(params.jobs as SubmittedJob[], ctx);
+			} catch (error) {
+				if (error instanceof GoalDelegationLimitError) {
+					return {
+						content: [{ type: "text" as const, text: error.message }],
+						details: { accepted: false, code: "goal-delegation-limit", role: error.role, limit: error.limit, admitted: error.admitted, requested: error.requested },
+						terminate: true,
+					};
+				}
+				throw error;
+			}
 			return {
 				content: [{ type: "text", text: `Accepted async subagent batch ${result.batchId}. Results will be delivered automatically and will wake you at a safe boundary; you can continue independent work meanwhile.` }],
 				details: result,
@@ -1651,6 +1700,42 @@ function isPlanningBranch(ctx: ExtensionContext): boolean {
 		return state?.workflow === "planning" || state?.workflow === "goal-planning";
 	}
 	return false;
+}
+
+const DELEGATION_COUNT_WORDS: Readonly<Record<string, number>> = {
+	zero: 0, one: 1, two: 2, three: 3, four: 4, five: 5,
+	six: 6, seven: 7, eight: 8, nine: 9, ten: 10,
+};
+
+function explicitGoalDelegationLimits(objective: string): Partial<Record<"explore" | "work", number>> {
+	const limits: Partial<Record<"explore" | "work", number>> = {};
+	const pattern = /\b(?:(?:delegate|spawn|start|use)\s+(?:exactly\s+)?)?(\d+|zero|one|two|three|four|five|six|seven|eight|nine|ten)\s+(explore|work)\s+(?:subagents?|agents?)\b/giu;
+	for (const match of objective.matchAll(pattern)) {
+		const raw = match[1]!.toLowerCase();
+		const count = /^\d+$/u.test(raw) ? Number(raw) : DELEGATION_COUNT_WORDS[raw];
+		const role = match[2]!.toLowerCase() as "explore" | "work";
+		if (count !== undefined && Number.isSafeInteger(count) && count >= 0 && count <= 100) limits[role] = count;
+	}
+	return limits;
+}
+
+function activeGoalDelegationPolicy(entries: readonly unknown[]): {
+	goalId: string;
+	limits: Partial<Record<"explore" | "work", number>>;
+} | undefined {
+	for (let index = entries.length - 1; index >= 0; index--) {
+		const entry = entries[index];
+		if (!entry || typeof entry !== "object") continue;
+		const candidate = entry as { type?: unknown; customType?: unknown; data?: unknown };
+		if (candidate.type !== "custom" || (candidate.customType !== "mypi-goal" && candidate.customType !== "mypi-plan-goal")) continue;
+		const state = candidate.data as { workflow?: unknown; status?: unknown; goalId?: unknown; objective?: unknown } | undefined;
+		const active = state?.workflow === "goal-planning" || state?.workflow === "planning"
+			|| state?.workflow === "goal" && state.status === "active";
+		if (!active || typeof state?.goalId !== "string" || typeof state.objective !== "string") return undefined;
+		const limits = explicitGoalDelegationLimits(state.objective);
+		return Object.keys(limits).length > 0 ? { goalId: state.goalId, limits } : undefined;
+	}
+	return undefined;
 }
 
 function activeGoalId(entries: readonly unknown[]): string | undefined {

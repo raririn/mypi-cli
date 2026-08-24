@@ -136,6 +136,7 @@ for (const fragment of [
   "pendingResultMessage",
   "followupBlockReason",
   "active-context-confirmed",
+  "goal-delegation-limit",
 ]) {
   if (!subagents.includes(fragment)) {
     throw new Error(`Installed Pi ${expectedVersion} is missing async subagent behavior (${fragment}).`);

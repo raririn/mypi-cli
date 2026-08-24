@@ -393,11 +393,7 @@ test("unchanged status polling requests a clean yield even when other tools inte
 	assert.equal(manager.pollGuidance(), undefined);
 
 	manager.recordToolCall("subagent_status");
-	manager.recordToolCall("subagent_status");
-	assert.equal(manager.pollGuidance(), undefined, "one or two polls draw no instruction");
-	manager.recordToolCall("subagent_status");
 	assert.match(manager.pollGuidance() ?? "", /ending the parent tool loop cleanly/u);
-	assert.match(manager.pollGuidance() ?? "", /3 times/u);
 
 	// UI/independent tools cannot evade the lifecycle churn audit.
 	manager.recordToolCall("read");
@@ -407,6 +403,36 @@ test("unchanged status polling requests a clean yield even when other tools inte
 	(manager as any).active.clear();
 	(manager as any).publishWaitState();
 	assert.equal(manager.pollGuidance(), undefined);
+});
+
+test("an explicit Goal child count is a hard new-child admission cap (BUG-115)", async () => {
+	const manager = new SubagentManager({ sendMessage() {} } as unknown as ExtensionAPI);
+	const existing = Array.from({ length: 3 }, () => {
+		const child = record("work");
+		child.grants.push(grant("completed", { ownerGoalId: "goal-exact", delivery: { state: "delivered" } }));
+		return child;
+	});
+	(manager as any).initialize = async () => {};
+	(manager as any).store = { list: () => existing };
+	const ctx = {
+		sessionManager: {
+			getBranch: () => [{
+				type: "custom",
+				customType: "mypi-goal",
+				data: {
+					workflow: "goal",
+					status: "active",
+					goalId: "goal-exact",
+					objective: "Delegate 1 explore agent, then delegate 3 work subagents.",
+				},
+			}],
+		},
+	} as any;
+	await assert.rejects(
+		manager.start([{ role: "work", label: "replacement", task: "Try again" }], ctx),
+		(error: any) => error?.name === "GoalDelegationLimitError"
+			&& error.limit === 3 && error.admitted === 3 && error.requested === 1,
+	);
 });
 
 test("/advisor-model searches with bounded fuzzy results instead of one giant selector", async () => {
