@@ -163,9 +163,13 @@ async function runTurn(promptText, structuredOutput, requestId) {
     message: assistantStarted,
     assistantMessageEvent: { type: 'text_delta', contentIndex: 1, delta: `echo:${promptText}` },
   });
-  await sleep(typeof promptText === 'string' && promptText.startsWith('write-tracked') ? 100 : 10);
-  const toolCall = typeof promptText === 'string' && promptText.startsWith('write-tracked')
+  const trackedWrite = typeof promptText === 'string' && promptText.startsWith('write-tracked');
+  const trackedRead = typeof promptText === 'string' && promptText.startsWith('read-path');
+  await sleep(typeof promptText === 'string' && promptText.startsWith('thinking-hold') ? 800 : trackedWrite ? 100 : 10);
+  const toolCall = trackedWrite
     ? { type: 'toolCall', id: `write-${requestId}`, name: 'write', arguments: { path: join(process.cwd(), 'tracked.txt'), content: `${promptText}\n` } }
+    : trackedRead
+      ? { type: 'toolCall', id: `read-${requestId}`, name: 'read', arguments: { path: join(process.cwd(), 'AGENTS.md') } }
     : null;
   const assistantMessage = {
     role: 'assistant',
@@ -183,23 +187,23 @@ async function runTurn(promptText, structuredOutput, requestId) {
     appendFileSync(sessionPath(), `${JSON.stringify({ type: 'message', id: `assistant-${requestId}`, parentId: `user-${requestId}`, timestamp: new Date().toISOString(), message: assistantMessage })}\n`);
   }
   const toolResults = [];
-  if (typeof promptText === 'string' && promptText.startsWith('write-tracked')) {
-    const path = join(process.cwd(), 'tracked.txt');
-    const content = `${promptText}\n`;
-    out({ type: 'tool_execution_start', toolCallId: `write-${requestId}`, toolName: 'write', args: { path, content } });
-    writeFileSync(path, content);
+  if (toolCall) {
+    const path = toolCall.arguments.path;
+    const content = trackedWrite ? `${promptText}\n` : 'read-only fixture\n';
+    out({ type: 'tool_execution_start', toolCallId: toolCall.id, toolName: toolCall.name, args: toolCall.arguments });
+    if (trackedWrite) writeFileSync(path, content);
     out({
       type: 'tool_execution_end',
-      toolCallId: `write-${requestId}`,
-      toolName: 'write',
-      result: { content: [{ type: 'text', text: `Successfully wrote ${content.length} bytes to ${path}` }] },
+      toolCallId: toolCall.id,
+      toolName: toolCall.name,
+      result: { content: [{ type: 'text', text: trackedWrite ? `Successfully wrote ${content.length} bytes to ${path}` : content }] },
       isError: false,
     });
     const toolResult = {
       role: 'toolResult',
-      toolCallId: `write-${requestId}`,
-      toolName: 'write',
-      content: [{ type: 'text', text: `Successfully wrote ${content.length} bytes to ${path}` }],
+      toolCallId: toolCall.id,
+      toolName: toolCall.name,
+      content: [{ type: 'text', text: trackedWrite ? `Successfully wrote ${content.length} bytes to ${path}` : content }],
       isError: false,
       timestamp: Date.now(),
     };
@@ -250,8 +254,36 @@ async function runTurn(promptText, structuredOutput, requestId) {
   if (!aborted && typeof promptText === 'string' && promptText.includes('continuation-pending')) {
     out({ type: 'agent_settled', outcome: { kind: 'success' }, continuationPending: true });
     await sleep(Math.max(20, Number(process.env.FAKE_ENGINE_TURN_MS || 40)));
+    if (promptText.includes('subagent-wake')) {
+      const customResult = {
+        role: 'custom',
+        customType: 'mypi-subagent-results',
+        content: 'Asynchronous MyPi subagent results are ready.',
+        display: true,
+        details: {
+          version: 1,
+          nonce: `wake-${requestId}`,
+          results: [{ grantId: `sg-${requestId}`, childId: `sa-${requestId}`, role: 'explore', label: 'inspect fixture', status: 'completed', answer: 'returned subagent output' }],
+        },
+        timestamp: Date.now(),
+      };
+      out({ type: 'message_start', message: customResult });
+      out({ type: 'message_end', message: customResult });
+    }
     out({ type: 'agent_start' });
     await sleep(Math.max(20, Number(process.env.FAKE_ENGINE_TURN_MS || 40)));
+    if (promptText.includes('subagent-wake')) {
+      const resumed = {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'reviewed subagent output' }],
+        timestamp: Date.now(),
+        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        stopReason: 'stop',
+      };
+      out({ type: 'message_start', message: resumed });
+      out({ type: 'message_end', message: resumed });
+      out({ type: 'turn_end', message: resumed, toolResults: [] });
+    }
   }
   out({ type: 'agent_settled', outcome: { kind: aborted ? 'aborted' : 'success' } });
   turnActive = false;

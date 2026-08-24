@@ -6,6 +6,7 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { type ImageContent, modelsAreEqual } from "@earendil-works/pi-ai";
 import chalk from "chalk";
@@ -47,6 +48,7 @@ import {
 } from "./core/session-cwd.ts";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.ts";
 import { SettingsManager } from "./core/settings-manager.ts";
+import { resolveConfiguredDefaultModel, splitConfiguredDefaultModel } from "./product/global-config.ts";
 import { printTimings, resetTimings, time } from "./core/timings.ts";
 import { ProjectTrustStore, resolveProjectTrustRoot } from "./core/trust-manager.ts";
 import { markStartupProgress } from "./core/startup-progress.ts";
@@ -445,6 +447,7 @@ function buildSessionOptions(
 	hasExistingSession: boolean,
 	modelRuntime: ModelRuntime,
 	settingsManager: SettingsManager,
+	configuredDefaultModel?: string | null,
 ): {
 	options: CreateAgentSessionOptions;
 	cliThinkingFromModel: boolean;
@@ -483,8 +486,9 @@ function buildSessionOptions(
 
 	if (!options.model && scopedModels.length > 0 && !hasExistingSession) {
 		// Check if saved default is in scoped models - use it if so, otherwise first scoped model
-		const savedProvider = settingsManager.getDefaultProvider();
-		const savedModelId = settingsManager.getDefaultModel();
+		const configuredDefault = splitConfiguredDefaultModel(configuredDefaultModel);
+		const savedProvider = configuredDefault?.provider;
+		const savedModelId = configuredDefault?.modelId;
 		const savedModel = savedProvider && savedModelId ? modelRuntime.getModel(savedProvider, savedModelId) : undefined;
 		const savedInScope = savedModel ? scopedModels.find((sm) => modelsAreEqual(sm.model, savedModel)) : undefined;
 
@@ -788,6 +792,11 @@ export async function main(args: string[], options?: MainOptions) {
 		const modelPatterns = parsed.models ?? settingsManager.getEnabledModels();
 		const scopedModels =
 			modelPatterns && modelPatterns.length > 0 ? await resolveModelScope(modelPatterns, modelRuntime) : [];
+		const configuredDefaultModel = await resolveConfiguredDefaultModel({
+			path: join(services.agentDir, "config.yaml"),
+			legacyProvider: settingsManager.getLegacyGlobalDefaultProvider(),
+			legacyModelId: settingsManager.getLegacyGlobalDefaultModel(),
+		});
 		const {
 			options: sessionOptions,
 			cliThinkingFromModel,
@@ -798,6 +807,7 @@ export async function main(args: string[], options?: MainOptions) {
 			sessionManager.buildSessionContext().messages.length > 0,
 			modelRuntime,
 			settingsManager,
+			configuredDefaultModel,
 		);
 		diagnostics.push(...sessionOptionDiagnostics);
 

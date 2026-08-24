@@ -1,5 +1,5 @@
 import { constants, existsSync, realpathSync } from "node:fs";
-import { lstat, mkdir, open, readdir, realpath, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import type { Api, Model, Usage } from "@earendil-works/pi-ai";
@@ -15,8 +15,15 @@ import { CHAT_TOOL_NAMES } from "./mypi-chat.ts";
 import { purgeSessionSnapshotsAcrossTrackers, WorkspaceTracker } from "./workspace-tracker.ts";
 import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
-import { loadGlobalConfig, type GlobalConfigDiagnostic, type HistoryConfig } from "./global-config.ts";
+import {
+	loadGlobalConfig,
+	resolveConfiguredDefaultModel,
+	splitConfiguredDefaultModel,
+	type GlobalConfigDiagnostic,
+	type HistoryConfig,
+} from "./global-config.ts";
 import { canonicalizePath } from "../utils/paths.ts";
+import { findInitialModel } from "../core/model-resolver.ts";
 
 const MAX_DISCOVERED_FILES = 10_000;
 const MAX_SCAN_DEPTH = 4;
@@ -77,6 +84,12 @@ export interface DaemonResourceInventoryEntry {
 	readonly scope?: string;
 	readonly origin?: string;
 	readonly productClass?: string;
+}
+
+export interface DaemonCommandInventoryEntry {
+	readonly name: string;
+	readonly description: string;
+	readonly source: "extension" | "prompt" | "skill";
 }
 
 export interface PersistedSessionListOptions {
@@ -313,8 +326,31 @@ export async function getPersistedSessionStats(options: PersistedSessionReadOpti
 const serviceCache = new Map<string, Promise<AgentSessionServices>>();
 
 export async function getDaemonAvailableModels(cwd: string, agentDir = getAgentDir()): Promise<Record<string, unknown>[]> {
+	return (await getDaemonModelCatalog(cwd, agentDir)).models;
+}
+
+export async function getDaemonModelCatalog(cwd: string, agentDir = getAgentDir()): Promise<{
+	models: Record<string, unknown>[];
+	defaultModel: Record<string, unknown> | null;
+}> {
 	const services = await daemonServices(cwd, agentDir);
-	return services.modelRuntime.getAvailableSnapshot().map(serializeModel);
+	const configuredDefault = splitConfiguredDefaultModel(await resolveConfiguredDefaultModel({
+		path: join(resolve(agentDir), "config.yaml"),
+		legacyProvider: services.settingsManager.getLegacyGlobalDefaultProvider(),
+		legacyModelId: services.settingsManager.getLegacyGlobalDefaultModel(),
+	}));
+	const initial = await findInitialModel({
+		scopedModels: [],
+		isContinuing: false,
+		defaultProvider: configuredDefault?.provider,
+		defaultModelId: configuredDefault?.modelId,
+		defaultThinkingLevel: services.settingsManager.getDefaultThinkingLevel(),
+		modelRuntime: services.modelRuntime,
+	});
+	return {
+		models: services.modelRuntime.getAvailableSnapshot().map(serializeModel),
+		defaultModel: initial.model ? serializeModel(initial.model) : null,
+	};
 }
 
 export async function listDaemonSkills(cwd: string, agentDir = getAgentDir()): Promise<DaemonResourceInventoryEntry[]> {
@@ -344,6 +380,60 @@ export async function listDaemonExtensions(cwd: string, agentDir = getAgentDir()
 			...sourceMetadata(extension.sourceInfo),
 		};
 	});
+}
+
+export async function readDaemonResourceFile(cwd: string, requestedPath: string, agentDir = getAgentDir()): Promise<{ path: string; content: string }> {
+	const inventory = [...await listDaemonSkills(cwd, agentDir), ...await listDaemonExtensions(cwd, agentDir)];
+	const entry = inventory.find((candidate) => candidate.path === requestedPath);
+	if (!entry) throw new Error("Resource path is not in the current trusted discovery inventory.");
+	const info = await lstat(entry.path);
+	if (!info.isFile() || info.isSymbolicLink()) throw new Error("Discovered resource is not a regular non-symlink file.");
+	if (info.size > 2 * 1024 * 1024) throw new Error("Discovered resource exceeds the 2 MiB preview limit.");
+	return { path: entry.path, content: await readFile(entry.path, "utf8") };
+}
+
+/** Discover slash commands without materializing or attaching a session.
+ * This uses the same cwd-bound trusted resource set as session startup so a
+ * draft or idle history can present extension, prompt, and skill commands
+ * before paying the runtime engine graph. */
+export async function listDaemonCommands(cwd: string, agentDir = getAgentDir()): Promise<DaemonCommandInventoryEntry[]> {
+	const services = await daemonServices(cwd, agentDir);
+	const entries: DaemonCommandInventoryEntry[] = [];
+	const extensionCommands = services.resourceLoader.getExtensions().extensions.flatMap((extension) =>
+		[...extension.commands.values()].map((command) => ({
+			name: command.name,
+			description: compactText(command.description ?? "Extension command", MAX_TEXT_CHARS),
+			source: "extension" as const,
+		})),
+	);
+	const counts = new Map<string, number>();
+	for (const command of extensionCommands) counts.set(command.name, (counts.get(command.name) ?? 0) + 1);
+	const seen = new Map<string, number>();
+	for (const command of extensionCommands) {
+		const occurrence = (seen.get(command.name) ?? 0) + 1;
+		seen.set(command.name, occurrence);
+		entries.push({
+			...command,
+			name: (counts.get(command.name) ?? 0) > 1 ? `${command.name}:${occurrence}` : command.name,
+		});
+	}
+	for (const prompt of services.resourceLoader.getPrompts().prompts) {
+		entries.push({
+			name: prompt.name,
+			description: compactText(prompt.description ?? "Prompt template", MAX_TEXT_CHARS),
+			source: "prompt",
+		});
+	}
+	for (const skill of services.resourceLoader.getSkills().skills) {
+		entries.push({
+			name: `skill:${skill.name}`,
+			description: compactText(skill.description, MAX_TEXT_CHARS),
+			source: "skill",
+		});
+	}
+	const unique = new Map<string, DaemonCommandInventoryEntry>();
+	for (const entry of entries) if (!unique.has(entry.name)) unique.set(entry.name, entry);
+	return [...unique.values()].slice(0, MAX_LIST_LIMIT);
 }
 
 export function clearDaemonServiceCache(): void {

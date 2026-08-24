@@ -707,8 +707,18 @@ export class SettingsManager {
 		return this.settings.defaultProvider;
 	}
 
+	/** Migration-only access to the former global settings.json authority. */
+	getLegacyGlobalDefaultProvider(): string | undefined {
+		return this.globalSettings.defaultProvider;
+	}
+
 	getDefaultModel(): string | undefined {
 		return this.settings.defaultModel;
+	}
+
+	/** Migration-only access to the former global settings.json authority. */
+	getLegacyGlobalDefaultModel(): string | undefined {
+		return this.globalSettings.defaultModel;
 	}
 
 	setDefaultProvider(provider: string): void {

@@ -22,7 +22,9 @@
 //     {type:"list_persisted_sessions", cwd?, includeArchived?, offset?, limit?}
 //     {type:"read_session", sessionId?|sessionFile?, since?, limit?, maxBytes?}
 //     {type:"get_available_models", cwd?}             no engine required
-//     {type:"list_skills"|"list_extensions", cwd?}   no engine required
+//     {type:"set_default_model", provider, modelId}   no engine required
+//     {type:"list_skills"|"list_extensions"|"list_commands", cwd?}
+//                                                       no engine required
 //     {type:"get_session_stats", sessionId|sessionFile} no engine required
 //     {type:"get_project_tracking"|"estimate_project_tracking", cwd}
 //     {type:"set_project_tracking", cwd, tracking:"track"|"dont-track"|null}
@@ -108,20 +110,35 @@ import {
   estimatedChangeSet,
   executeProjectRemoval,
   getDaemonAvailableModels,
+  getDaemonModelCatalog,
   getAgentDir,
   getPersistedSessionStats,
+  isEstimatedFileMutationTool,
+  listDaemonCommands,
   listDaemonExtensions,
   listDaemonSkills,
+	listMcpServerSettings,
   listPersistedSessions,
   loadGlobalConfig,
+	migrateGuiConfig,
   previewProjectRemoval,
   ProjectTrustStore,
   resolveProjectTrustRoot,
   prepareChatEngineLaunch,
+	probeMcpWizardTarget,
+	removeMcpWizardServer,
   readPersistedSession,
+	readDaemonResourceFile,
+	resetGlobalConfig,
 	removeWorkspaceTracker,
   runNewSessionMaintenance,
   setPersistedSessionArchived,
+	saveMcpWizardServer,
+	setMcpWizardServerEnabled,
+	testMcpWizardServer,
+  updateDefaultModel,
+	updateGlobalConfigField,
+	sanitizeGlobalConfig,
   WorkspaceTracker,
 } from "@earendil-works/pi-coding-agent";
 
@@ -673,9 +690,37 @@ function latestPersistedUserEntry(sessionFile, startedAt) {
   return undefined;
 }
 
+function isFirstPersistedUserEntry(sessionFile, userMessageId) {
+  let fd;
+  try {
+    const size = statSync(sessionFile).size;
+    const length = Math.min(size, 8 * 1024 * 1024);
+    const buffer = Buffer.allocUnsafe(length);
+    fd = openSync(sessionFile, "r");
+    const bytes = readSync(fd, buffer, 0, length, 0);
+    const lines = buffer.subarray(0, bytes).toString("utf8").split("\n");
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let entry;
+      try { entry = JSON.parse(line); } catch { continue; }
+      if (entry?.type !== "message" || entry.message?.role !== "user" || typeof entry.id !== "string") continue;
+      if (queuedMode(entry.message) === "steer") continue;
+      return entry.id === userMessageId;
+    }
+  } catch {}
+  finally { if (fd !== undefined) try { closeSync(fd); } catch {} }
+  return false;
+}
+
 async function trackingContext(session) {
-  const root = canonicalTrackingRoot(session.cwd);
+  const context = await trackingContextForRoot(session.cwd);
+  const root = context.root;
   session.trackingRoot = root;
+  return context;
+}
+
+async function trackingContextForRoot(cwd) {
+  const root = canonicalTrackingRoot(cwd);
   const loaded = await loadGlobalConfig(daemonGlobalConfigPath);
   const store = new ProjectTrustStore(daemonAgentDir);
   let decision = null;
@@ -817,6 +862,7 @@ function patchCounts(patch) {
 
 function recordToolTracking(session, frame) {
   if (frame?.type === "tool_execution_start" && typeof frame.toolCallId === "string") {
+    if (!isEstimatedFileMutationTool(String(frame.toolName ?? ""))) return;
     if (session.trackingCapturePromise && !session.trackingRun) session.trackingCaptureRaced = true;
     session.trackingToolCalls.set(frame.toolCallId, { name: frame.toolName, args: frame.args });
     return;
@@ -1783,7 +1829,86 @@ function handleClientFrame(client, frame) {
 
   if (frame?.type === "get_available_models" && typeof frame.sessionId !== "string") {
     const cwd = typeof frame.cwd === "string" ? frame.cwd : process.cwd();
-    sendDaemonResponse(client, frame, "get_available_models", getDaemonAvailableModels(cwd, daemonAgentDir).then((models) => ({ models })));
+    sendDaemonResponse(client, frame, "get_available_models", getDaemonModelCatalog(cwd, daemonAgentDir));
+    return;
+  }
+
+  if (frame?.type === "set_default_model" && typeof frame.sessionId !== "string") {
+    const provider = typeof frame.provider === "string" ? frame.provider : "";
+    const modelId = typeof frame.modelId === "string" ? frame.modelId : "";
+    if (!provider || !modelId) {
+      sendToClient(client, { type: "response", command: "set_default_model", success: false, ...(typeof frame.id === "string" ? { id: frame.id } : {}), error: "set_default_model requires provider and modelId" });
+      return;
+    }
+    sendDaemonResponse(client, frame, "set_default_model", updateDefaultModel(`${provider}/${modelId}`, daemonGlobalConfigPath).then((config) => ({ defaultModel: config.defaultModel })));
+    return;
+  }
+
+  if (frame?.type === "get_global_config") {
+    sendDaemonResponse(client, frame, "get_global_config", loadGlobalConfig(daemonGlobalConfigPath).then((loaded) => ({
+      config: sanitizeGlobalConfig(loaded.config),
+      ...(loaded.diagnostic ? { diagnostic: { code: loaded.diagnostic.code, message: loaded.diagnostic.message } } : {}),
+    })));
+    return;
+  }
+
+  if (frame?.type === "update_global_config") {
+    const field = typeof frame.field === "string" ? frame.field : "";
+    sendDaemonResponse(client, frame, "update_global_config", updateGlobalConfigField(field, frame.value, daemonGlobalConfigPath).then((config) => ({
+      config: sanitizeGlobalConfig(config),
+    })));
+    return;
+  }
+
+  if (frame?.type === "migrate_gui_config") {
+    const candidate = frame.gui && typeof frame.gui === "object" && !Array.isArray(frame.gui) ? frame.gui : {};
+    sendDaemonResponse(client, frame, "migrate_gui_config", migrateGuiConfig(candidate, daemonGlobalConfigPath).then((config) => ({
+      config: sanitizeGlobalConfig(config),
+    })));
+    return;
+  }
+
+  if (frame?.type === "repair_global_config") {
+    if (frame.confirm !== true) {
+      sendToClient(client, { type: "response", command: "repair_global_config", success: false, ...(typeof frame.id === "string" ? { id: frame.id } : {}), error: "Configuration repair requires in-app confirmation." });
+      return;
+    }
+    sendDaemonResponse(client, frame, "repair_global_config", resetGlobalConfig(daemonGlobalConfigPath).then((config) => ({ config: sanitizeGlobalConfig(config) })));
+    return;
+  }
+
+  if (frame?.type === "list_mcp_servers") {
+    sendDaemonResponse(client, frame, "list_mcp_servers", listMcpServerSettings(daemonGlobalConfigPath));
+    return;
+  }
+  if (frame?.type === "probe_mcp_target") {
+    sendDaemonResponse(client, frame, "probe_mcp_target", probeMcpWizardTarget(String(frame.target ?? "")));
+    return;
+  }
+  if (frame?.type === "save_mcp_server") {
+    sendDaemonResponse(client, frame, "save_mcp_server", saveMcpWizardServer(frame.server ?? {}, daemonGlobalConfigPath));
+    return;
+  }
+  if (frame?.type === "set_mcp_server_enabled") {
+    sendDaemonResponse(client, frame, "set_mcp_server_enabled", setMcpWizardServerEnabled(String(frame.serverId ?? ""), frame.enabled === true, daemonGlobalConfigPath));
+    return;
+  }
+  if (frame?.type === "remove_mcp_server") {
+    if (frame.confirm !== true) {
+      sendToClient(client, { type: "response", command: "remove_mcp_server", success: false, ...(typeof frame.id === "string" ? { id: frame.id } : {}), error: "MCP removal requires in-app confirmation." });
+      return;
+    }
+    sendDaemonResponse(client, frame, "remove_mcp_server", removeMcpWizardServer(String(frame.serverId ?? ""), daemonGlobalConfigPath));
+    return;
+  }
+  if (frame?.type === "test_mcp_server") {
+    sendDaemonResponse(client, frame, "test_mcp_server", testMcpWizardServer(String(frame.serverId ?? ""), { path: daemonGlobalConfigPath, workspaceCwd: typeof frame.cwd === "string" ? frame.cwd : process.cwd(), agentDir: daemonAgentDir }));
+    return;
+  }
+
+  if (frame?.type === "read_resource_file") {
+    const cwd = typeof frame.cwd === "string" ? frame.cwd : process.cwd();
+    sendDaemonResponse(client, frame, "read_resource_file", readDaemonResourceFile(cwd, String(frame.path ?? ""), daemonAgentDir));
     return;
   }
 
@@ -1796,6 +1921,12 @@ function handleClientFrame(client, frame) {
   if (frame?.type === "list_extensions") {
     const cwd = typeof frame.cwd === "string" ? frame.cwd : process.cwd();
     sendDaemonResponse(client, frame, "list_extensions", listDaemonExtensions(cwd, daemonAgentDir).then((extensions) => ({ extensions })));
+    return;
+  }
+
+  if (frame?.type === "list_commands") {
+    const cwd = typeof frame.cwd === "string" ? frame.cwd : process.cwd();
+    sendDaemonResponse(client, frame, "list_commands", listDaemonCommands(cwd, daemonAgentDir).then((commands) => ({ commands })));
     return;
   }
 
@@ -1850,6 +1981,28 @@ function handleClientFrame(client, frame) {
   if (frame?.type === "list_checkpoints" || frame?.type === "prepare_rewind" || frame?.type === "force_prepare_rewind" || frame?.type === "execute_rewind") {
     const sessionId = String(frame.sessionId ?? "");
     const session = sessions.get(sessionId);
+    if (frame.type === "list_checkpoints" && (!session || !session.clients.has(client))) {
+      sendDaemonResponse(client, frame, "list_checkpoints", (async () => {
+        if (session) {
+          const context = await trackingContextForRoot(session.cwd);
+          if (context.storageHealth !== "ready") return { status: context.health, checkpoints: [] };
+          return { status: context.health, checkpoints: await context.tracker.listCheckpoints(session.sessionId ?? session.key) };
+        }
+        const history = await readPersistedSession({
+          agentDir: daemonAgentDir,
+          id: sessionId,
+          includeArchived: false,
+          limit: 1,
+          maxBytes: 64 * 1024,
+        });
+        const header = history.entries.find((entry) => entry && typeof entry === "object" && entry.type === "session");
+        if (typeof header?.cwd !== "string" || !header.cwd) throw new Error("Session working directory is unavailable.");
+        const context = await trackingContextForRoot(header.cwd);
+        if (context.storageHealth !== "ready") return { status: context.health, checkpoints: [] };
+        return { status: context.health, checkpoints: await context.tracker.listCheckpoints(history.id) };
+      })());
+      return;
+    }
     if (!session || !session.clients.has(client)) {
       sendToClient(client, { type: "response", command: frame.type, success: false, ...(typeof frame.id === "string" ? { id: frame.id } : {}), error: "Attach the session before using checkpoints." });
       return;
@@ -1877,9 +2030,10 @@ function handleClientFrame(client, frame) {
         let preview;
         try { preview = await context.tracker.previewRewind(sessionId, checkpointId); }
         catch (error) { throw new Error(publicTrackerError(error, "Tracker could not prepare rewind.")); }
+        const removesTask = Boolean(session.sessionFile && isFirstPersistedUserEntry(session.sessionFile, preview.checkpoint.userMessageId));
         const operationToken = randomUUID();
         rewindPreviews.set(operationToken, { client, sessionId, root, checkpointId: preview.checkpoint.id, userMessageId: preview.checkpoint.userMessageId, sequence: preview.sequence, generation: preview.generation, affectedOtherTasks: preview.affectedOtherTasks, expiresAt: Date.now() + 5 * 60_000 });
-        return { status: "ready", operationToken, ...preview };
+        return { status: "ready", operationToken, removesTask, ...preview };
       })());
       return;
     }
@@ -1898,10 +2052,11 @@ function handleClientFrame(client, frame) {
         let preview;
         try { preview = await context.tracker.previewRewind(sessionId, preparedForce.checkpointId); }
         catch (error) { throw new Error(publicTrackerError(error, "Tracker could not prepare rewind.")); }
+        const removesTask = Boolean(session.sessionFile && isFirstPersistedUserEntry(session.sessionFile, preview.checkpoint.userMessageId));
         const operationToken = randomUUID();
         rewindPreviews.set(operationToken, { client, sessionId, root: preparedForce.root, checkpointId: preview.checkpoint.id, userMessageId: preview.checkpoint.userMessageId, sequence: preview.sequence, generation: preview.generation, affectedOtherTasks: preview.affectedOtherTasks, expiresAt: Date.now() + 5 * 60_000 });
         rewindForcePreviews.delete(forceToken);
-        return { status: "ready", operationToken, ...preview };
+        return { status: "ready", operationToken, removesTask, ...preview };
       })());
       return;
     }

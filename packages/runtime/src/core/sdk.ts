@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@earendil-works/pi-ai/compat";
 import { getAgentDir } from "../config.ts";
+import { resolveConfiguredDefaultModel, splitConfiguredDefaultModel } from "../product/global-config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
@@ -207,11 +208,16 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	// If still no model, use findInitialModel (checks settings default, then provider defaults)
 	if (!model) {
+		const configuredDefault = splitConfiguredDefaultModel(await resolveConfiguredDefaultModel({
+			path: join(agentDir, "config.yaml"),
+			legacyProvider: settingsManager.getLegacyGlobalDefaultProvider(),
+			legacyModelId: settingsManager.getLegacyGlobalDefaultModel(),
+		}));
 		const result = await findInitialModel({
 			scopedModels: [],
 			isContinuing: hasExistingSession,
-			defaultProvider: settingsManager.getDefaultProvider(),
-			defaultModelId: settingsManager.getDefaultModel(),
+			defaultProvider: configuredDefault?.provider,
+			defaultModelId: configuredDefault?.modelId,
 			defaultThinkingLevel: settingsManager.getDefaultThinkingLevel(),
 			modelRuntime,
 		});
@@ -380,6 +386,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionManager,
 		settingsManager,
 		cwd,
+		agentDir,
 		scopedModels: options.scopedModels,
 		resourceLoader,
 		customTools: options.customTools,

@@ -87,6 +87,7 @@ export class CustomMessageComponent extends Container {
 		// Default rendering uses our box
 		this.addChild(this.box);
 		this.box.clear();
+		if (this.message.customType === "mypi-subagent-results" && this.renderSubagentResults()) return;
 
 		// Default rendering: label + content
 		const label = theme.fg("customMessageLabel", `\x1b[1m[${this.message.customType}]\x1b[22m`);
@@ -109,5 +110,31 @@ export class CustomMessageComponent extends Container {
 				color: (text: string) => theme.fg("customMessageText", text),
 			}),
 		);
+	}
+
+	private renderSubagentResults(): boolean {
+		const details = this.message.details && typeof this.message.details === "object"
+			? this.message.details as { results?: unknown }
+			: undefined;
+		if (!Array.isArray(details?.results) || details.results.length === 0) return false;
+		for (const raw of details.results) {
+			const result = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+			const title = result.role === "advisor"
+				? "Advisor finished"
+				: result.role === "review" || result.role === "reviewer"
+					? "Reviewer finished"
+					: "Subagent finished";
+			const label = typeof result.label === "string" && result.label.trim() ? ` — ${result.label.trim()}` : "";
+			this.box.addChild(new Text(theme.fg("customMessageLabel", `\x1b[1m${title}\x1b[22m${label}`), 0, 0));
+			if (!this._expanded) continue;
+			const answer = typeof result.answer === "string" && result.answer.trim()
+				? result.answer.trim()
+				: "No returned output.";
+			this.box.addChild(new Spacer(1));
+			this.box.addChild(new Markdown(answer, 0, 0, this.markdownTheme, {
+				color: (text: string) => theme.fg("customMessageText", text),
+			}));
+		}
+		return true;
 	}
 }

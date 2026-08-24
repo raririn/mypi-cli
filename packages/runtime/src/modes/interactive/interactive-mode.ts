@@ -2916,6 +2916,7 @@ export class InteractiveMode {
 				`${preview.files.length} tracked file${preview.files.length === 1 ? "" : "s"} will change.`,
 				`${preview.laterOwned} later checkpoint${preview.laterOwned === 1 ? "" : "s"} from this task will be removed.`,
 				opaque > 0 ? `${opaque} opaque path${opaque === 1 ? " is" : "s are"} left untouched.` : "",
+				preview.removesTask ? "Warning: this is the first prompt. Rewind will remove this task from history and clear its current focus." : "",
 			].filter(Boolean).join("\n");
 			if (!(await this.showExtensionConfirm("Confirm rewind", summary))) return;
 			if (preview.affectedOtherTasks > 0) {

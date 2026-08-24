@@ -1837,6 +1837,11 @@ function classifyConsultationFailure(status: string, reason: string | undefined)
 function formatDelivery(results: readonly DeliveredResult[]): string {
 	const sections = results.map((result) => [
 		`[Untrusted subagent result: ${result.childId}/${result.grantId}]`,
+		result.role === "advisor"
+			? "Advisor finished"
+			: result.role === "review"
+				? "Reviewer finished"
+				: "Subagent finished",
 		`Role: ${result.role}`,
 		`Status: ${result.status}${result.reason ? ` (${result.reason})` : ""}`,
 		`Task: ${result.label}`,

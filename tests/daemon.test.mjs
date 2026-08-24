@@ -7,12 +7,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { DEFAULT_GLOBAL_CONFIG, WorkspaceTracker } from "@earendil-works/pi-coding-agent";
 
 const DAEMON_SCRIPT = fileURLToPath(new URL("../scripts/mypi-daemon.mjs", import.meta.url));
 const PROXY_SCRIPT = fileURLToPath(new URL("../scripts/mypi-proxy.mjs", import.meta.url));
 const ATTACH_SCRIPT = fileURLToPath(new URL("../scripts/mypi-attach.mjs", import.meta.url));
 const FAKE_TUI = fileURLToPath(new URL("./fixtures/fake-tui.cjs", import.meta.url));
 const FAKE_ENGINE = fileURLToPath(new URL("./fixtures/fake-rpc-engine.cjs", import.meta.url));
+const MCP_FIXTURE = fileURLToPath(new URL("../packages/runtime/test/product/fixtures/mcp-fixture-server.mjs", import.meta.url));
 const PROTOCOL = 2;
 
 function waitFor(predicate, timeoutMs = 5_000, label = "condition") {
@@ -251,7 +253,7 @@ test("daemon re-exec closes inherited spawner descriptors and outlives the start
   }
 });
 
-test("daemon lists and reads persisted history, models, skills, and extensions without attaching", async () => {
+test("daemon lists and reads persisted history, models, resources, and commands without attaching", async () => {
   const daemon = await startDaemon();
   try {
     const cwd = join(daemon.daemonDir, "workspace");
@@ -281,17 +283,54 @@ test("daemon lists and reads persisted history, models, skills, and extensions w
     client.send({ id: "models", type: "get_available_models", cwd });
     client.send({ id: "skills", type: "list_skills", cwd });
     client.send({ id: "extensions", type: "list_extensions", cwd });
+    client.send({ id: "commands", type: "list_commands", cwd });
     await waitFor(
-      () => response("get_available_models") && response("list_skills") && response("list_extensions"),
+      () => response("get_available_models") && response("list_skills") && response("list_extensions") && response("list_commands"),
       15_000,
       "unattached catalogs",
     );
     assert.equal(response("get_available_models").success, true);
     assert.ok(Array.isArray(response("get_available_models").data.models));
+    assert.ok("defaultModel" in response("get_available_models").data);
+
+    client.send({ id: "default-model", type: "set_default_model", provider: "faux", modelId: "faux-2" });
+    await waitFor(() => response("set_default_model"), 5_000, "default model update");
+    assert.equal(response("set_default_model").success, true);
+    assert.match(await readFile(join(daemon.agentDir, "config.yaml"), "utf8"), /^defaultModel: faux\/faux-2$/m);
+
+    client.send({ id: "global-config", type: "get_global_config" });
+    await waitFor(() => response("get_global_config"), 5_000, "global config read");
+    assert.equal(response("get_global_config").data.config.gui.shortcuts.commandPalette, "CmdOrCtrl+Shift+P");
+    assert.equal("mcp" in response("get_global_config").data.config, false, "raw MCP values are not exposed");
+
+    client.send({ id: "gui-shortcut", type: "update_global_config", field: "gui.shortcuts.commandPalette", value: "Ctrl+Alt+K" });
+    await waitFor(() => response("update_global_config"), 5_000, "global config update");
+    assert.equal(response("update_global_config").data.config.gui.shortcuts.commandPalette, "Ctrl+Alt+K");
+    client.send({ id: "gui-migrate", type: "migrate_gui_config", gui: { shortcuts: { commandPalette: "Ctrl+Shift+X" }, appMode: "chat" } });
+    await waitFor(() => client.frames.some((frame) => frame.id === "gui-migrate"), 5_000, "GUI config migration");
+    const migrated = client.frames.find((frame) => frame.id === "gui-migrate");
+    assert.equal(migrated.data.config.gui.shortcuts.commandPalette, "Ctrl+Alt+K", "existing shared field wins migration");
+    assert.equal(migrated.data.config.gui.appMode, "chat");
+
+    client.send({ id: "mcp-probe", type: "probe_mcp_target", target: `${process.execPath} ${MCP_FIXTURE}` });
+    await waitFor(() => response("probe_mcp_target"), 5_000, "MCP target probe");
+    assert.equal(response("probe_mcp_target").data.transport, "stdio");
+    client.send({ id: "mcp-save", type: "save_mcp_server", server: { serverId: "daemon-fixture", transport: "stdio", target: `${process.execPath} ${MCP_FIXTURE}` } });
+    await waitFor(() => response("save_mcp_server"), 5_000, "MCP server save");
+    assert.equal(response("save_mcp_server").data.servers[0].serverId, "daemon-fixture");
+    assert.equal("env" in response("save_mcp_server").data.servers[0], false);
+    client.send({ id: "mcp-test", type: "test_mcp_server", serverId: "daemon-fixture", cwd });
+    await waitFor(() => response("test_mcp_server"), 10_000, "MCP server test");
+    assert.equal(response("test_mcp_server").data.status, "ready");
+    client.send({ id: "mcp-remove", type: "remove_mcp_server", serverId: "daemon-fixture", confirm: true });
+    await waitFor(() => response("remove_mcp_server"), 5_000, "MCP server remove");
+    assert.equal(response("remove_mcp_server").data.servers.length, 0);
     assert.equal(response("list_skills").success, true);
     assert.ok(Array.isArray(response("list_skills").data.skills));
     assert.equal(response("list_extensions").success, true);
     assert.ok(response("list_extensions").data.extensions.some((extension) => extension.name === "global-config"));
+    assert.equal(response("list_commands").success, true);
+    assert.ok(response("list_commands").data.commands.some((command) => command.name === "goal"));
 
     client.send({ type: "list_sessions" });
     await waitFor(() => client.ofType("sessions").length === 1, 3_000, "live session listing");
@@ -1451,6 +1490,17 @@ test("daemon owns tracking consent, checkpoints, net changes, and rewind", async
     assert.equal(typeof firstCheckpoint.userMessageId, "string");
     assert.match(firstCheckpoint.userMessageId, /^user-/, JSON.stringify(firstCheckpoint));
 
+    const observer = connect(daemon.socketPath);
+    await observer.connected();
+    await observer.hello();
+    observer.send({ id: "unattached-list", type: "list_checkpoints", sessionId: "s1" });
+    await waitFor(() => observer.frames.some((frame) => frame.type === "response" && frame.id === "unattached-list"), 5_000, "unattached checkpoint list");
+    const unattachedList = observer.frames.find((frame) => frame.type === "response" && frame.id === "unattached-list");
+    assert.equal(unattachedList.success, true, JSON.stringify(unattachedList));
+    assert.equal(unattachedList.data.checkpoints.length, 1);
+    assert.equal(observer.ofType("attached").length, 0, "checkpoint discovery does not resume the engine for this client");
+    observer.socket.destroy();
+
     client.send({ id: "p2", type: "prompt", message: "write-tracked second", sessionId: "s1" });
     await waitFor(() => client.ofType("agent_start").length === 2, 5_000, "second tracked start");
     client.send({ id: "busy-preview", type: "prepare_rewind", sessionId: "s1", checkpointId: firstCheckpoint.id });
@@ -1465,6 +1515,7 @@ test("daemon owns tracking consent, checkpoints, net changes, and rewind", async
     await waitFor(() => response("forced-preview"), 10_000, "forced rewind preview");
     assert.equal(response("forced-preview").success, true);
     assert.equal(response("forced-preview").data.status, "ready");
+    assert.equal(response("forced-preview").data.removesTask, true, "first-prompt rewind warns that the task will be removed");
     await waitFor(() => client.ofType("agent_settled").length === 2, 10_000, "forced stop settlement");
 
     client.send({ id: "rewind", type: "execute_rewind", sessionId: "s1", operationToken: response("forced-preview").data.operationToken, confirm: true, confirmAffected: true });
@@ -1498,6 +1549,46 @@ test("daemon returns the same estimated change shape when tracking is absent", a
     assert.equal(changes.estimated, true);
     assert.equal(changes.trackerStatus, "unconfigured");
     assert.ok(changes.files.some((file) => file.path === "tracked.txt"));
+
+    client.send({ id: "p2", type: "prompt", message: "read-path AGENTS.md", sessionId: "estimate-1" });
+    await waitFor(() => client.ofType("agent_settled").length === 2, 10_000, "read-only estimate settle");
+    const readOnlyChanges = client.ofType("agent_settled")[1].changes;
+    assert.equal(readOnlyChanges.basis, "tool-estimate");
+    assert.deepEqual(readOnlyChanges.files, [], "successful read paths are not file mutations");
+    client.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
+test("an idle persisted session lists checkpoints without starting an engine", async () => {
+  const daemon = await startDaemon();
+  try {
+    const workspace = join(daemon.daemonDir, "idle-checkpoint-workspace");
+    const sessionDir = join(daemon.agentDir, "sessions", "idle-checkpoint-workspace");
+    await Promise.all([mkdir(workspace, { recursive: true }), mkdir(sessionDir, { recursive: true })]);
+    await writeFile(
+      join(sessionDir, "idle-checkpoint.jsonl"),
+      persistedSession({ id: "idle-checkpoint", cwd: workspace }),
+    );
+    const tracker = await WorkspaceTracker.open(daemon.agentDir, workspace, DEFAULT_GLOBAL_CONFIG.tracking);
+    await tracker.createCheckpoint({
+      sessionId: "idle-checkpoint",
+      userMessageId: "u-idle",
+      promptPreview: "idle checkpoint",
+    });
+
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    client.send({ id: "idle-list", type: "list_checkpoints", sessionId: "idle-checkpoint" });
+    await waitFor(() => client.frames.some((frame) => frame.type === "response" && frame.id === "idle-list"), 5_000, "idle checkpoint list");
+    const listed = client.frames.find((frame) => frame.type === "response" && frame.id === "idle-list");
+    assert.equal(listed.success, true, JSON.stringify(listed));
+    assert.equal(listed.data.checkpoints.length, 1);
+    client.send({ type: "list_sessions" });
+    await waitFor(() => client.ofType("sessions").length === 1, 3_000, "idle engine inventory");
+    assert.equal(client.ofType("sessions")[0].sessions.length, 0, "checkpoint listing starts no engine");
     client.socket.destroy();
   } finally {
     await daemon.cleanup();

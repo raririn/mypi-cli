@@ -33,13 +33,18 @@ function waitFor(predicate, timeoutMs = 5_000, label = "condition") {
 }
 
 async function startDaemon({ mode, failSession, ownershipConflict, persistTurns = false } = {}) {
-  const daemonDir = await mkdtemp(join(tmpdir(), "mypi-hosted-test-"));
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "mypi-hosted-test-"));
+  // Keep daemon/profile churn outside the workspace observed by the tracker.
+  // `daemonDir` remains the helper's historical name for the engine workspace.
+  const daemonDir = join(fixtureRoot, "workspace");
+  const daemonStateDir = join(fixtureRoot, "daemon");
+  await Promise.all([mkdir(daemonDir, { recursive: true }), mkdir(daemonStateDir, { recursive: true })]);
   const child = spawn(process.execPath, [DAEMON_SCRIPT, "__daemon", "--idle-grace-ms", "300"], {
     env: {
       ...process.env,
-      MYPI_DAEMON_DIR: daemonDir,
-      MYPI_AGENT_DIR: join(daemonDir, "agent"),
-      MYPI_CODING_AGENT_DIR: join(daemonDir, "agent"),
+      MYPI_DAEMON_DIR: daemonStateDir,
+      MYPI_AGENT_DIR: join(fixtureRoot, "agent"),
+      MYPI_CODING_AGENT_DIR: join(fixtureRoot, "agent"),
       MYPI_DAEMON_ENGINE_CMD: JSON.stringify([process.execPath, FAKE_ENGINE]),
       FAKE_ENGINE_MODE: mode ?? "",
       FAKE_ENGINE_FAIL_SESSION: failSession ?? "",
@@ -83,7 +88,7 @@ async function startDaemon({ mode, failSession, ownershipConflict, persistTurns 
       }
       for (let attempt = 0; attempt < 20; attempt += 1) {
         try {
-          await rm(daemonDir, { recursive: true, force: true });
+          await rm(fixtureRoot, { recursive: true, force: true });
           break;
         } catch (error) {
           if (error?.code !== "ENOTEMPTY" || attempt === 19) throw error;

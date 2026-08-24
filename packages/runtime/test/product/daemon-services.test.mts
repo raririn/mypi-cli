@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   clearDaemonServiceCache,
   getPersistedSessionStats,
+  listDaemonCommands,
   listDaemonExtensions,
   listPersistedSessions,
   readPersistedSession,
@@ -126,6 +127,7 @@ export default function qaProject(pi) {
     clearDaemonServiceCache();
     const untrusted = await listDaemonExtensions(cwd, agentDir);
     assert.equal(untrusted.some((extension) => extension.name.includes("qa-project")), false);
+    assert.equal((await listDaemonCommands(cwd, agentDir)).some((command) => command.name === "qa-project"), false);
     await assert.rejects(realpath(sentinel), /ENOENT/);
 
     const canonicalCwd = await realpath(cwd);
@@ -133,6 +135,7 @@ export default function qaProject(pi) {
     clearDaemonServiceCache();
     const trusted = await listDaemonExtensions(cwd, agentDir);
     assert.equal(trusted.some((extension) => extension.name.includes("qa-project")), true);
+    assert.equal((await listDaemonCommands(cwd, agentDir)).some((command) => command.name === "qa-project"), true);
     assert.equal(await readFile(sentinel, "utf8"), "loaded\n");
   } finally {
     clearDaemonServiceCache();

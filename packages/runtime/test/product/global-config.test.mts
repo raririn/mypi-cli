@@ -11,12 +11,16 @@ import sessionMaintenanceExtension from "../../src/product/session-maintenance.t
 import {
   DEFAULT_GLOBAL_CONFIG,
 	loadConfiguredServiceTier,
-  loadGlobalConfig,
+	loadGlobalConfig,
+	migrateGuiConfig,
   resetGlobalConfig,
 	updateAdvisorModel,
+	updateDefaultModel,
 	updateSubagentRequirement,
-  updateHistoryConfig,
+	updateHistoryConfig,
+	updateGlobalConfigField,
 	updateServiceTier,
+	resolveConfiguredDefaultModel,
 } from "../../src/product/global-config.ts";
 
 test("global YAML config defaults without creating a file and preserves unrelated configuration", async () => {
@@ -25,6 +29,7 @@ test("global YAML config defaults without creating a file and preserves unrelate
   try {
     const missing = await loadGlobalConfig(path);
     assert.deepEqual(missing.config, DEFAULT_GLOBAL_CONFIG);
+	assert.equal(missing.defaultModelConfigured, false);
     await assert.rejects(lstat(path), (error: NodeJS.ErrnoException) => error.code === "ENOENT");
 
     await writeFile(path, `version: 1\nfuture:\n  enabled: true\nhistory:\n  maxActive: 17\n`, { mode: 0o600 });
@@ -47,13 +52,39 @@ test("global YAML config defaults without creating a file and preserves unrelate
 	assert.equal(tier.serviceTier, "priority");
 	assert.equal(parse(await readFile(path, "utf8")).serviceTier, "priority");
 	await updateAdvisorModel("anthropic/claude-haiku-4-5", path);
+	await updateDefaultModel("openai/gpt-5.5", path);
 	await updateSubagentRequirement("requireAdvisor", true, path);
 	const advisor = await loadGlobalConfig(path);
 	assert.equal(advisor.config.subagents.advisorModel, "anthropic/claude-haiku-4-5");
 	assert.equal(advisor.config.subagents.requireAdvisor, true);
 	assert.equal(advisor.config.subagents.requireReviewer, false);
+	assert.equal(advisor.config.defaultModel, "openai/gpt-5.5");
+	assert.equal(advisor.defaultModelConfigured, true);
 	assert.deepEqual(parse(await readFile(path, "utf8")).future, { enabled: true });
     if (process.platform !== "win32") assert.equal((await lstat(path)).mode & 0o777, 0o600);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("legacy settings model migrates once while explicit config null remains authoritative", async () => {
+  const root = await mkdtemp(join(tmpdir(), "mypi-global-config-model-"));
+  const path = join(root, "config.yaml");
+  try {
+    assert.equal(await resolveConfiguredDefaultModel({
+      path,
+      legacyProvider: "anthropic",
+      legacyModelId: "claude-sonnet",
+    }), "anthropic/claude-sonnet");
+    assert.equal(parse(await readFile(path, "utf8")).defaultModel, "anthropic/claude-sonnet");
+
+    await updateDefaultModel(null, path);
+    assert.equal(await resolveConfiguredDefaultModel({
+      path,
+      legacyProvider: "openai",
+      legacyModelId: "gpt-5.5",
+    }), null);
+    assert.equal(parse(await readFile(path, "utf8")).defaultModel, null);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -70,6 +101,7 @@ test("malformed, unsupported, and partially invalid YAML use complete defaults a
 	  "version: 1\nhistory:\n  maxActive: 42\nsubagents:\n  advisorModel: invalid\n",
       "version: 1\nhistory:\n  maxActive: 42\nsubagents:\n  requireAdvisor: yes\n",
 	  "version: 1\nserviceTier: fastest\n",
+	  "version: 1\ndefaultModel: provider-only\n",
 	  "version: 1\ntracking:\n  maxSessionCheckpoints: 2\n  maxDetachedCheckpoints: 3\n",
       `version: 1\nfuture: ${"x".repeat(1024 * 1024)}\n`,
     ]) {
@@ -118,6 +150,47 @@ test("global config rejects symlinks and serializes concurrent field updates", a
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("GUI config validates, preserves unrelated YAML, and migrates absent fields only", async () => {
+	const root = await mkdtemp(join(tmpdir(), "mypi-global-config-gui-"));
+	const path = join(root, "config.yaml");
+	try {
+		await writeFile(path, "version: 1\nfuture:\n  retained: true\nmcp:\n  servers:\n    private:\n      tokenEnv: SECRET\ngui:\n  theme:\n    mode: light\n", { mode: 0o600 });
+		await migrateGuiConfig({
+			appMode: "chat",
+			theme: { mode: "dark", preset: "nord" },
+			layout: { railWidth: 300, workbenchWidth: 600 },
+			shortcuts: { commandPalette: "Ctrl+Alt+K" },
+			remoteHosts: [],
+		}, path);
+		let loaded = await loadGlobalConfig(path);
+		assert.equal(loaded.config.gui.appMode, "chat");
+		assert.equal(loaded.config.gui.theme.mode, "light", "existing config wins migration");
+		assert.equal(loaded.config.gui.theme.preset, "nord");
+		assert.equal(loaded.config.gui.shortcuts.commandPalette, "Ctrl+Alt+K");
+		assert.equal(loaded.config.gui.shortcuts.globalSearch, "CmdOrCtrl+Shift+F");
+
+		await Promise.all([
+			updateGlobalConfigField("gui.layout.railWidth", 320, path),
+			updateGlobalConfigField("gui.layout.workbenchWidth", 640, path),
+			updateGlobalConfigField("history.maxActive", 44, path),
+			updateGlobalConfigField("gui.shortcuts.threadSearch", "Ctrl+Alt+T", path),
+		]);
+		loaded = await loadGlobalConfig(path);
+		assert.equal(loaded.config.gui.layout.railWidth, 320);
+		assert.equal(loaded.config.gui.layout.workbenchWidth, 640);
+		assert.equal(loaded.config.history.maxActive, 44);
+		assert.equal(loaded.config.gui.shortcuts.threadSearch, "Ctrl+Alt+T");
+		const source = parse(await readFile(path, "utf8"));
+		assert.deepEqual(source.future, { retained: true });
+		assert.equal(source.mcp.servers.private.tokenEnv, "SECRET");
+
+		await assert.rejects(updateGlobalConfigField("gui.shortcuts.commandPalette", "P", path), /invalid|configuration/i);
+		await assert.rejects(updateGlobalConfigField("gui.layout.railWidth", 999, path), /invalid|configuration/i);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
 });
 
 test("config reset and archive cleanup remain user command authority, not extension-message hooks", () => {

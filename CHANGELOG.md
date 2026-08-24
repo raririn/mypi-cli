@@ -1,5 +1,68 @@
 # MyPi CLI changelog
 
+## 2.0.0-beta.8 — 2026-08-24
+
+- Extends validated `gui.shortcuts` to the complete application keymap while
+  retaining atomic cross-client config authority and live desktop rebinding.
+- Adds trusted resource-file reads that accept only exact current discovery
+  inventory paths, regular non-symlink files, and a 2 MiB UTF-8 preview bound.
+- Extracts MCP wizard services over the existing probe, tokenizer/name
+  suggestion, config parser/redactor, atomic persistence, and MCP manager.
+- Adds sanitized engine-free daemon operations for MCP list/probe/save,
+  enable/disable, live catalog test, and confirmed removal. Secrets remain
+  environment references and raw MCP records never cross the client boundary.
+- Adds confirmed in-app global-config repair without requiring a CLI command;
+  protocol generation remains 2.
+
+## 2.0.0-beta.7 — 2026-08-24
+
+- Keeps exact protocol 2 and adds engine-free sanitized global-configuration
+  read, update, and GUI-migration services for desktop Settings.
+- Extends version-1 `config.yaml` with validated `gui:` preferences for product
+  mode, theme/preset, layout widths, command-palette shortcut, and remote host
+  records. Unknown keys and raw MCP configuration survive unrelated changes.
+- Serializes same-process config mutations and locks the exact config target,
+  preventing collisions with unrelated profile locks while preserving atomic
+  cross-client writes and fail-closed unsafe/malformed behavior.
+- Sanitized responses omit raw MCP values and expose only bounded server IDs;
+  update fields are runtime-allowlisted to prevent arbitrary path mutation.
+
+## 2.0.0-beta.6 — 2026-08-24
+
+- Completes the beta.5 daemon/catalog correction as one exact CLI/GUI pair;
+  beta.5 is retained as development evidence and is not a release candidate.
+- Keeps exact session-daemon protocol 2. The daemon remains authoritative for
+  archive, command inventory, model catalog, workspace tracking, and rewind;
+  the GUI now consumes those services with fail-closed slash-command routing
+  and catalog-validated history-model restoration.
+- Carries the beta.5 global `config.yaml.defaultModel` authority, engine-free
+  command discovery and checkpoint listing, accurate mutation estimates,
+  durable continuation settlement, and rewind behavior into the qualified
+  beta.6 package without a protocol-generation change.
+
+## 2.0.0-beta.5 — 2026-08-24
+
+- Keeps exact session-daemon protocol 2 and requires deployment to purge the
+  unreleased stale beta.1 daemon before launching this pair. Fresh-session
+  draft correlation remains the beta.4+ attach identity contract.
+- Restricted tracker-unavailable and historical change estimates to successful
+  calls from known file-mutation tools. Read, preview, search, image, and other
+  tools with a `path` argument no longer fabricate mutations such as
+  `AGENTS.md`, `.` directories, or temporary screenshots.
+- Added engine-free, cwd-scoped slash-command inventory for extensions, prompt
+  templates, and skills. Draft and idle-session GUIs can discover the complete
+  resource command set before the first prompt.
+- Made checkpoint listing an unattached daemon service. Opening Rewind no
+  longer resumes the full session engine; engine startup is deferred until a
+  checkpoint is selected for preview.
+- Model catalog service now returns the exact runtime-resolved default model so
+  a fresh GUI task can make the selection explicit; a genuinely unavailable
+  default remains null and the GUI denies fresh sends.
+- Rewind preparation identifies a checkpoint before the first user prompt so
+  GUI and TUI can warn that the task/history focus will be removed. The preview
+  remains a single aggregate diff from a fresh current-workspace capture to the
+  requested snapshot, with unique net paths.
+
 ## 2.0.0-beta.4 — 2026-08-24
 
 - Temporarily removed the model-callable `schedule_prompt` and `watch_files`

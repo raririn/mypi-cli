@@ -5,7 +5,25 @@ import { join } from "node:path";
 import test from "node:test";
 import { ProjectTrustStore } from "../../src/core/trust-manager.ts";
 import { DEFAULT_GLOBAL_CONFIG } from "../../src/product/global-config.ts";
-import { estimateWorkspaceTracking, WorkspaceTracker } from "../../src/product/workspace-tracker.ts";
+import { estimatePersistedSessionChanges, estimateWorkspaceTracking, WorkspaceTracker } from "../../src/product/workspace-tracker.ts";
+
+test("historical estimates accept only successful file-mutation tools", () => {
+  const entries = [
+    { type: "message", id: "u1", timestamp: "2026-08-24T00:00:00.000Z", message: { role: "user", content: "inspect then edit" } },
+    { type: "message", id: "a1", message: { role: "assistant", content: [
+      { type: "toolCall", id: "read-agents", name: "read", arguments: { path: "AGENTS.md" } },
+      { type: "toolCall", id: "view-root", name: "view_image", arguments: { path: "." } },
+      { type: "toolCall", id: "write-source", name: "write", arguments: { path: "src/a.ts", content: "one\ntwo\n" } },
+      { type: "toolCall", id: "failed-edit", name: "edit", arguments: { path: "src/b.ts" } },
+    ] } },
+    { type: "message", id: "r1", message: { role: "toolResult", toolCallId: "read-agents", isError: false } },
+    { type: "message", id: "r2", message: { role: "toolResult", toolCallId: "view-root", isError: false } },
+    { type: "message", id: "r3", message: { role: "toolResult", toolCallId: "write-source", isError: false } },
+    { type: "message", id: "r4", message: { role: "toolResult", toolCallId: "failed-edit", isError: true } },
+  ];
+  const changes = estimatePersistedSessionChanges("s1", entries);
+  assert.deepEqual(changes.flatMap((change) => change.files.map((file) => file.path)), ["src/a.ts"]);
+});
 
 test("tracking consent migrates the legacy trust map without inheriting tracking", async () => {
   const root = await mkdtemp(join(tmpdir(), "mypi-tracking-trust-"));
@@ -85,6 +103,7 @@ test("checkpoint retention is per session and rewind preserves foreign checkpoin
     assert.ok(!(await tracker.listCheckpoints("a")).some((item) => item.id === a1.id));
 
     const preview = await tracker.previewRewind("a", a3.id);
+    assert.deepEqual(preview.files.map((file) => file.path), ["value.txt"], "preview is one aggregate current-to-snapshot diff with unique paths");
     const result = await tracker.rewind({ sessionId: "a", checkpointId: a3.id, expectedSequence: preview.sequence, expectedGeneration: preview.generation });
     assert.equal(result.removed, 2, "the selected checkpoint and every later owned checkpoint are removed");
     assert.equal(await readFile(join(workspace, "value.txt"), "utf8"), "three\n");

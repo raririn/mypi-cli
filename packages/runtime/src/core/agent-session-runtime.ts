@@ -120,6 +120,8 @@ export type PreparedRewind =
 		files: WorkspaceChangeSet["files"];
 		affectedOtherTasks: number;
 		laterOwned: number;
+		/** Rewinding before the first user prompt replaces this task with an empty branch. */
+		removesTask?: boolean;
 	};
 
 export interface DaemonWorkspaceActions {

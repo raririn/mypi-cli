@@ -1,6 +1,9 @@
 import type { AgentTool, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { fauxAssistantMessage, fauxToolCall, type Model, type Usage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { parse } from "yaml";
 import { afterEach, describe, expect, it } from "vitest";
 import type { BuildSystemPromptOptions, ExtensionAPI } from "../../src/index.ts";
 import { createHarness, getAssistantTexts, type Harness } from "./harness.ts";
@@ -46,8 +49,10 @@ describe("AgentSession model and extension characterization", () => {
 
 		const initialModel = harness.getModel("faux-1")!;
 		await harness.session.setModel(initialModel, { persistGlobal: true });
-		expect(harness.settingsManager.getDefaultProvider()).toBe(initialModel.provider);
-		expect(harness.settingsManager.getDefaultModel()).toBe(initialModel.id);
+		expect(harness.settingsManager.getDefaultProvider()).toBeUndefined();
+		expect(harness.settingsManager.getDefaultModel()).toBeUndefined();
+		expect(parse(await readFile(join(harness.tempDir, "config.yaml"), "utf8")).defaultModel)
+			.toBe(`${initialModel.provider}/${initialModel.id}`);
 	});
 
 	it("cycles through scoped models and preserves the scoped thinking preference", async () => {

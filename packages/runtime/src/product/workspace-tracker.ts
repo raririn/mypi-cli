@@ -669,6 +669,14 @@ export function estimatedChangeSet(input: {
 	};
 }
 
+/** Only successful calls to known file-mutation tools may seed fallback
+ * change evidence. Read/preview/search tools also commonly carry a `path`
+ * argument; treating every such argument as a write made ordinary reads look
+ * like mutations whenever exact workspace tracking was unavailable. */
+export function isEstimatedFileMutationTool(name: string): boolean {
+	return /^(?:write|edit|multi_?edit|apply_?patch|str_replace(?:_editor)?|create_file|notebook_?edit)$/iu.test(name);
+}
+
 function stableEstimateId(sessionId: string, userMessageId: string): string {
 	return `estimated-${createHash("sha256").update(`${sessionId}\0${userMessageId}`).digest("hex").slice(0, 24)}`;
 }
@@ -726,6 +734,7 @@ export function estimatePersistedSessionChanges(sessionId: string, entries: read
 		if (message.role !== "toolResult" || message.isError === true || typeof message.toolCallId !== "string") continue;
 		const call = current.calls.get(message.toolCallId);
 		if (!call) continue;
+		if (!isEstimatedFileMutationTool(call.name)) continue;
 		const candidate = call.args.path ?? call.args.file_path ?? call.args.filePath;
 		if (typeof candidate !== "string" || !candidate) continue;
 		const path = candidate.replaceAll("\\", "/");
