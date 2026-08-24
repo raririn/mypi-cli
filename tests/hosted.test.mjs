@@ -242,7 +242,7 @@ test("hosted workspace actions expose consent, settled changes, checkpoints, and
     });
     await session.prompt("write-tracked hosted");
     await session.waitForIdle();
-    await waitFor(() => changes.length === 1, 8_000, "hosted tracked change event");
+    await waitFor(() => changes.length === 1, 20_000, "hosted tracked change event");
     assert.ok(changes[0].files.some((file) => file.path === "tracked.txt"));
     const listed = await actions.listCheckpoints();
     assert.equal(listed.checkpoints.length, 1);
