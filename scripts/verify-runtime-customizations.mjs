@@ -143,14 +143,23 @@ for (const fragment of [
   }
 }
 const hooks = await readFile(join(packageRoot, "dist", "product", "hooks.js"), "utf8");
-for (const fragment of ['registerCommand("hooks"', "loadMyPiHooksConfig", "runMyPiHook", "Agent hook tools are temporarily disabled"]) {
+for (const fragment of [
+  'registerCommand("hooks"',
+  "loadMyPiHooksConfig",
+  "runMyPiHook",
+  // v2 one-shot agent hooks: single wakeup slot, typed non-user delivery.
+  'name: "schedule_wakeup"',
+  'name: "watch_files"',
+  "mypi-hook-fired",
+  "one wakeup slot per session",
+]) {
   if (!hooks.includes(fragment)) {
-    throw new Error(`Installed Pi ${expectedVersion} is missing user hook policy behavior (${fragment}).`);
+    throw new Error(`Installed Pi ${expectedVersion} is missing hook policy behavior (${fragment}).`);
   }
 }
-for (const forbidden of ['registerTool({ name: "schedule_prompt"', 'registerTool({ name: "watch_files"', "sendUserMessage("]) {
+for (const forbidden of ['name: "schedule_prompt"', "sendUserMessage(", 'deliverAs: "steer"']) {
   if (hooks.includes(forbidden)) {
-    throw new Error(`Installed Pi ${expectedVersion} still exposes disabled model agent-hook behavior (${forbidden}).`);
+    throw new Error(`Installed Pi ${expectedVersion} still exposes retired agent-hook delivery (${forbidden}).`);
   }
 }
 const continuationSession = await readFile(join(packageRoot, "dist", "core", "agent-session.js"), "utf8");

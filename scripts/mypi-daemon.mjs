@@ -127,6 +127,7 @@ import {
   prepareChatEngineLaunch,
 	probeMcpWizardTarget,
 	removeMcpWizardServer,
+  readGlobalDefaultSafetyMode,
   readPersistedSession,
 	readDaemonResourceFile,
 	resetGlobalConfig,
@@ -139,6 +140,7 @@ import {
 	testMcpWizardServer,
   updateDefaultModel,
 	updateGlobalConfigField,
+	updateGlobalDefaultSafetyMode,
 	sanitizeGlobalConfig,
   WorkspaceTracker,
 } from "@earendil-works/pi-coding-agent";
@@ -257,6 +259,17 @@ const liveChangeSets = new Map();
 const projectMaintenanceRoots = new Set();
 const daemonAgentDir = getAgentDir();
 const daemonGlobalConfigPath = resolve(daemonAgentDir, "config.yaml");
+/** Sanitized config.yaml plus daemon-composed settings.json extras (additive
+ *  `safety` section; newly created sessions capture safety.defaultMode). */
+function composeSanitizedGlobalConfig(config) {
+  let defaultMode = "full";
+  try {
+    defaultMode = readGlobalDefaultSafetyMode(daemonAgentDir);
+  } catch {
+    // Unreadable settings.json must not break config service replies.
+  }
+  return { ...sanitizeGlobalConfig(config), safety: { defaultMode } };
+}
 
 let server = null;
 let shuttingDown = false;
@@ -1861,7 +1874,7 @@ function handleClientFrame(client, frame) {
 
   if (frame?.type === "get_global_config") {
     sendDaemonResponse(client, frame, "get_global_config", loadGlobalConfig(daemonGlobalConfigPath).then((loaded) => ({
-      config: sanitizeGlobalConfig(loaded.config),
+      config: composeSanitizedGlobalConfig(loaded.config),
       ...(loaded.diagnostic ? { diagnostic: { code: loaded.diagnostic.code, message: loaded.diagnostic.message } } : {}),
     })));
     return;
@@ -1869,8 +1882,18 @@ function handleClientFrame(client, frame) {
 
   if (frame?.type === "update_global_config") {
     const field = typeof frame.field === "string" ? frame.field : "";
+    if (field === "safety.defaultMode") {
+      // settings.json authority, not config.yaml: newly created sessions on
+      // every client capture this default (agent-session safety seeding).
+      sendDaemonResponse(client, frame, "update_global_config", Promise.resolve().then(async () => {
+        await updateGlobalDefaultSafetyMode(frame.value, daemonAgentDir);
+        const loaded = await loadGlobalConfig(daemonGlobalConfigPath);
+        return { config: composeSanitizedGlobalConfig(loaded.config) };
+      }));
+      return;
+    }
     sendDaemonResponse(client, frame, "update_global_config", updateGlobalConfigField(field, frame.value, daemonGlobalConfigPath).then((config) => ({
-      config: sanitizeGlobalConfig(config),
+      config: composeSanitizedGlobalConfig(config),
     })));
     return;
   }
@@ -1878,7 +1901,7 @@ function handleClientFrame(client, frame) {
   if (frame?.type === "migrate_gui_config") {
     const candidate = frame.gui && typeof frame.gui === "object" && !Array.isArray(frame.gui) ? frame.gui : {};
     sendDaemonResponse(client, frame, "migrate_gui_config", migrateGuiConfig(candidate, daemonGlobalConfigPath).then((config) => ({
-      config: sanitizeGlobalConfig(config),
+      config: composeSanitizedGlobalConfig(config),
     })));
     return;
   }
@@ -1888,7 +1911,7 @@ function handleClientFrame(client, frame) {
       sendToClient(client, { type: "response", command: "repair_global_config", success: false, ...(typeof frame.id === "string" ? { id: frame.id } : {}), error: "Configuration repair requires in-app confirmation." });
       return;
     }
-    sendDaemonResponse(client, frame, "repair_global_config", resetGlobalConfig(daemonGlobalConfigPath).then((config) => ({ config: sanitizeGlobalConfig(config) })));
+    sendDaemonResponse(client, frame, "repair_global_config", resetGlobalConfig(daemonGlobalConfigPath).then((config) => ({ config: composeSanitizedGlobalConfig(config) })));
     return;
   }
 

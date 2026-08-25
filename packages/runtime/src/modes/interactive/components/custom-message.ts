@@ -88,28 +88,43 @@ export class CustomMessageComponent extends Container {
 		this.addChild(this.box);
 		this.box.clear();
 		if (this.message.customType === "mypi-subagent-results" && this.renderSubagentResults()) return;
+		if (this.message.customType === "mypi-hook-fired" && this.renderHookFired()) return;
 
 		// Default rendering: label + content
 		const label = theme.fg("customMessageLabel", `\x1b[1m[${this.message.customType}]\x1b[22m`);
 		this.box.addChild(new Text(label, 0, 0));
 		this.box.addChild(new Spacer(1));
-
-		// Extract text content
-		let text: string;
-		if (typeof this.message.content === "string") {
-			text = this.message.content;
-		} else {
-			text = this.message.content
-				.filter((c): c is TextContent => c.type === "text")
-				.map((c) => c.text)
-				.join("\n");
-		}
-
 		this.box.addChild(
-			new Markdown(text, 0, 0, this.markdownTheme, {
+			new Markdown(this.contentText(), 0, 0, this.markdownTheme, {
 				color: (text: string) => theme.fg("customMessageText", text),
 			}),
 		);
+	}
+
+	private contentText(): string {
+		if (typeof this.message.content === "string") return this.message.content;
+		return this.message.content
+			.filter((c): c is TextContent => c.type === "text")
+			.map((c) => c.text)
+			.join("\n");
+	}
+
+	/** Fired agent hooks: a labeled row with just the firing lines — the
+	 *  notification boilerplate is model-facing framing, not user information. */
+	private renderHookFired(): boolean {
+		const firings = this.contentText()
+			.split("\n")
+			.filter((line) => line.startsWith("- "))
+			.map((line) => line.slice(2));
+		if (firings.length === 0) return false;
+		this.box.addChild(new Text(theme.fg("customMessageLabel", "\x1b[1m⏰ Hook fired\x1b[22m"), 0, 0));
+		this.box.addChild(new Spacer(1));
+		this.box.addChild(
+			new Markdown(firings.join("\n"), 0, 0, this.markdownTheme, {
+				color: (text: string) => theme.fg("customMessageText", text),
+			}),
+		);
+		return true;
 	}
 
 	private renderSubagentResults(): boolean {

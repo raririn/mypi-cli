@@ -1,6 +1,27 @@
 # MyPi CLI changelog
 
-## Unreleased
+## 2.0.0-beta.10 — 2026-08-25
+
+- Model-callable agent hooks return with the reviewed greedy one-trigger
+  lifecycle and typed internal-message delivery (the beta.4 re-entry bar):
+  `schedule_wakeup` replaces `schedule_prompt` with a single per-session
+  wakeup slot (scheduling again replaces it, firing consumes it, delay floor
+  raised to 60s), and `watch_files` watches are one-shot (first change fires
+  and consumes the watch; cap 3). Firings deliver as `mypi-hook-fired`
+  custom messages that state they are not user input — never a steer, never
+  a fabricated user message. While a run is active, firings coalesce and
+  deliver at settlement through continuation arbitration; after an aborted
+  or failed run they wait in context without starting a turn; when idle
+  they start a turn immediately. Both tools' descriptions forbid polling
+  subagent/goal/plan state, which arrives automatically at run boundaries.
+  The TUI renders fired hooks as a "⏰ Hook fired" row showing only the
+  firing lines, so an automated wakeup never reads as user input.
+- The daemon config service now exposes the host-global default safety mode
+  (settings.json `safety.defaultMode`, the value newly created sessions
+  capture): `get_global_config` replies gain an additive
+  `config.safety.defaultMode`, and `update_global_config` accepts field
+  `"safety.defaultMode"`, routed to the settings store (validated against
+  the safety ladder, persisted before the reply). Protocol stays 2.
 
 Transcript write hygiene and compaction (session-daemon protocol stays 2;
 all additions are backward compatible):

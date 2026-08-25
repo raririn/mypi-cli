@@ -1,7 +1,7 @@
 {
   "name": "@raririn/mypi-source",
   "private": true,
-  "version": "2.0.0-beta.9",
+  "version": "2.0.0-beta.10",
   "mypiRelease": {
     "name": "Roma",
     "chronicle": 1,
@@ -18,7 +18,8 @@
     "build": "node scripts/build-runtime-packages.mjs",
     "clean": "shx rm -rf build dist packages/ai/dist packages/agent/dist packages/tui/dist packages/runtime/dist",
     "package": "pnpm build && node scripts/build-npm-package.mjs",
-    "test": "pnpm test:product && pnpm test:host && pnpm test:daemon && pnpm test:hosted && pnpm test:rpc-dialogs && pnpm test:preattach && pnpm test:distribution",
+    "test": "pnpm test:product && pnpm test:host && pnpm test:daemon && pnpm test:hosted && pnpm test:rpc-dialogs && pnpm test:agent-hooks && pnpm test:preattach && pnpm test:distribution",
+    "test:agent-hooks": "node --test tests/agent-hooks-engine.test.mjs",
     "test:distribution": "node --test tests/distribution.test.mjs",
     "test:preattach": "node --test tests/preattach.test.mjs",
     "test:host": "node --test tests/host.test.mjs tests/subagent-rpc.test.mjs tests/mcp-rpc.test.mjs",

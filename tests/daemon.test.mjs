@@ -302,6 +302,7 @@ test("daemon lists and reads persisted history, models, resources, and commands 
     await waitFor(() => response("get_global_config"), 5_000, "global config read");
     assert.equal(response("get_global_config").data.config.gui.shortcuts.commandPalette, "CmdOrCtrl+Shift+P");
     assert.equal("mcp" in response("get_global_config").data.config, false, "raw MCP values are not exposed");
+    assert.equal(response("get_global_config").data.config.safety.defaultMode, "full", "composed settings.json default safety mode");
 
     client.send({ id: "gui-shortcut", type: "update_global_config", field: "gui.shortcuts.commandPalette", value: "Ctrl+Alt+K" });
     await waitFor(() => response("update_global_config"), 5_000, "global config update");
@@ -311,6 +312,16 @@ test("daemon lists and reads persisted history, models, resources, and commands 
     const migrated = client.frames.find((frame) => frame.id === "gui-migrate");
     assert.equal(migrated.data.config.gui.shortcuts.commandPalette, "Ctrl+Alt+K", "existing shared field wins migration");
     assert.equal(migrated.data.config.gui.appMode, "chat");
+
+    client.send({ id: "safety-default", type: "update_global_config", field: "safety.defaultMode", value: "sandbox-ask" });
+    await waitFor(() => client.frames.some((frame) => frame.id === "safety-default"), 5_000, "default safety mode update");
+    const safetyUpdated = client.frames.find((frame) => frame.id === "safety-default");
+    assert.equal(safetyUpdated.success, true);
+    assert.equal(safetyUpdated.data.config.safety.defaultMode, "sandbox-ask");
+    assert.match(await readFile(join(daemon.agentDir, "settings.json"), "utf8"), /"defaultMode":\s*"sandbox-ask"/, "settings.json is the authority for the default safety mode");
+    client.send({ id: "safety-invalid", type: "update_global_config", field: "safety.defaultMode", value: "everything" });
+    await waitFor(() => client.frames.some((frame) => frame.id === "safety-invalid"), 5_000, "invalid safety mode rejection");
+    assert.equal(client.frames.find((frame) => frame.id === "safety-invalid").success, false);
 
     client.send({ id: "mcp-probe", type: "probe_mcp_target", target: `${process.execPath} ${MCP_FIXTURE}` });
     await waitFor(() => response("probe_mcp_target"), 5_000, "MCP target probe");

@@ -1303,3 +1303,23 @@ export class SettingsManager {
 		this.save();
 	}
 }
+
+/**
+ * Daemon-level access to the host-global default safety mode
+ * (settings.json `safety.defaultMode`) without a session or project scope.
+ * Newly created sessions capture this value; running sessions are unaffected.
+ */
+export function readGlobalDefaultSafetyMode(agentDir: string = getAgentDir()): SafetyMode {
+	return SettingsManager.create(resolvePath(agentDir), agentDir).getDefaultSafetyMode();
+}
+
+export async function updateGlobalDefaultSafetyMode(mode: SafetyMode, agentDir: string = getAgentDir()): Promise<SafetyMode> {
+	if (!isSafetyMode(mode)) throw new Error(`Invalid safety mode: ${String(mode)}`);
+	const manager = SettingsManager.create(resolvePath(agentDir), agentDir);
+	manager.setDefaultSafetyMode(mode);
+	// Settings writes are queued; surface persistence before replying.
+	await manager.flush();
+	const failure = manager.drainErrors().find((entry) => entry.scope === "global");
+	if (failure) throw new Error(`Could not persist the default safety mode: ${failure.error.message}`);
+	return manager.getDefaultSafetyMode();
+}

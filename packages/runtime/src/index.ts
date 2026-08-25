@@ -269,9 +269,11 @@ export {
 	type ImageSettings,
 	type PackageSource,
 	type RetrySettings,
+	readGlobalDefaultSafetyMode,
 	type SafetySettings,
 	SettingsManager,
 	type SettingsManagerCreateOptions,
+	updateGlobalDefaultSafetyMode,
 } from "./core/settings-manager.ts";
 // Skills
 export {

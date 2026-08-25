@@ -41,4 +41,38 @@ describe("CustomMessageComponent", () => {
 				.some((line) => line.startsWith("custom")),
 		).toBe(true);
 	});
+
+	test("renders mypi-hook-fired as a labeled row with only the firing lines", () => {
+		initTheme("dark");
+		const message: CustomMessage = {
+			role: "custom",
+			customType: "mypi-hook-fired",
+			content:
+				"[Automated agent-hook notification — not a user message; the user has not sent anything new.]\n- wakeup w1 (after 300s): recheck the build\n- file watch f2 (/tmp/out.log): artifact changed\nAct on this only if it is still relevant. Subagent, goal, and plan results arrive automatically at run boundaries; never schedule wakeups to poll for them.",
+			display: true,
+			timestamp: Date.now(),
+		};
+		const lines = new CustomMessageComponent(message, undefined, undefined, 1).render(80).map(stripAnsi);
+		const text = lines.join("\n");
+		expect(text).toContain("⏰ Hook fired");
+		expect(text).toContain("wakeup w1 (after 300s): recheck the build");
+		expect(text).toContain("file watch f2 (/tmp/out.log): artifact changed");
+		expect(text).not.toContain("Automated agent-hook notification");
+		expect(text).not.toContain("never schedule wakeups");
+		expect(text).not.toContain("[mypi-hook-fired]");
+	});
+
+	test("keeps the generic label rendering for other custom types", () => {
+		initTheme("dark");
+		const message: CustomMessage = {
+			role: "custom",
+			customType: "mypi-hook-context",
+			content: "[hook context]\ninjected",
+			display: true,
+			timestamp: Date.now(),
+		};
+		const text = new CustomMessageComponent(message, undefined, undefined, 1).render(80).map(stripAnsi).join("\n");
+		expect(text).toContain("[mypi-hook-context]");
+		expect(text).toContain("injected");
+	});
 });
