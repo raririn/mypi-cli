@@ -1322,8 +1322,17 @@ export interface ExtensionAPI {
 		options?: { deliverAs?: "steer" | "followUp" },
 	): void;
 
-	/** Append a custom entry to the session for state persistence (not sent to LLM). */
-	appendEntry<T = unknown>(customType: string, data?: T): void;
+	/**
+	 * Append a custom entry to the session for state persistence (not sent to LLM).
+	 *
+	 * Entries are `kind: "event"` by default: something happened once, one line
+	 * is written. Declare `kind: "snapshot"` for last-writer-wins state (only
+	 * the latest copy is ever read back): the engine then skips appends whose
+	 * significant content is unchanged and throttles pure churn, so state
+	 * features cannot flood the transcript (a goal run once wrote 9,770 full
+	 * snapshots — 65 MB — where dozens carried all the information).
+	 */
+	appendEntry<T = unknown>(customType: string, data?: T, options?: AppendEntryOptions): void;
 
 	// =========================================================================
 	// Session Metadata
@@ -1611,7 +1620,19 @@ export type RequestBuiltInContinuationHandler = <T = unknown>(
 	options: BuiltInContinuationOptions,
 ) => void;
 
-export type AppendEntryHandler = <T = unknown>(customType: string, data?: T) => void;
+export interface AppendEntryOptions {
+	/** "event" (default): always append. "snapshot": last-writer-wins state —
+	 *  the engine dedups unchanged content and throttles churn. */
+	kind?: "event" | "snapshot";
+	/** Snapshot-only: top-level data keys ignored when deciding whether the
+	 *  state meaningfully changed (timestamps, revision counters). */
+	volatileKeys?: readonly string[];
+	/** Snapshot-only: minimum interval between appends whose significant
+	 *  content is unchanged apart from volatile keys. Default 30 000 ms. */
+	minIntervalMs?: number;
+}
+
+export type AppendEntryHandler = <T = unknown>(customType: string, data?: T, options?: AppendEntryOptions) => void;
 
 export type SetSessionNameHandler = (name: string) => void;
 

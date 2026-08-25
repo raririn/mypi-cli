@@ -132,6 +132,7 @@ import {
 	resetGlobalConfig,
 	removeWorkspaceTracker,
   runNewSessionMaintenance,
+  compactPersistedSession,
   setPersistedSessionArchived,
 	saveMcpWizardServer,
 	setMcpWizardServerEnabled,
@@ -1778,6 +1779,20 @@ function handleClientFrame(client, frame) {
     return;
   }
 
+  if (frame?.type === "compact_session") {
+    const sessionId = typeof frame.sessionId === "string" ? frame.sessionId : "";
+    sendDaemonResponse(client, frame, "compact_session", (async () => {
+      if (!sessionId || frame.confirm !== true) throw new Error("compact_session requires sessionId and confirm: true");
+      const live = [...sessions.values()].find((session) =>
+        !session.exited && (session.sessionId === sessionId || session.nativeSessionId === sessionId || session.key === sessionId),
+      );
+      if (live) throw new Error("Session is live; compaction only runs on idle sessions.");
+      const result = await compactPersistedSession(sessionId, daemonAgentDir);
+      if (result.compacted) broadcastAll({ type: "persisted_changed", sessionId, kind: "updated" });
+      return result;
+    })());
+    return true;
+  }
   if (frame?.type === "set_session_archived") {
     const sessionId = typeof frame.sessionId === "string" ? frame.sessionId : "";
     sendDaemonResponse(client, frame, "set_session_archived", (async () => {

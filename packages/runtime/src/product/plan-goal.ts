@@ -204,8 +204,17 @@ export default function planGoalBuiltIn(pi: BuiltInSessionAPI): void {
 		return result;
 	};
 
+	// Goal state is last-writer-wins on restore (only the final snapshot on
+	// the branch is read back). The platform's snapshot policy dedups
+	// unchanged state and throttles timestamp/revision churn — a measured
+	// session once carried 9,770 full snapshots (65 MB of an 88 MB
+	// transcript) before this discipline existed.
 	function persist(): void {
-		if (state.workflow !== "legacy") pi.appendEntry(GOAL_STATE_ENTRY, state);
+		if (state.workflow === "legacy") return;
+		pi.appendEntry(GOAL_STATE_ENTRY, state, {
+			kind: "snapshot",
+			volatileKeys: ["updatedAt", "revision"],
+		});
 	}
 
 	function setState(next: GoalRuntimeState): void {

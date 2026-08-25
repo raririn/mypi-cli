@@ -1,5 +1,38 @@
 # MyPi CLI changelog
 
+## Unreleased
+
+Transcript write hygiene and compaction (session-daemon protocol stays 2;
+all additions are backward compatible):
+
+- `appendEntry` gains a declared entry nature: `kind: "snapshot"` marks
+  last-writer-wins state. The engine — not the feature — skips appends whose
+  significant content is unchanged (`volatileKeys` are ignored when
+  comparing) and throttles pure churn to one snapshot per 30 s
+  (`minIntervalMs`), bounding crash-recovery staleness. Snapshot entries
+  carry `snapshot: true` in the transcript. A log-only flood guard flags any
+  custom type writing at bloat-producing rates (>60 entries or >512 KB per
+  minute). Policy lives in `core/extensions/append-policy.ts`.
+- The Goal v3 state adopts the snapshot policy. Previously every mutation
+  appended a full state copy: one measured session carried 9,770 snapshots —
+  65 MB of an 88 MB transcript — where restore only ever reads the last one.
+- Transcript compaction: `planSessionCompaction` keeps every message, event,
+  and unparseable tail verbatim and drops only snapshots shadowed by a
+  deeper same-type snapshot on every branch path through them, reparenting
+  surviving children so all branch chains resolve. `compactPersistedSession`
+  applies it under the stored-session writer lock (live sessions are
+  refused), verifies the rewrite by full reparse before an atomic replace,
+  and reports removed-entry and byte metrics. The measured 88 MB session
+  compacts to 25.7 MB with zero broken chains.
+- New daemon request `compact_session` (`sessionId`, `confirm: true`);
+  refuses live sessions independently and broadcasts `persisted_changed` on
+  change. `/archive-manage` gains a `compact_session_history` tool with the
+  suite's writer-state discipline, and archiving a session now compacts it
+  best-effort inside the same lock before the move.
+- MCP tool-result image parts are capped (~3 MB decoded) the same way MCP
+  text always was; oversized images become an explanatory text marker. User
+  image inputs were already bounded by `packages/ai` validation.
+
 ## 2.0.0-beta.9 — 2026-08-24
 
 - Aligns the MyPi CLI/daemon release version with the Pizzeria desktop

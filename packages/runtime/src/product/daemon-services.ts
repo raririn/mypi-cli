@@ -695,6 +695,175 @@ async function isObviousShortTest(
 	return Boolean(userText && assistantText && wordCount(userText) < maxWords && wordCount(assistantText) < maxWords);
 }
 
+export interface SessionCompactionResult {
+	readonly sessionId: string;
+	readonly sessionFile: string;
+	readonly compacted: boolean;
+	readonly removedEntries: number;
+	readonly bytesBefore: number;
+	readonly bytesAfter: number;
+}
+
+/** Custom types written as full-state snapshots before the engine's
+ *  snapshot policy existed; their older copies are equally dead weight. */
+const LEGACY_SNAPSHOT_CUSTOM_TYPES = new Set(["mypi-goal", "mypi-plan-goal"]);
+
+interface CompactionLine {
+	readonly raw: string;
+	readonly entry: { id?: string; parentId?: string | null; type?: string; customType?: string; snapshot?: boolean } | null;
+}
+
+function isSnapshotLine(line: CompactionLine): boolean {
+	const entry = line.entry;
+	if (!entry || entry.type !== "custom" || typeof entry.id !== "string") return false;
+	return entry.snapshot === true || (typeof entry.customType === "string" && LEGACY_SNAPSHOT_CUSTOM_TYPES.has(entry.customType));
+}
+
+/**
+ * Plans a transcript compaction: snapshot custom entries are last-writer-wins
+ * on restore, so any snapshot that is shadowed by a deeper same-type snapshot
+ * on EVERY leaf path through it carries no information. Removal reparents the
+ * children of removed entries so every branch chain still resolves. All other
+ * lines — messages, events, unparseable tails — are preserved verbatim.
+ */
+export function planSessionCompaction(content: string): {
+	readonly output: string;
+	readonly removedEntries: number;
+} {
+	const rawLines = content.split("\n");
+	const lines: CompactionLine[] = rawLines
+		.filter((raw, index) => raw.trim().length > 0 || index < rawLines.length - 1)
+		.map((raw) => {
+			if (!raw.trim()) return { raw, entry: null };
+			try {
+				return { raw, entry: JSON.parse(raw) as CompactionLine["entry"] };
+			} catch {
+				return { raw, entry: null };
+			}
+		});
+	const byId = new Map<string, number>();
+	for (const [index, line] of lines.entries()) {
+		if (line.entry && typeof line.entry.id === "string") byId.set(line.entry.id, index);
+	}
+	const referencedAsParent = new Set<string>();
+	for (const line of lines) {
+		if (line.entry && typeof line.entry.parentId === "string") referencedAsParent.add(line.entry.parentId);
+	}
+	// Every leaf walks toward the root; the deepest snapshot per customType on
+	// that path is load-bearing, the rest are shadowed.
+	const kept = new Set<number>();
+	for (const [index, line] of lines.entries()) {
+		if (!line.entry || typeof line.entry.id !== "string") continue;
+		if (referencedAsParent.has(line.entry.id)) continue; // not a leaf
+		const seenTypes = new Set<string>();
+		let cursor: number | undefined = index;
+		let guard = lines.length + 1;
+		while (cursor !== undefined && guard-- > 0) {
+			const current: CompactionLine = lines[cursor]!;
+			if (isSnapshotLine(current)) {
+				const customType = current.entry!.customType!;
+				if (!seenTypes.has(customType)) {
+					seenTypes.add(customType);
+					kept.add(cursor);
+				}
+			}
+			const parentId: string | null | undefined = current.entry?.parentId;
+			cursor = typeof parentId === "string" ? byId.get(parentId) : undefined;
+		}
+	}
+	const removedIds = new Set<string>();
+	for (const [index, line] of lines.entries()) {
+		if (isSnapshotLine(line) && !kept.has(index)) removedIds.add(line.entry!.id!);
+	}
+	if (removedIds.size === 0) return { output: content, removedEntries: 0 };
+	// Reparent survivors across removed ancestors so branch chains resolve.
+	const resolveParent = (start: string | null | undefined): string | null => {
+		let current: string | null = start ?? null;
+		let guard = lines.length + 1;
+		while (current !== null && removedIds.has(current) && guard-- > 0) {
+			const index = byId.get(current);
+			const next: string | null | undefined = index === undefined ? null : lines[index]!.entry?.parentId;
+			current = typeof next === "string" ? next : null;
+		}
+		return current;
+	};
+	const outputLines: string[] = [];
+	for (const line of lines) {
+		const entry = line.entry;
+		if (entry && typeof entry.id === "string" && removedIds.has(entry.id)) continue;
+		if (entry && typeof entry.parentId === "string" && removedIds.has(entry.parentId)) {
+			outputLines.push(JSON.stringify({ ...entry, parentId: resolveParent(entry.parentId) }));
+		} else {
+			outputLines.push(line.raw);
+		}
+	}
+	return { output: `${outputLines.join("\n")}\n`, removedEntries: removedIds.size };
+}
+
+/**
+ * Compacts one stored session file in place. Refuses while a writer holds the
+ * session lock ("nothing runs away during cleaning"): live sessions are never
+ * touched. The rewrite is verified — reparsed, every branch chain resolved —
+ * before atomically replacing the original.
+ */
+async function compactStoredSessionFile(sessionFile: string, containmentRoot: string): Promise<{ removedEntries: number; bytesBefore: number; bytesAfter: number }> {
+	return withStoredSessionLock(sessionFile, async () => {
+		await assertNoLegacyLease(sessionFile);
+		return compactSessionFileUnlocked(sessionFile, containmentRoot);
+	});
+}
+
+/** Caller must hold the stored-session lock. */
+async function compactSessionFileUnlocked(sessionFile: string, containmentRoot: string): Promise<{ removedEntries: number; bytesBefore: number; bytesAfter: number }> {
+	{
+		const handle = await openSafeSessionFile(sessionFile, containmentRoot);
+		let content: string;
+		try {
+			content = await handle.readFile({ encoding: "utf8" });
+		} finally {
+			await handle.close();
+		}
+		const plan = planSessionCompaction(content);
+		if (plan.removedEntries === 0) {
+			return { removedEntries: 0, bytesBefore: content.length, bytesAfter: content.length };
+		}
+		// Verify before replacing: every parentId in the output must resolve.
+		const verifyIds = new Set<string>();
+		const verifyEntries: { id?: string; parentId?: string | null }[] = [];
+		for (const raw of plan.output.split("\n")) {
+			if (!raw.trim()) continue;
+			const entry = JSON.parse(raw) as { id?: string; parentId?: string | null };
+			verifyEntries.push(entry);
+			if (typeof entry.id === "string") verifyIds.add(entry.id);
+		}
+		for (const entry of verifyEntries) {
+			if (typeof entry.parentId === "string" && !verifyIds.has(entry.parentId)) {
+				throw new Error("compaction verification failed: unresolved parent chain");
+			}
+		}
+		const temporary = `${sessionFile}.compact.tmp`;
+		await writeFile(temporary, plan.output, { encoding: "utf8", mode: 0o600 });
+		await rename(temporary, sessionFile);
+		return { removedEntries: plan.removedEntries, bytesBefore: content.length, bytesAfter: plan.output.length };
+	}
+}
+
+/** Daemon service: compact a persisted (non-live) session by id. */
+export async function compactPersistedSession(sessionId: string, agentDir = getAgentDir()): Promise<SessionCompactionResult> {
+	const page = await listPersistedSessions({ agentDir, includeArchived: true, limit: MAX_LIST_LIMIT });
+	const matches = page.sessions.filter((session) => session.id === sessionId);
+	if (matches.length !== 1) throw new Error(matches.length === 0 ? `Session not found: ${sessionId}` : `Session identity is ambiguous: ${sessionId}`);
+	const session = matches[0]!;
+	const roots = resolveSessionRoots(agentDir);
+	const chat = resolveChatPaths(agentDir);
+	const containmentRoot = session.profile === "chat"
+		? (session.archived ? chat.archiveHistory : chat.activeHistory)
+		: (session.archived ? roots.archiveRoot : roots.sessionsRoot);
+	const result = await compactStoredSessionFile(session.sessionFile, containmentRoot);
+	clearDaemonServiceCache();
+	return { sessionId, sessionFile: session.sessionFile, compacted: result.removedEntries > 0, ...result };
+}
+
 async function archiveStoredSession(
 	session: PersistedSessionSummary,
 	roots: { sessionsRoot: string; archiveRoot: string },
@@ -714,6 +883,10 @@ async function archiveStoredSession(
 		} catch (error) {
 			if (!isErrorCode(error, "ENOENT")) throw error;
 		}
+		// Archiving is the natural compaction point: superseded state
+		// snapshots are dropped before the file moves. Best-effort — a
+		// compaction failure must never block archiving.
+		await compactSessionFileUnlocked(session.sessionFile, roots.sessionsRoot).catch(() => undefined);
 		await mkdir(dirname(destination), { recursive: true, mode: 0o700 });
 		await rename(session.sessionFile, destination);
 	});

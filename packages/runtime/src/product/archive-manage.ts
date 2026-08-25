@@ -7,6 +7,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "../core/extensions/types.ts";
 import { type SessionInfo, SessionManager } from "../core/session-manager.ts";
 import { removeSubagentParentStorage } from "../core/subagents/storage.ts";
+import { compactPersistedSession } from "./daemon-services.ts";
 import { loadGlobalConfig } from "./global-config.ts";
 import { purgeSessionSnapshotsAcrossTrackers } from "./workspace-tracker.ts";
 
@@ -15,6 +16,7 @@ const TOOL_NAMES = [
 	"list_session_archives",
 	"inspect_session_archive",
 	"archive_session",
+	"compact_session_history",
 	"archive_sessions_older_than",
 	"archive_sessions_with_max_user_messages",
 	"restore_archived_session",
@@ -272,6 +274,36 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 					snapshotsRemoved,
 				});
 			});
+		},
+	});
+
+	pi.registerTool({
+		name: "compact_session_history",
+		label: "Compact Session History",
+		description:
+			"Rewrite one non-writer-owned session's transcript, dropping superseded state snapshots (last copy per branch is kept; messages and events are untouched). Refuses live sessions; the rewrite is verified before replacing the file. Available only during /archive-manage.",
+		promptSnippet: "Compact one MyPi session's transcript",
+		parameters: Type.Object({
+			session_id: Type.String({
+				minLength: 1,
+				description: "Exact session ID returned by list_session_archives",
+			}),
+		}),
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			assertArchiveMode(active);
+			const all = [
+				...(await listStoredSessions(paths.sessionsRoot)),
+				...(await listStoredSessions(paths.archiveRoot)),
+			];
+			const session = requireUniqueSession(all, params.session_id, "any");
+			assertNotCurrentSession(session, ctx);
+			const result = await compactPersistedSession(session.id, paths.agentDir);
+			return textResult(
+				result.compacted
+					? `Compacted session ${session.id}: removed ${result.removedEntries} superseded snapshots (${result.bytesBefore} → ${result.bytesAfter} bytes).`
+					: `Session ${session.id} had nothing to compact.`,
+				{ ...result },
+			);
 		},
 	});
 

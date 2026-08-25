@@ -99,6 +99,7 @@ import {
 	type TurnStartEvent,
 	wrapRegisteredTools,
 } from "./extensions/index.ts";
+import { createFloodGuard, createSnapshotGate } from "./extensions/append-policy.ts";
 import { emitSessionShutdownEvent } from "./extensions/runner.ts";
 import type { BashExecutionMessage, CustomMessage } from "./messages.ts";
 import { ModelRegistry } from "./model-registry.ts";
@@ -3266,8 +3267,14 @@ export class AgentSession {
 						await this._mypiEmitDispatchFailureIfUnsettled(settlementEpoch, err);
 					});
 				},
-				appendEntry: (customType, data) => {
-					const entryId = this.sessionManager.appendCustomEntry(customType, data);
+				appendEntry: (customType, data, options) => {
+					if (options?.kind === "snapshot" && !this._snapshotGate.shouldPersist(customType, data, options)) {
+						return;
+					}
+					this._entryFloodGuard.record(customType, data, (message) => console.warn(message));
+					const entryId = this.sessionManager.appendCustomEntry(customType, data, {
+						snapshot: options?.kind === "snapshot",
+					});
 					const entry = this.sessionManager.getEntry(entryId);
 					if (entry) {
 						this._emit({ type: "entry_appended", entry });
@@ -3553,6 +3560,13 @@ export class AgentSession {
 			await this.extendResourcesFromExtensions("reload");
 		}
 	}
+
+	// =========================================================================
+	// Transcript write hygiene (core/extensions/append-policy.ts)
+	// =========================================================================
+
+	private _snapshotGate = createSnapshotGate();
+	private _entryFloodGuard = createFloodGuard();
 
 	// =========================================================================
 	// Auto-Retry

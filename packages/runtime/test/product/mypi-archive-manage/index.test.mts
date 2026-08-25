@@ -12,6 +12,7 @@ const ARCHIVE_TOOLS = [
   "list_session_archives",
   "inspect_session_archive",
   "archive_session",
+  "compact_session_history",
   "archive_sessions_older_than",
   "archive_sessions_with_max_user_messages",
   "restore_archived_session",

@@ -112,6 +112,9 @@ export interface CustomEntry<T = unknown> extends SessionEntryBase {
 	type: "custom";
 	customType: string;
 	data?: T;
+	/** Snapshot entries are last-writer-wins on restore: earlier copies on
+	 *  the same branch are dead weight and safe for transcript compaction. */
+	snapshot?: true;
 }
 
 /** Label entry for user-defined bookmarks/markers on entries. */
@@ -1158,11 +1161,12 @@ export class SessionManager {
 	}
 
 	/** Append a custom entry (for extensions) as child of current leaf, then advance leaf. Returns entry id. */
-	appendCustomEntry(customType: string, data?: unknown): string {
+	appendCustomEntry(customType: string, data?: unknown, options?: { snapshot?: boolean }): string {
 		const entry: CustomEntry = {
 			type: "custom",
 			customType,
 			data,
+			...(options?.snapshot ? { snapshot: true as const } : {}),
 			id: generateId(this.byId),
 			parentId: this.leafId,
 			timestamp: new Date().toISOString(),

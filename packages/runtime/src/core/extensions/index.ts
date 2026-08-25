@@ -29,6 +29,7 @@ export type {
 	AgentToolResult,
 	AgentToolUpdateCallback,
 	AppendEntryHandler,
+	AppendEntryOptions,
 	// App keybindings (for custom editors)
 	AppKeybinding,
 	AutocompleteProviderFactory,

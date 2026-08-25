@@ -281,15 +281,25 @@ async function readTrustedProjectMcpSection(cwd: string): Promise<unknown> {
 	}
 }
 
+/** MCP text is truncated upstream, but image parts arrived unbounded — a
+ *  single oversized screenshot could dwarf an entire transcript. Same policy
+ *  as text: cap what the model (and the persisted history) sees. */
+const MAX_MCP_IMAGE_BASE64_CHARS = 4 * 1024 * 1024;
+
 function toToolResult(result: ConvertedMcpResult): {
 	content: Array<{ type: "text"; text: string } | { type: "image"; data: string; mimeType: string }>;
 	isError?: boolean;
 	details: Record<string, unknown>;
 } {
 	return {
-		content: result.content.map((part) =>
-			part.type === "text" ? { type: "text" as const, text: part.text } : { type: "image" as const, data: part.data, mimeType: part.mimeType },
-		),
+		content: result.content.map((part) => {
+			if (part.type === "text") return { type: "text" as const, text: part.text };
+			if (part.data.length > MAX_MCP_IMAGE_BASE64_CHARS) {
+				const megabytes = ((part.data.length * 3) / 4 / (1024 * 1024)).toFixed(1);
+				return { type: "text" as const, text: `[image omitted by MyPi: ${megabytes} MB ${part.mimeType} exceeds the ${(MAX_MCP_IMAGE_BASE64_CHARS * 3) / 4 / (1024 * 1024)} MB limit]` };
+			}
+			return { type: "image" as const, data: part.data, mimeType: part.mimeType };
+		}),
 		...(result.isError ? { isError: true } : {}),
 		details: { version: 1, omitted: result.omitted },
 	};

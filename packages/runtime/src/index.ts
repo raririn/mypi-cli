@@ -500,6 +500,8 @@ export {
 	readPersistedSession,
 	readDaemonResourceFile,
 	runNewSessionMaintenance,
+	compactPersistedSession,
+	planSessionCompaction,
 	setPersistedSessionArchived,
 	destroySessionSnapshots,
 	type ArchiveCleanupPreview,
@@ -514,6 +516,7 @@ export {
 	type SessionMaintenanceMove,
 	type SessionMaintenanceResult,
 	type SessionArchiveResult,
+	type SessionCompactionResult,
 } from "./product/daemon-services.ts";
 export {
 	listMcpServerSettings,
