@@ -1,5 +1,14 @@
 # MyPi CLI changelog
 
+## 2.0.0-beta.9 — 2026-08-24
+
+- Aligns the MyPi CLI/daemon release version with the Pizzeria desktop
+  candidate at `2.0.0-beta.9` without changing session-daemon protocol 2,
+  Roma chronicle 1, or Pi core `0.82.1`.
+- Pizzeria records this version as descriptive release-qualification metadata;
+  protocol and capability negotiation, not SemVer equality, remain the runtime
+  compatibility authority.
+
 ## 2.0.0-beta.8 — 2026-08-24
 
 - Extends validated `gui.shortcuts` to the complete application keymap while
