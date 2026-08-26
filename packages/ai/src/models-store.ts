@@ -11,6 +11,13 @@ export interface ModelsStoreEntry {
 	 * (quotes included) and echoed back as If-None-Match.
 	 */
 	etag?: string;
+	/**
+	 * Version of the provider's catalog→Model mapping code that produced this
+	 * entry. Providers bump their version when derived fields (compat flags,
+	 * thinking maps, …) change so cached entries don't outlive the code that
+	 * wrote them.
+	 */
+	mappingVersion?: number;
 }
 
 /** Persistent model catalogs keyed by provider ID. */

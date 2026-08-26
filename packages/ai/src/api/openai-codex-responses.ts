@@ -62,6 +62,11 @@ const DEFAULT_MAX_RETRIES = 0;
 const BASE_DELAY_MS = 1000;
 const DEFAULT_MAX_RETRY_DELAY_MS = 60_000;
 const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS = 15_000;
+/** Fail-fast bound for a gateway that accepts the request and then sends
+ *  nothing (hung cliproxy WS gateways, dogfood 2026-08-26). Only guards the
+ *  wait for the FIRST event after response.create — once the stream is live,
+ *  long generation pauses stay governed by the caller's idle timeout. */
+const DEFAULT_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS = 30_000;
 // The Codex backend accepts zstd-compressed request bodies on the SSE responses
 // endpoint (the same endpoint the official Codex client compresses against).
 const REQUEST_COMPRESSION_ZSTD_LEVEL = 3;
@@ -1263,12 +1268,14 @@ async function* parseWebSocket(
 	socket: WebSocketLike,
 	signal?: AbortSignal,
 	idleTimeoutMs?: number,
+	firstEventTimeoutMs: number | undefined = DEFAULT_WEBSOCKET_FIRST_EVENT_TIMEOUT_MS,
 ): AsyncGenerator<Record<string, unknown>> {
 	const queue: Record<string, unknown>[] = [];
 	let pending: (() => void) | null = null;
 	let done = false;
 	let failed: Error | null = null;
 	let sawCompletion = false;
+	let receivedAny = false;
 
 	const wake = () => {
 		if (!pending) return;
@@ -1285,6 +1292,7 @@ async function* parseWebSocket(
 				text = await decodeWebSocketData((event as { data?: unknown }).data);
 				if (!text) return;
 				const parsed = JSON.parse(text) as Record<string, unknown>;
+				receivedAny = true;
 				const type = typeof parsed.type === "string" ? parsed.type : "";
 				if (type === "response.completed" || type === "response.done" || type === "response.incomplete") {
 					sawCompletion = true;
@@ -1344,17 +1352,20 @@ async function* parseWebSocket(
 			}
 			if (done) break;
 			let timeout: ReturnType<typeof setTimeout> | undefined;
+			const waitTimeoutMs = receivedAny ? idleTimeoutMs : (idleTimeoutMs ?? firstEventTimeoutMs);
 			await new Promise<void>((resolve, reject) => {
 				pending = resolve;
-				if (idleTimeoutMs !== undefined && idleTimeoutMs > 0) {
+				if (waitTimeoutMs !== undefined && waitTimeoutMs > 0) {
 					timeout = setTimeout(() => {
-						const error = new Error(`WebSocket idle timeout after ${idleTimeoutMs}ms`);
+						const error = new Error(receivedAny
+							? `WebSocket idle timeout after ${waitTimeoutMs}ms`
+							: `Codex WebSocket gateway sent no response within ${waitTimeoutMs}ms`);
 						failed = error;
 						done = true;
 						pending = null;
-						closeWebSocketSilently(socket, 1000, "idle_timeout");
+						closeWebSocketSilently(socket, 1000, receivedAny ? "idle_timeout" : "first_event_timeout");
 						reject(error);
-					}, idleTimeoutMs);
+					}, waitTimeoutMs);
 				}
 			}).finally(() => {
 				if (timeout) {

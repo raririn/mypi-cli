@@ -22,6 +22,11 @@ export const CLIPROXY_CATALOG_TIMEOUT_MS = 15_000;
 export const CLIPROXY_CATALOG_MAX_BYTES = 16 * 1024 * 1024;
 
 const CATALOG_MAX_AGE_MS = 4 * 60 * 60 * 1000;
+/** Bump when the catalog→Model mapping changes (compat flags, thinking maps,
+ *  modalities, …). A mismatched stamp makes the cached entry stale: stale
+ *  compat flags once replayed a synthetic reasoning item into real Codex
+ *  models and 400'd every turn (dogfood 2026-08-26). */
+const CLIPROXY_MAPPING_VERSION = 2;
 const CATALOG_MAX_MODELS = 256;
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 16_384;
@@ -182,17 +187,21 @@ export function mapCliProxyCatalog(payload: unknown, endpoints: CliProxyEndpoint
         requiresChatGptAccountId: false,
         supportsCodexToolCallIds: true,
         supportsPriorityServiceTier: fastCapable,
-        // CLIProxy fronts thinking-mode models (DeepSeek/GLM families) that
-        // reject tool loops when a replayed step is missing its reasoning.
-        // OpenAI-family models must NOT get the synthetic replay item: real
-        // Codex endpoints enforce reasoning.content maxItems 0 on input and
-        // reject the whole request ("array too long", dogfood 2026-08-26).
-        requiresReasoningItemReplay: !/^(gpt-|o\d|codex|chatgpt)/i.test(id),
+        requiresReasoningItemReplay: requiresReasoningItemReplay(id),
       },
     });
   }
   if (models.length === 0) throw new Error("CLIProxyAPI returned no usable models.");
   return models;
+}
+
+/** CLIProxy fronts thinking-mode models (DeepSeek/GLM families) that reject
+ *  tool loops when a replayed step is missing its reasoning. OpenAI-family
+ *  models must NOT get the synthetic replay item: real Codex endpoints
+ *  enforce reasoning.content maxItems 0 on input and reject the request
+ *  ("array too long", dogfood 2026-08-26). */
+function requiresReasoningItemReplay(id: string): boolean {
+  return !/^(gpt-|o\d|codex|chatgpt)/i.test(id);
 }
 
 function boundedSignal(signal?: AbortSignal): AbortSignal {
@@ -325,7 +334,12 @@ function storedModelsForEndpoint(
     || model.api !== "openai-codex-responses"
     || model.baseUrl !== endpoints.inferenceBaseUrl
   ))) return undefined;
-  return models as CliProxyModel[];
+  // Id-derived compat is recomputed here so the code stays authoritative over
+  // whatever mapping version wrote the cache (offline runs never refresh).
+  return (models as CliProxyModel[]).map((model) => ({
+    ...model,
+    compat: { ...model.compat, requiresReasoningItemReplay: requiresReasoningItemReplay(model.id) },
+  }));
 }
 
 export function createCliProxyProvider(dependencies: CliProxyProviderDependencies = {}): Provider<"openai-codex-responses"> {
@@ -385,7 +399,8 @@ export function createCliProxyProvider(dependencies: CliProxyProviderDependencie
       const cached = storedModelsForEndpoint(stored?.models ?? [], connection.endpoints);
       models = cached ?? [];
       if (!context.allowNetwork || context.signal?.aborted) return;
-      if (!context.force && cached && stored?.checkedAt && now() - stored.checkedAt < CATALOG_MAX_AGE_MS) return;
+      const mappingCurrent = stored?.mappingVersion === CLIPROXY_MAPPING_VERSION;
+      if (!context.force && cached && mappingCurrent && stored?.checkedAt && now() - stored.checkedAt < CATALOG_MAX_AGE_MS) return;
 
       const refreshed = await fetchCliProxyModels(connection.endpoints, connection.apiKey, {
         fetch: fetchImpl,
@@ -393,7 +408,7 @@ export function createCliProxyProvider(dependencies: CliProxyProviderDependencie
       });
       if (context.signal?.aborted) return;
       models = refreshed;
-      await context.store.write({ models: refreshed, checkedAt: now() });
+      await context.store.write({ models: refreshed, checkedAt: now(), mappingVersion: CLIPROXY_MAPPING_VERSION });
     },
     stream: (model, context, options) => streams.stream(model, context, options),
     streamSimple: (model, context, options) => streams.streamSimple(model, context, options),

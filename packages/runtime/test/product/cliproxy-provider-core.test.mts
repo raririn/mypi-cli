@@ -211,6 +211,65 @@ test("offline fallback preserves an already checked catalog for ambient-only aut
   assert.equal(provider.getModels()[0]?.id, "gpt-fast");
 });
 
+test("a stale mapping version refetches despite a fresh checkedAt", async () => {
+  const credential: ApiKeyCredential = {
+    type: "api_key",
+    key: "test-api-key",
+    env: { [CLIPROXY_BASE_URL_ENV]: "https://proxy.example" },
+  };
+  let fetches = 0;
+  let stored: Awaited<ReturnType<Parameters<NonNullable<ReturnType<typeof createCliProxyProvider>["refreshModels"]>>[0]["store"]["read"]>>;
+  const provider = createCliProxyProvider({
+    now: () => 20_000,
+    fetch: async () => {
+      fetches++;
+      return response(catalog);
+    },
+  });
+  const store = {
+    read: async () => stored,
+    write: async (value: NonNullable<typeof stored>) => { stored = value; },
+    delete: async () => { stored = undefined; },
+  };
+  await provider.refreshModels?.({ credential, store, allowNetwork: true, force: true });
+  assert.equal(fetches, 1);
+  // Entry written by an older mapping: fresh by age, stale by version.
+  stored = { ...stored!, mappingVersion: (stored!.mappingVersion ?? 0) - 1 };
+  await provider.refreshModels?.({ credential, store, allowNetwork: true });
+  assert.equal(fetches, 2);
+  assert.equal(stored!.mappingVersion! > 0, true);
+  await provider.refreshModels?.({ credential, store, allowNetwork: true });
+  assert.equal(fetches, 2);
+});
+
+test("cached catalogs get id-derived compat recomputed on load (offline runs included)", async () => {
+  const credential: ApiKeyCredential = {
+    type: "api_key",
+    key: "test-api-key",
+    env: { [CLIPROXY_BASE_URL_ENV]: "https://proxy.example" },
+  };
+  let stored: Awaited<ReturnType<Parameters<NonNullable<ReturnType<typeof createCliProxyProvider>["refreshModels"]>>[0]["store"]["read"]>>;
+  const provider = createCliProxyProvider({ fetch: async () => response(catalog) });
+  const store = {
+    read: async () => stored,
+    write: async (value: NonNullable<typeof stored>) => { stored = value; },
+    delete: async () => { stored = undefined; },
+  };
+  await provider.refreshModels?.({ credential, store, allowNetwork: true, force: true });
+  // Poison the cache the way the 2026-08-26 incident did: a gpt- model
+  // stamped with the replay flag by an older mapping.
+  stored = {
+    ...stored!,
+    models: stored!.models.map((model) => ({
+      ...model,
+      compat: { ...model.compat, requiresReasoningItemReplay: true },
+    })),
+  };
+  await provider.refreshModels?.({ credential, store, allowNetwork: false });
+  const gpt = provider.getModels().find((model) => model.id === "gpt-fast");
+  assert.equal(gpt?.compat?.requiresReasoningItemReplay, false);
+});
+
 test("priority payload injection is exact and leaves non-object payloads unchanged", () => {
   assert.deepEqual(applyCliProxyPriorityPayload({ model: "gpt-fast", service_tier: "default" }), {
     model: "gpt-fast",
