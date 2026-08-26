@@ -80,14 +80,25 @@ export function buildCodeModeBridge(executor: CodeModeToolExecutor): CodeModeBri
 		byIdentifier.set(identifier, descriptor);
 	}
 
+	// Double truncation, first layer (R5): each nested result is bounded
+	// middle-out BEFORE it crosses the membrane; the cell's emit budget is
+	// the second layer. A runaway tool output must not OOM the isolate.
+	const MAX_NESTED_OUTPUT_BYTES = 256 * 1024;
+	const bound = (text: string): string => {
+		if (Buffer.byteLength(text, "utf8") <= MAX_NESTED_OUTPUT_BYTES) return text;
+		const head = text.slice(0, MAX_NESTED_OUTPUT_BYTES / 2);
+		const tail = text.slice(-MAX_NESTED_OUTPUT_BYTES / 4);
+		return `${head}\n…[output truncated by code mode]…\n${tail}`;
+	};
+
 	const invokeOne = async (descriptor: CodeModeToolDescriptor, args: unknown, signal: AbortSignal) => {
 		const outcome = await executor.execute(descriptor.name, args, signal);
 		if (outcome.isError) {
-			const error = new Error(outcome.output || `Tool ${descriptor.name} failed.`);
+			const error = new Error(bound(outcome.output) || `Tool ${descriptor.name} failed.`);
 			error.name = "ToolError";
 			throw error;
 		}
-		return collapseOutcome(outcome);
+		return collapseOutcome({ ...outcome, output: bound(outcome.output) });
 	};
 
 	const tools: Record<string, HostFunction> = {};

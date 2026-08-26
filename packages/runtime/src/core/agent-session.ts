@@ -33,6 +33,24 @@ import {
 	renderExecCodeDescription,
 } from "./code-mode/exec-code-tool.ts";
 
+/** FEAT-087: bounded text extraction for code-mode audit entries. */
+function contentTextBounded(content: unknown, maxBytes: number): string {
+	const text = Array.isArray(content)
+		? content
+				.map((block) =>
+					block && typeof block === "object" && (block as { type?: string }).type === "text"
+						? String((block as { text?: unknown }).text ?? "")
+						: "",
+				)
+				.filter(Boolean)
+				.join("\n")
+		: "";
+	if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
+	const head = text.slice(0, Math.floor(maxBytes / 2));
+	const tail = text.slice(-Math.floor(maxBytes / 4));
+	return `${head}\n…[truncated]…\n${tail}`;
+}
+
 /** FEAT-087: communication/UI tools that never appear on the nested tools.*
  *  surface (they are conversation acts, not data operations). */
 const CODE_MODE_DIRECT_ONLY_TOOLS: ReadonlySet<string> = new Set([
@@ -1553,6 +1571,22 @@ export class AgentSession {
 				// message stream by design.
 			},
 		});
+		// R5/audit split (Phase 4): the nested result is persisted as a custom
+		// transcript entry — visible to UIs and history, NEVER a context
+		// message. Content is bounded before persistence.
+		try {
+			this.sessionManager.appendCustomEntry("mypi-code-mode-call", {
+				version: 1,
+				parentToolCallId: options.parentToolCallId,
+				toolCallId: toolCall.id,
+				toolName: name,
+				args: toolCall.arguments,
+				isError: outcome.isError,
+				output: contentTextBounded(outcome.message.content, 16_000),
+			});
+		} catch {
+			// Audit persistence must never fail the call itself.
+		}
 		return outcome;
 	}
 
