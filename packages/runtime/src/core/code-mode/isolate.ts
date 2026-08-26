@@ -1,33 +1,38 @@
 /*
- * FEAT-087 Phase 1 — Code Mode isolate runtime.
+ * FEAT-087 Phase 1/2 — Code Mode isolate runtime.
  *
- * One fresh QuickJS-WASM isolate per executed cell (Codex code-mode-runtime
+ * One fresh QuickJS-WASM runtime per executed cell (Codex code-mode-runtime
  * pattern: fresh isolate, ES-module eval with top-level await, lifetime ends
  * with the script; unawaited promises die with it). The isolate has NO I/O
  * bindings — no fs, no net, no console, no timers, no imports. Every effect
- * routes through the single asyncified `__host_invoke` boundary, and the
- * `tools.*` facade is built INSIDE the isolate from that primitive, so no
- * host object ever crosses the membrane (data-only JSON both ways).
+ * routes through the single `__host_invoke` boundary, and the `tools.*`
+ * facade is built INSIDE the isolate from that primitive, so no host object
+ * ever crosses the membrane (data-only JSON both ways).
  *
- * Engine choice (FEAT-087 §11.1): quickjs-emscripten asyncify build — honest
- * in-process isolation with real memory limits and interrupt metering, zero
- * native dependencies. NOT node:vm (not a security boundary; timeouts do not
- * survive `await`).
+ * Engine choice (FEAT-087 §11.1): quickjs-emscripten, SYNC build. Host calls
+ * use the deferred-promise pattern — `__host_invoke` returns a QuickJS
+ * promise resolved from the host, with pending jobs pumped until the module
+ * completion promise settles. The asyncify build is deliberately NOT used:
+ * its post-await handle bookkeeping corrupts the shared WASM heap on
+ * disposal (gc_decref/js_free_shape aborts, verified 2026-08-26), and it
+ * serializes concurrent host awaits. With the sync build, `Promise.all`
+ * over `tools.*` gives REAL host-side concurrency.
  *
- * Known engine subtleties this module owns (validated by spike, 2026-08-26):
- * - Module evaluation completes with a PENDING promise when the script uses
- *   pure-JS awaits; the runtime must pump executePendingJobs() until the
- *   completion promise settles, under the same interrupt deadline.
- * - Every handle must be disposed or QuickJS aborts on runtime dispose
- *   (gc_obj_list assertion); handle lifetimes here are kept short and local.
- * - An interrupt inside a job surfaces as InternalError "interrupted"; the
- *   deadline flag — not the message — decides the "timeout" classification.
+ * Engine subtleties this module owns:
+ * - Module evaluation completes with a PENDING promise; the runtime pumps
+ *   executePendingJobs() until the completion promise settles, under the
+ *   interrupt deadline (pure-JS awaits queue jobs nothing else drains).
+ * - Host-promise continuations may fire after the cell is closed (timeout);
+ *   every continuation checks the closed flag before touching the context.
+ * - Every handle must be disposed or QuickJS aborts on runtime dispose.
+ * - The interrupt handler fires only while JS executes (evalCode and pumped
+ *   jobs); waits on host promises are host-side, covered by the deadline
+ *   check in the pump loop and the abort signal handed to host functions.
  */
-import { newAsyncRuntime, type QuickJSAsyncContext, type QuickJSAsyncRuntime, type QuickJSHandle } from "quickjs-emscripten";
+import { getQuickJS, type QuickJSContext, type QuickJSRuntime } from "quickjs-emscripten";
 
-/** Host tool implementations MUST observe the abort signal: it fires when the
- *  cell's wall clock expires, and it is the only way to unwind an isolate
- *  suspended inside a host call (interrupts cannot fire while suspended). */
+/** Host tool implementations MUST observe the abort signal: it fires when
+ *  the cell's wall clock expires so pending host work stops promptly. */
 export type HostFunction = (args: unknown, signal: AbortSignal) => Promise<unknown>;
 
 export interface CodeCellOptions {
@@ -35,7 +40,9 @@ export interface CodeCellOptions {
 	readonly timeoutMs?: number;
 	readonly memoryLimitBytes?: number;
 	readonly maxStackBytes?: number;
-	/** Async host functions surfaced as `await tools.<name>(args)`. */
+	/** Async host functions surfaced as `await tools.<name>(args)`. Names
+	 *  starting with "__" are reserved primitives (e.g. __parallel) exposed
+	 *  as dedicated globals rather than tools.* entries. */
 	readonly tools?: Readonly<Record<string, HostFunction>>;
 	/** Session-owned cross-cell scratchpad backing store()/load(). */
 	readonly scratchpad?: Map<string, unknown>;
@@ -78,9 +85,6 @@ const DEFAULT_MAX_EMITTED_BYTES = 1024 * 1024;
 const DEFAULT_MAX_SCRATCHPAD_BYTES = 4 * 1024 * 1024;
 /** Thrown by exit(); recognized by name so scripts cannot fake a crash. */
 const EXIT_SENTINEL = "__MYPI_CODE_CELL_EXIT__";
-/** After the deadline aborts host calls, how long to wait for the evaluation
- *  to unwind before parking the isolate for deferred disposal. */
-const TIMEOUT_SETTLE_GRACE_MS = 500;
 
 /** In-isolate prelude: builds the `tools` facade and helper globals from the
  *  primitive host bindings, then removes the primitives from global scope so
@@ -96,22 +100,35 @@ delete globalThis.__host_emit;
 delete globalThis.__host_store;
 delete globalThis.__host_load;
 
+const __call = async (name, args) => {
+	const raw = await __invoke(name, JSON.stringify(args ?? {}));
+	const parsed = JSON.parse(raw);
+	if (parsed && parsed.__hostError) {
+		const error = new Error(parsed.__hostError.message);
+		error.name = parsed.__hostError.name;
+		throw error;
+	}
+	return parsed.result;
+};
+
 const tools = Object.create(null);
 for (const name of ${JSON.stringify(toolNames)}) {
-	tools[name] = async (args) => {
-		const raw = await __invoke(name, JSON.stringify(args ?? {}));
-		const parsed = JSON.parse(raw);
-		if (parsed && parsed.__hostError) {
-			const error = new Error(parsed.__hostError.message);
-			error.name = parsed.__hostError.name;
-			throw error;
-		}
-		return parsed.result;
-	};
+	if (name.startsWith("__")) continue; // reserved host primitives, not tools
+	tools[name] = async (args) => __call(name, args);
 	Object.freeze(tools[name]);
 }
 globalThis.tools = Object.freeze(tools);
-
+${
+	toolNames.includes("__parallel")
+		? `
+// Execution-mode-aware host-side batch: parallel-safe tools fan out
+// concurrently; any sequential tool serializes the batch in order. Item
+// failures come back as { ok:false, error } entries. (Plain Promise.all
+// over tools.* also runs concurrently; parallel() adds the mode rules.)
+globalThis.parallel = async (calls) => __call("__parallel", calls);
+`
+		: ""
+}
 globalThis.text = (value) => { __emit("text", String(value)); };
 globalThis.store = (key, value) => { __store(String(key), JSON.stringify(value === undefined ? null : value)); };
 globalThis.load = (key) => JSON.parse(__load(String(key)));
@@ -142,6 +159,9 @@ export async function runCodeCell(source: string, options: CodeCellOptions = {})
 	const started = Date.now();
 	const deadline = started + timeoutMs;
 	let interrupted = false;
+	/** Set when the cell is finished; host-promise continuations that fire
+	 *  later must not touch the (disposed) context. */
+	let closed = false;
 
 	const emitted: CodeCellEmit[] = [];
 	let emittedBytes = 0;
@@ -151,11 +171,12 @@ export async function runCodeCell(source: string, options: CodeCellOptions = {})
 	const maxScratchpadBytes = options.maxScratchpadBytes ?? DEFAULT_MAX_SCRATCHPAD_BYTES;
 	const tools = options.tools ?? {};
 
-	// Cell-scoped abort: fired at the wall deadline so host calls unwind the
-	// suspended WASM stack (interrupts cannot fire while suspended).
+	// Cell-scoped abort: fired at the wall deadline so in-flight host work
+	// stops promptly (the VM itself is idle while host promises are pending).
 	const hostAbort = new AbortController();
 
-	const runtime: QuickJSAsyncRuntime = await newAsyncRuntime();
+	const QuickJS = await getQuickJS();
+	const runtime: QuickJSRuntime = QuickJS.newRuntime();
 	runtime.setMemoryLimit(options.memoryLimitBytes ?? DEFAULT_MEMORY_LIMIT_BYTES);
 	runtime.setMaxStackSize(options.maxStackBytes ?? DEFAULT_MAX_STACK_BYTES);
 	runtime.setInterruptHandler(() => {
@@ -165,12 +186,11 @@ export async function runCodeCell(source: string, options: CodeCellOptions = {})
 		}
 		return false;
 	});
-	const ctx: QuickJSAsyncContext = runtime.newContext();
+	const ctx: QuickJSContext = runtime.newContext();
 
-	let disposed = false;
 	const disposeIsolate = () => {
-		if (disposed) return;
-		disposed = true;
+		if (closed) return;
+		closed = true;
 		try {
 			ctx.dispose();
 			runtime.dispose();
@@ -183,7 +203,7 @@ export async function runCodeCell(source: string, options: CodeCellOptions = {})
 		wallTimeMs: Date.now() - started,
 	});
 
-	const classify = (error: CodeCellError): CodeCellResult["status"] | "exit" => {
+	const classify = (error: CodeCellError): CodeCellStatus | "exit" => {
 		if (error.name === EXIT_SENTINEL || error.message === EXIT_SENTINEL) return "exit";
 		if (interrupted) return "timeout";
 		if (/out of memory/i.test(error.message)) return "memory";
@@ -192,19 +212,39 @@ export async function runCodeCell(source: string, options: CodeCellOptions = {})
 
 	try {
 		// --- host bindings (primitives; the prelude hides them again) ---
-		const invoke = ctx.newAsyncifiedFunction("__host_invoke", async (nameHandle, argsHandle) => {
+		const invoke = ctx.newFunction("__host_invoke", (nameHandle, argsHandle) => {
 			const name = ctx.getString(nameHandle);
 			const argsJson = ctx.getString(argsHandle);
-			try {
-				const fn = Object.prototype.hasOwnProperty.call(tools, name) ? tools[name] : undefined;
-				if (!fn) return ctx.newString(JSON.stringify({ __hostError: { name: "Error", message: `Unknown tool: ${name}` } }));
-				if (hostAbort.signal.aborted) throw new Error("Execution deadline exceeded.");
-				const result = await fn(JSON.parse(argsJson), hostAbort.signal);
-				return ctx.newString(JSON.stringify({ result: result === undefined ? null : result }));
-			} catch (error) {
-				const err = error instanceof Error ? { name: error.name || "Error", message: error.message } : { name: "Error", message: String(error) };
-				return ctx.newString(JSON.stringify({ __hostError: err }));
-			}
+			const deferred = ctx.newPromise();
+			const settle = (payload: string) => {
+				if (closed || !deferred.alive) return;
+				const handle = ctx.newString(payload);
+				deferred.resolve(handle);
+				handle.dispose();
+			};
+			void (async () => {
+				try {
+					const fn = Object.prototype.hasOwnProperty.call(tools, name) ? tools[name] : undefined;
+					if (!fn) return JSON.stringify({ __hostError: { name: "Error", message: `Unknown tool: ${name}` } });
+					if (hostAbort.signal.aborted) throw new Error("Execution deadline exceeded.");
+					const result = await fn(JSON.parse(argsJson), hostAbort.signal);
+					return JSON.stringify({ result: result === undefined ? null : result });
+				} catch (error) {
+					const err =
+						error instanceof Error
+							? { name: error.name || "Error", message: error.message }
+							: { name: "Error", message: String(error) };
+					return JSON.stringify({ __hostError: err });
+				}
+			})().then((payload) => {
+				settle(payload);
+				// Give the settled promise's continuations a turn.
+				if (!closed && runtime.alive && runtime.hasPendingJob()) {
+					const jobs = runtime.executePendingJobs();
+					if ("error" in jobs && jobs.error) jobs.error.dispose();
+				}
+			});
+			return deferred.handle;
 		});
 		ctx.setProp(ctx.global, "__host_invoke", invoke);
 		invoke.dispose();
@@ -257,86 +297,58 @@ export async function runCodeCell(source: string, options: CodeCellOptions = {})
 		prelude.value.dispose();
 
 		// --- the cell itself: ES module for top-level await ---
-		// The evaluation (including asyncified suspensions inside host calls)
-		// races the wall deadline. On deadline: abort host calls, give the
-		// stack a short grace to unwind, then PARK the isolate — disposal
-		// while suspended would abort the WASM module, so a never-settling
-		// host call defers disposal to whenever the evaluation finally ends.
-		const evaluate = async (): Promise<{ error?: CodeCellError }> => {
-			const evaluated = await ctx.evalCodeAsync(source, "cell.mjs", { type: "module" });
-			if (evaluated.error) {
-				const error = formatError(ctx.dump(evaluated.error));
-				evaluated.error.dispose();
-				return { error };
+		const evaluated = ctx.evalCode(source, "cell.mjs", { type: "module" });
+		if (evaluated.error) {
+			const error = formatError(ctx.dump(evaluated.error));
+			evaluated.error.dispose();
+			const status = classify(error);
+			disposeIsolate();
+			return finish(status === "exit" ? { status: "ok", emitted } : { status, error, emitted });
+		}
+
+		// Module completion is a promise; pump pending jobs until it settles.
+		const completion = evaluated.value;
+		let settled: { error?: CodeCellError } | null = null;
+		void ctx.resolvePromise(completion).then((result) => {
+			if (closed) return;
+			if ("error" in result && result.error) {
+				const error = formatError(ctx.dump(result.error));
+				result.error.dispose();
+				settled = { error };
+			} else {
+				if ("value" in result) result.value.dispose();
+				settled = {};
 			}
-			// Module completion is a promise; pump pending jobs until it
-			// settles (pure-JS awaits queue jobs evalCodeAsync doesn't drain).
-			const completion = evaluated.value;
-			let settled: { error?: CodeCellError } | null = null;
-			void ctx.resolvePromise(completion).then((result) => {
-				if ("error" in result && result.error) {
-					const error = formatError(ctx.dump(result.error));
-					result.error.dispose();
-					settled = { error };
-				} else {
-					if ("value" in result) result.value.dispose();
-					settled = {};
-				}
-			});
-			while (settled === null && !hostAbort.signal.aborted) {
+		});
+		while (settled === null) {
+			if (Date.now() > deadline) {
+				interrupted = true;
+				hostAbort.abort(new Error("Execution deadline exceeded."));
+				completion.dispose();
+				disposeIsolate();
+				return finish({
+					status: "timeout",
+					error: { name: "TimeoutError", message: `Execution exceeded ${timeoutMs}ms.` },
+					emitted,
+				});
+			}
+			if (runtime.hasPendingJob()) {
 				const jobs = runtime.executePendingJobs();
 				if ("error" in jobs && jobs.error) jobs.error.dispose();
-				// Macrotask turn for asyncified host promises + resolvePromise.
-				await new Promise((resolvePromise) => setTimeout(resolvePromise, 0));
 			}
-			completion.dispose();
-			return settled ?? { error: { name: "TimeoutError", message: `Execution exceeded ${timeoutMs}ms.` } };
-		};
-
-		const evaluation = evaluate();
-		let timedOut = false;
-		const outcome = await Promise.race([
-			evaluation,
-			new Promise<null>((resolvePromise) => {
-				const timer = setTimeout(() => {
-					timedOut = true;
-					resolvePromise(null);
-				}, Math.max(0, deadline - Date.now()));
-				timer.unref?.();
-				void evaluation.finally(() => clearTimeout(timer));
-			}),
-		]);
-
-		if (outcome === null && timedOut) {
-			interrupted = true;
-			hostAbort.abort(new Error("Execution deadline exceeded."));
-			// Grace for the suspended stack to unwind through aborted hosts.
-			const settledInGrace = await Promise.race([
-				evaluation.then(() => true),
-				new Promise<false>((resolvePromise) => {
-					const timer = setTimeout(() => resolvePromise(false), TIMEOUT_SETTLE_GRACE_MS);
-					timer.unref?.();
-				}),
-			]);
-			if (settledInGrace) {
-				disposeIsolate();
-			} else {
-				// Parked: dispose whenever the evaluation eventually settles.
-				void evaluation.finally(disposeIsolate);
-			}
-			return finish({
-				status: "timeout",
-				error: { name: "TimeoutError", message: `Execution exceeded ${timeoutMs}ms.` },
-				emitted,
-			});
+			// Macrotask turn so host promises and resolvePromise continuations
+			// can advance while the VM is idle.
+			await new Promise((resolvePromise) => setTimeout(resolvePromise, 0));
 		}
+		completion.dispose();
 
-		const failure = (outcome as { error?: CodeCellError }).error;
-		disposeIsolate();
+		const failure = (settled as { error?: CodeCellError }).error;
 		if (failure) {
 			const status = classify(failure);
+			disposeIsolate();
 			return finish(status === "exit" ? { status: "ok", emitted } : { status, error: failure, emitted });
 		}
+		disposeIsolate();
 		return finish({ status: "ok", emitted });
 	} catch (error) {
 		// Engine-level throw (never a script error): classify conservatively.
@@ -344,5 +356,10 @@ export async function runCodeCell(source: string, options: CodeCellOptions = {})
 			error instanceof Error ? { name: error.name || "Error", message: error.message } : { name: "Error", message: String(error) };
 		disposeIsolate();
 		return finish({ status: interrupted ? "timeout" : "error", error: formatted, emitted });
+	} finally {
+		if (!hostAbort.signal.aborted && closed) {
+			// Belt-and-braces: no host work may outlive the cell unnoticed.
+			hostAbort.abort(new Error("Code cell finished."));
+		}
 	}
 }

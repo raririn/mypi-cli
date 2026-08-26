@@ -790,3 +790,85 @@ async function emitToolResultMessage(toolResultMessage: ToolResultMessage, emit:
 	await emit({ type: "message_start", message: toolResultMessage });
 	await emit({ type: "message_end", message: toolResultMessage });
 }
+
+// ---------------------------------------------------------------------------
+// MyPi customization (FEAT-087 code mode) — single synthetic tool call.
+// ---------------------------------------------------------------------------
+
+/** Request for one tool call executed OUTSIDE a model tool batch but through
+ *  the identical per-call pipeline: prepareArguments → schema validation/
+ *  coercion → beforeToolCall (extensions, safety ladder, hooks, leases) →
+ *  execute with update streaming → afterToolCall → tool_execution_* events. */
+export interface SingleToolCallRequest {
+	context: AgentContext;
+	toolCall: AgentToolCall;
+	config: Pick<AgentLoopConfig, "beforeToolCall" | "afterToolCall">;
+	signal: AbortSignal | undefined;
+	emit: AgentEventSink;
+	/** Source message for hook contexts; synthesized when absent. */
+	assistantMessage?: AssistantMessage;
+}
+
+export interface SingleToolCallOutcome {
+	result: AgentToolResult<any>;
+	isError: boolean;
+	/** Built but NOT emitted as message_start/message_end: a nested call's
+	 *  result is a transcript/audit concern for the caller — routing it into
+	 *  the loop's message events would append it to the model context, which
+	 *  is exactly what code mode exists to avoid. */
+	message: ToolResultMessage;
+}
+
+/** Zero-usage synthetic assistant envelope: hook contexts require an
+ *  AssistantMessage but MyPi's hooks only read toolCall/args/result. */
+function syntheticAssistantMessage(toolCall: AgentToolCall): AssistantMessage {
+	return {
+		role: "assistant",
+		content: [toolCall],
+		api: "code-mode",
+		provider: "code-mode",
+		model: "code-mode",
+		usage: {
+			input: 0,
+			output: 0,
+			cacheRead: 0,
+			cacheWrite: 0,
+			totalTokens: 0,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+		},
+		stopReason: "toolUse",
+		timestamp: Date.now(),
+	};
+}
+
+export async function executeSingleToolCall(request: SingleToolCallRequest): Promise<SingleToolCallOutcome> {
+	const { context, toolCall, config, signal, emit } = request;
+	const assistantMessage = request.assistantMessage ?? syntheticAssistantMessage(toolCall);
+	await emit({
+		type: "tool_execution_start",
+		toolCallId: toolCall.id,
+		toolName: toolCall.name,
+		args: toolCall.arguments,
+	});
+	const preparation = await prepareToolCall(context, assistantMessage, toolCall, config as AgentLoopConfig, signal);
+	let finalized: FinalizedToolCallOutcome;
+	if (preparation.kind === "immediate") {
+		finalized = { toolCall, result: preparation.result, isError: preparation.isError };
+	} else {
+		const executed = await executePreparedToolCall(preparation, signal, emit);
+		finalized = await finalizeExecutedToolCall(
+			context,
+			assistantMessage,
+			preparation,
+			executed,
+			config as AgentLoopConfig,
+			signal,
+		);
+	}
+	await emitToolExecutionEnd(finalized, emit);
+	return {
+		result: finalized.result,
+		isError: finalized.isError,
+		message: createToolResultMessage(finalized),
+	};
+}

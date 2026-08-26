@@ -25,6 +25,8 @@ import type {
 	PrepareNextTurnContext,
 	ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
+import { executeSingleToolCall, uuidv7, type AgentEvent as PiAgentEvent, type AgentToolCall } from "@earendil-works/pi-agent-core";
+import type { ToolResultMessage } from "@earendil-works/pi-ai/compat";
 import { contentText, normalizeImageInputs } from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
@@ -1421,6 +1423,63 @@ export class AgentSession {
 			`This permits this exact tool call once.\n\n${this._describeSafetyCall(toolName, input)}`,
 		);
 		return approved ? undefined : { block: true, reason: `User declined ${toolName} under safety policy.` };
+	}
+
+	/** FEAT-087 code mode: the ACTIVE tool surface for nested calls — the
+	 *  post-safety-substitution list the model itself would see. Sourcing
+	 *  anywhere else would re-open read/write/edit in bounded safety modes. */
+	listCodeModeTools(): readonly { name: string; description?: string; executionMode?: "sequential" | "parallel" }[] {
+		return (this.agent.state.tools ?? []).map((tool) => ({
+			name: tool.name,
+			...(tool.description ? { description: tool.description } : {}),
+			...(tool.executionMode ? { executionMode: tool.executionMode } : {}),
+		}));
+	}
+
+	/** FEAT-087 code mode: execute one nested tool call exactly as if the
+	 *  model had issued it — same validation/coercion, same beforeToolCall
+	 *  gates (safety ladder, /readonly, hooks, leases), same tool_execution_*
+	 *  events (tagged code_mode + parent id) — but the tool-result message is
+	 *  returned for audit persistence, never appended to model context. */
+	async executeToolForCodeMode(
+		name: string,
+		args: unknown,
+		options: { readonly parentToolCallId: string; readonly signal?: AbortSignal },
+	): Promise<{ result: { content?: unknown; details?: unknown }; isError: boolean; message: ToolResultMessage }> {
+		const tools = this.agent.state.tools ?? [];
+		const tool = tools.find((candidate) => candidate.name === name);
+		if (!tool) throw new Error(`Tool "${name}" is not available in this session (check the safety mode).`);
+		const toolCall: AgentToolCall = {
+			type: "toolCall",
+			id: uuidv7(),
+			name,
+			arguments: (args ?? {}) as Record<string, unknown>,
+		};
+		const outcome = await executeSingleToolCall({
+			context: { systemPrompt: "", messages: [], tools: [...tools] },
+			toolCall,
+			config: {
+				...(this.agent.beforeToolCall ? { beforeToolCall: this.agent.beforeToolCall } : {}),
+				...(this.agent.afterToolCall ? { afterToolCall: this.agent.afterToolCall } : {}),
+			},
+			signal: options.signal ?? this.agent.signal,
+			emit: async (event: PiAgentEvent) => {
+				if (
+					event.type === "tool_execution_start" ||
+					event.type === "tool_execution_update" ||
+					event.type === "tool_execution_end"
+				) {
+					await this.agent.dispatchExternalEvent({
+						...event,
+						callSource: "code_mode",
+						parentToolCallId: options.parentToolCallId,
+					});
+				}
+				// Anything else (there is none today) stays out of the run's
+				// message stream by design.
+			},
+		});
+		return outcome;
 	}
 
 	/** Whether compaction or branch summarization is currently running */

@@ -552,6 +552,15 @@ export class Agent {
 	 * considered idle later, after all awaited listeners for `agent_end` finish
 	 * and `finishRun()` clears runtime-owned state.
 	 */
+	/** MyPi customization (FEAT-087 code mode): route an externally produced
+	 *  loop event (a nested tool call from a running code cell) through the
+	 *  same reducer + listener fan-out as loop-emitted events. Only valid
+	 *  while a run is active — the code cell executes inside one. */
+	async dispatchExternalEvent(event: AgentEvent): Promise<void> {
+		if (!this.activeRun) throw new Error("dispatchExternalEvent requires an active run");
+		await this.processEvents(event);
+	}
+
 	private async processEvents(event: AgentEvent): Promise<void> {
 		switch (event.type) {
 			case "message_start":

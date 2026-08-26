@@ -653,4 +653,18 @@ for (const relativePath of ["models.js", "compat.js"]) {
   }
 }
 
-console.log(`Verified Pi ${expectedVersion}, bundled docs/examples without built-in skills, runtime-owned Plan/Goal/archive/web/TUI/safety core with model-aware /reasoning and local /shift-tab selection, mode-specific safety footer presentation without change toasts, workspace-confined tools, canonical commentary updates with legacy-name compatibility, authoritative structured headless output with native and bounded fallback paths, the built-in security and evidence baseline plus packaged minimal prompt replacement, source-opening web guidance, isolated fail-closed Anthropic shell sandboxing, non-echoing authentication input, API-key Codex gateway compatibility, offline cross-process provider-state reload, suppressed automatic version-update metadata, one-line MyPi identity, outbound credential redaction, /hotkeys, resource viewers, acknowledged tree navigation, skill labels, typed agent settlement including preflight dispatch rejection, program-owned first-plus-last-three raw-user compaction continuity, post-completion Goal summaries, and Goal-aware proactive compaction continuation.`);
+// FEAT-087 code mode: the single-call dispatch seam and event tagging are
+// MyPi customizations of the agent core and must survive Pi re-vendoring.
+const agentCoreRoot = join(root, "node_modules", "@earendil-works", "pi-agent-core");
+const agentLoop = await readFile(join(agentCoreRoot, "dist", "agent-loop.js"), "utf8");
+for (const fragment of ["executeSingleToolCall", "syntheticAssistantMessage"]) {
+  if (!agentLoop.includes(fragment)) {
+    throw new Error(`Installed Pi ${expectedVersion} agent loop is missing the code-mode single-call seam (${fragment}).`);
+  }
+}
+const agentCore = await readFile(join(agentCoreRoot, "dist", "agent.js"), "utf8");
+if (!agentCore.includes("dispatchExternalEvent")) {
+  throw new Error(`Installed Pi ${expectedVersion} agent is missing dispatchExternalEvent (code-mode event routing).`);
+}
+
+console.log(`Verified Pi ${expectedVersion}, bundled docs/examples without built-in skills, runtime-owned Plan/Goal/archive/web/TUI/safety core with model-aware /reasoning and local /shift-tab selection, mode-specific safety footer presentation without change toasts, workspace-confined tools, canonical commentary updates with legacy-name compatibility, authoritative structured headless output with native and bounded fallback paths, the built-in security and evidence baseline plus packaged minimal prompt replacement, source-opening web guidance, isolated fail-closed Anthropic shell sandboxing, non-echoing authentication input, API-key Codex gateway compatibility, offline cross-process provider-state reload, suppressed automatic version-update metadata, one-line MyPi identity, outbound credential redaction, /hotkeys, resource viewers, acknowledged tree navigation, skill labels, typed agent settlement including preflight dispatch rejection, program-owned first-plus-last-three raw-user compaction continuity, post-completion Goal summaries, Goal-aware proactive compaction continuation, and the code-mode single-call dispatch seam with tagged tool events.`);

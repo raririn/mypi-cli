@@ -275,16 +275,16 @@ test("pressure: many sequential cells do not leak isolates", async () => {
 	}
 });
 
-test("documented limitation: asyncify serializes concurrent host awaits inside one cell", async () => {
-	// Promise.all over tools.* does NOT run host calls concurrently under the
-	// asyncify build — the whole VM suspends per host call. Phase 2 provides a
-	// host-side parallel primitive instead. This test pins the behavior so a
-	// future engine change is noticed.
+test("Promise.all over tools.* runs host calls CONCURRENTLY (sync-build deferred-promise bridge)", async () => {
+	// The deferred-promise host bridge leaves the VM idle while host promises
+	// are pending, so in-cell Promise.all fans out host-side. Pinned so an
+	// engine change back toward serialization is noticed.
 	const started = Date.now();
 	const result = await runCodeCell(
-		`await Promise.all([tools.slow({}), tools.slow({})]); text("done");`,
+		`await Promise.all([tools.slow({}), tools.slow({}), tools.slow({})]); text("done");`,
 		{ tools: { slow: async () => { await new Promise((resolvePromise) => setTimeout(resolvePromise, 120)); return null; } } },
 	);
 	assert.equal(result.status, "ok", result.error?.message);
-	assert.ok(Date.now() - started >= 200, "expected serialized host awaits (~240ms)");
+	const wall = Date.now() - started;
+	assert.ok(wall < 300, `expected concurrent host awaits (~120ms), got ${wall}ms`);
 });
