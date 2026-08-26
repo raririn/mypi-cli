@@ -206,6 +206,8 @@ interface DeliveredResult {
 	reason?: string;
 	answer?: string;
 	usage?: SubagentUsage;
+	startedAt?: string;
+	settledAt?: string;
 	changes?: { before: WorkspaceSnapshot; after: WorkspaceSnapshot };
 	stale?: boolean;
 	arrivedAfterMutation?: boolean;
@@ -1143,6 +1145,8 @@ export class SubagentManager {
 			reason: grant.reason === undefined ? undefined : consultation ? sanitizeUnavailableReason(grant.reason) : grant.reason,
 			answer: grant.answer,
 			usage: grant.usage,
+			...(grant.startedAt ? { startedAt: grant.startedAt } : {}),
+			...(grant.settledAt ? { settledAt: grant.settledAt } : {}),
 			...(grant.ownerGoalId ? { ownerGoalId: grant.ownerGoalId } : {}),
 			...(unavailable ? { unavailablePhase: classifyConsultationFailure(grant.status, grant.reason) } : {}),
 		};

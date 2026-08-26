@@ -334,6 +334,11 @@ export async function getDaemonModelCatalog(cwd: string, agentDir = getAgentDir(
 	defaultModel: Record<string, unknown> | null;
 }> {
 	const services = await daemonServices(cwd, agentDir);
+	// The daemon outlives GUI/TUI processes: without a reload, credential
+	// changes made elsewhere (terminal /logout, /login) are invisible to the
+	// cached runtime for the daemon's whole lifetime (same rule as the RPC
+	// path and listDaemonAuthProviders).
+	await services.modelRuntime.reloadPersistedModelState();
 	const configuredDefault = splitConfiguredDefaultModel(await resolveConfiguredDefaultModel({
 		path: join(resolve(agentDir), "config.yaml"),
 		legacyProvider: services.settingsManager.getLegacyGlobalDefaultProvider(),
@@ -993,6 +998,42 @@ export async function destroySessionSnapshots(agentDir: string, cwd: string, ses
 	void cwd;
 	const loaded = await loadGlobalConfig(join(resolve(agentDir), "config.yaml"));
 	return purgeSessionSnapshotsAcrossTrackers(agentDir, sessionId, loaded.config.tracking);
+}
+
+export interface SessionDeleteResult {
+	readonly sessionId: string;
+	readonly profile: "coding" | "chat";
+	readonly snapshotsRemoved: number;
+}
+
+/** Permanently delete one persisted session (engine-free storage side; the
+ *  daemon closes any live engine child before calling this). Same safety
+ *  ladder as archive cleanup: writer lock, legacy-lease check, confinement
+ *  to a managed root, subagent storage, snapshots, then the transcript. */
+export async function deletePersistedSession(
+	sessionId: string,
+	agentDir = getAgentDir(),
+): Promise<SessionDeleteResult> {
+	const page = await listPersistedSessions({ agentDir, includeArchived: true, limit: MAX_LIST_LIMIT });
+	const matches = page.sessions.filter((session) => session.id === sessionId);
+	if (matches.length !== 1) throw new Error(matches.length === 0 ? `Session not found: ${sessionId}` : `Session identity is ambiguous: ${sessionId}`);
+	const session = matches[0]!;
+	const roots = resolveSessionRoots(agentDir);
+	const chat = resolveChatPaths(agentDir);
+	const containing = [roots.sessionsRoot, roots.archiveRoot, chat.activeHistory, chat.archiveHistory].find(
+		(candidate) => isContained(resolve(session.sessionFile), resolve(candidate)),
+	);
+	if (!containing) throw new Error("Session file escapes its managed roots");
+	await withStoredSessionLock(session.sessionFile, async () => {
+		await assertNoLegacyLease(session.sessionFile);
+		const handle = await openSafeSessionFile(session.sessionFile, containing);
+		await handle.close();
+		await removeSubagentParentStorage(agentDir, session.id);
+		await rm(session.sessionFile);
+	});
+	const snapshotsRemoved = await destroySessionSnapshots(agentDir, session.cwd, session.id).catch(() => 0);
+	clearDaemonServiceCache();
+	return { sessionId, profile: session.profile, snapshotsRemoved };
 }
 
 export async function setPersistedSessionArchived(

@@ -21,6 +21,8 @@
 //     {type:"list_sessions"}
 //     {type:"list_persisted_sessions", cwd?, includeArchived?, offset?, limit?}
 //     {type:"read_session", sessionId?|sessionFile?, since?, limit?, maxBytes?}
+//     {type:"delete_persisted_session", sessionId, confirm:true}
+//                                       ends a live child, permanent delete
 //     {type:"get_available_models", cwd?}             no engine required
 //     {type:"set_default_model", provider, modelId}   no engine required
 //     {type:"list_auth_providers", cwd?}              no engine required
@@ -146,6 +148,7 @@ import {
   runNewSessionMaintenance,
   cleanupArchivedSessions,
   compactPersistedSession,
+  deletePersistedSession,
   previewArchiveCleanup,
   setPersistedSessionArchived,
 	saveMcpWizardServer,
@@ -1234,6 +1237,37 @@ function closeSession(session) {
   killTimer.unref?.();
 }
 
+/** Delete is allowed even while the session is working — its whole point is
+ *  removing a session the user can no longer control. Detach everyone,
+ *  force-close the child (SIGTERM, SIGKILL after 5s) and wait for exit so the
+ *  writer lease is released before the storage delete runs. */
+async function closeSessionForDelete(session) {
+  for (const attached of [...session.clients]) detachClientFromSession(attached, session);
+  if (session.graceTimer) {
+    clearTimeout(session.graceTimer);
+    session.graceTimer = null;
+  }
+  if (session.exited) return;
+  await new Promise((resolvePromise, rejectPromise) => {
+    const killTimer = setTimeout(() => {
+      try { session.child.kill("SIGKILL"); } catch {}
+    }, 5_000);
+    const failTimer = setTimeout(() => rejectPromise(new Error("Session engine did not exit before delete.")), 10_000);
+    session.child.once("exit", () => {
+      clearTimeout(killTimer);
+      clearTimeout(failTimer);
+      resolvePromise();
+    });
+    try {
+      session.child.kill("SIGTERM");
+    } catch {
+      clearTimeout(killTimer);
+      clearTimeout(failTimer);
+      resolvePromise();
+    }
+  });
+}
+
 async function closeIdleSessionForArchive(session, requestingClient) {
   if (session.turnActive) throw new Error("Session archive is blocked while the session is working.");
   const otherClients = [...session.clients].filter((attached) => attached !== requestingClient);
@@ -1865,6 +1899,23 @@ function handleClientFrame(client, frame) {
       if (live) await closeIdleSessionForArchive(live, client);
       const result = await setPersistedSessionArchived(sessionId, frame.archived, daemonAgentDir);
       broadcastAll({ type: "persisted_changed", sessionId, kind: frame.archived ? "archived" : "restored" });
+      return result;
+    })());
+    return;
+  }
+
+  if (frame?.type === "delete_persisted_session") {
+    const sessionId = typeof frame.sessionId === "string" ? frame.sessionId : "";
+    sendDaemonResponse(client, frame, "delete_persisted_session", (async () => {
+      if (!sessionId || frame.confirm !== true) throw new Error("delete_persisted_session requires sessionId and confirm: true");
+      const live = [...sessions.values()].find((session) =>
+        !session.exited && (session.sessionId === sessionId || session.nativeSessionId === sessionId || session.key === sessionId),
+      );
+      // Unlike archive, delete works on a busy session — end its child first
+      // so the writer lease is free before the storage delete.
+      if (live) await closeSessionForDelete(live);
+      const result = await deletePersistedSession(sessionId, daemonAgentDir);
+      broadcastAll({ type: "persisted_changed", sessionId, kind: "removed" });
       return result;
     })());
     return;

@@ -1889,3 +1889,51 @@ test("corrupt tracking data warns on attach and rebuilds only through the confir
     await daemon.cleanup();
   }
 });
+
+test("delete_persisted_session removes idle sessions and force-closes a working child first", async () => {
+  const daemon = await startDaemon({ idleGraceMs: 100, turnMs: 5_000 });
+  try {
+    const workspace = join(daemon.agentDir, "sessions", "delete-workspace");
+    await mkdir(workspace, { recursive: true });
+    const idleFile = join(workspace, "delete-idle-1.jsonl");
+    const busyFile = join(workspace, "delete-busy-1.jsonl");
+    await writeFile(idleFile, persistedSession({ id: "delete-idle-1", cwd: workspace }));
+    await writeFile(busyFile, persistedSession({ id: "delete-busy-1", cwd: workspace }));
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    const response = (id) => client.frames.find((frame) => frame.type === "response" && frame.id === id);
+
+    // Guard rail: confirm is mandatory.
+    client.send({ id: "no-confirm", type: "delete_persisted_session", sessionId: "delete-idle-1" });
+    await waitFor(() => response("no-confirm"), 5_000, "delete without confirm");
+    assert.equal(response("no-confirm").success, false);
+
+    // Idle persisted session (no live child): file goes away and the removal broadcasts.
+    client.send({ id: "del-idle", type: "delete_persisted_session", sessionId: "delete-idle-1", confirm: true });
+    await waitFor(() => response("del-idle"), 10_000, "idle session delete");
+    assert.equal(response("del-idle").success, true, response("del-idle").error);
+    assert.equal(existsSync(idleFile), false);
+    assert.ok(client.ofType("persisted_changed").some((frame) => frame.kind === "removed" && frame.sessionId === "delete-idle-1"));
+
+    // Working session: a slow turn is active when the delete arrives — the
+    // daemon must end the child (releasing the writer lease) and still delete.
+    client.send({ type: "attach", sessionId: "delete-busy-1", cwd: workspace });
+    await waitFor(() => client.ofType("attached").length === 1, 5_000, "busy session attach");
+    client.send({ id: "p1", type: "prompt", message: "long turn", sessionId: "delete-busy-1" });
+    await waitFor(() => client.ofType("agent_start").length === 1, 10_000, "busy session turn start");
+    client.send({ id: "del-busy", type: "delete_persisted_session", sessionId: "delete-busy-1", confirm: true });
+    await waitFor(() => response("del-busy"), 15_000, "busy session delete");
+    assert.equal(response("del-busy").success, true, response("del-busy").error);
+    assert.equal(existsSync(busyFile), false);
+
+    client.send({ id: "list", type: "list_persisted_sessions", includeArchived: true });
+    await waitFor(() => response("list"), 5_000, "post-delete listing");
+    const remaining = response("list").data.sessions.map((session) => session.id);
+    assert.equal(remaining.includes("delete-idle-1"), false);
+    assert.equal(remaining.includes("delete-busy-1"), false);
+    client.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});

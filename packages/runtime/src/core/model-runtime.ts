@@ -93,6 +93,7 @@ function mergeHeaders(
 /** Configured pi-ai Models collection used by coding-agent and SDK consumers. */
 export class ModelRuntime implements Models {
 	private readonly models: MutableModels;
+	private readonly modelsStore: ModelsStore;
 	private readonly credentials: RuntimeCredentials;
 	private readonly defaultBuiltins: ReadonlyMap<string, Provider>;
 	private readonly builtins = new Map<string, Provider>();
@@ -127,6 +128,7 @@ export class ModelRuntime implements Models {
 		this.defaultBuiltins = new Map(providers.map((provider) => [provider.id, provider]));
 		for (const [providerId, provider] of this.defaultBuiltins) this.builtins.set(providerId, provider);
 		this.models = createModels({ credentials, modelsStore });
+		this.modelsStore = modelsStore;
 		this.rebuildProviders();
 	}
 
@@ -538,6 +540,10 @@ export class ModelRuntime implements Models {
 
 	async logout(providerId: string): Promise<void> {
 		await this.models.logout(providerId);
+		// Drop the provider's cached model list too — models-store.json is the
+		// cross-process catalog fallback, and a logged-out provider's models
+		// must not survive into fresh instances.
+		await this.modelsStore.delete(providerId).catch(() => undefined);
 		// Reset credential-dependent compatibility projections before the unconfigured provider is skipped by refresh.
 		this.recomposeProvider(providerId);
 		await this.refresh({ allowNetwork: this.modelNetworkEnabled });
