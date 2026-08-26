@@ -20,6 +20,8 @@ export interface HistoryConfig {
 
 export interface SubagentsConfig {
 	readonly advisorModel: "inherit" | string;
+	/** Thinking level for advisor/review children; "inherit" follows the parent. */
+	readonly advisorThinkingLevel: "inherit" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 	readonly requireAdvisor: boolean;
 	readonly requireReviewer: boolean;
 }
@@ -123,7 +125,7 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfig = Object.freeze({
 		maxActive: 10,
 		maxArchived: 10,
 	}),
-	subagents: Object.freeze({ advisorModel: "inherit", requireAdvisor: false, requireReviewer: false }),
+	subagents: Object.freeze({ advisorModel: "inherit", advisorThinkingLevel: "inherit" as const, requireAdvisor: false, requireReviewer: false }),
 	tracking: Object.freeze({
 		maxSessionCheckpoints: 3,
 		maxDetachedCheckpoints: 1,
@@ -163,6 +165,7 @@ export type GlobalConfigField =
 	| "tools.mode"
 	| `history.${HistoryKey}`
 	| "subagents.advisorModel"
+	| "subagents.advisorThinkingLevel"
 	| "subagents.requireAdvisor"
 	| "subagents.requireReviewer"
 	| "tracking.maxSessionCheckpoints"
@@ -196,7 +199,7 @@ export interface SanitizedGlobalConfig extends Omit<GlobalConfig, "mcp"> {
 const GLOBAL_CONFIG_FIELDS = new Set<GlobalConfigField>([
 	"defaultModel", "serviceTier", "honestUserAgent", "tools.mode",
 	"history.autoArchive", "history.shortTestMaxWords", "history.maxActive", "history.maxArchived",
-	"subagents.advisorModel", "subagents.requireAdvisor", "subagents.requireReviewer",
+	"subagents.advisorModel", "subagents.advisorThinkingLevel", "subagents.requireAdvisor", "subagents.requireReviewer",
 	"tracking.maxSessionCheckpoints", "tracking.maxDetachedCheckpoints", "tracking.warningFiles", "tracking.warningBytes",
 	"gui.appMode", "gui.favouritePi", "gui.theme.mode", "gui.theme.preset", "gui.layout.railWidth", "gui.layout.workbenchWidth",
 	"gui.shortcuts.home", "gui.shortcuts.newSession",
@@ -620,6 +623,9 @@ function parseConfigRecord(
 				advisorModel: typeof subagents.advisorModel === "string"
 					? subagents.advisorModel
 					: DEFAULT_GLOBAL_CONFIG.subagents.advisorModel,
+				advisorThinkingLevel: isAdvisorThinkingLevel(subagents.advisorThinkingLevel)
+					? subagents.advisorThinkingLevel
+					: DEFAULT_GLOBAL_CONFIG.subagents.advisorThinkingLevel,
 				requireAdvisor: readBoolean(subagents.requireAdvisor, DEFAULT_GLOBAL_CONFIG.subagents.requireAdvisor),
 				requireReviewer: readBoolean(subagents.requireReviewer, DEFAULT_GLOBAL_CONFIG.subagents.requireReviewer),
 			},
@@ -658,6 +664,7 @@ function parseConfigRecord(
 			!validOptionalInteger(history.maxActive, 1, 1_000) ||
 			!validOptionalInteger(history.maxArchived, 1, 1_000)
 			|| (subagents.advisorModel !== undefined && !isAdvisorModel(subagents.advisorModel))
+			|| (subagents.advisorThinkingLevel !== undefined && !isAdvisorThinkingLevel(subagents.advisorThinkingLevel))
 			|| (subagents.requireAdvisor !== undefined && typeof subagents.requireAdvisor !== "boolean")
 			|| (subagents.requireReviewer !== undefined && typeof subagents.requireReviewer !== "boolean")
 			|| !validOptionalInteger(tracking.maxSessionCheckpoints, 1, 20)
@@ -823,6 +830,10 @@ function diagnostic(code: GlobalConfigDiagnostic["code"], message: string, path:
 
 function readBoolean(value: unknown, fallback: boolean): boolean {
 	return typeof value === "boolean" ? value : fallback;
+}
+
+function isAdvisorThinkingLevel(value: unknown): value is SubagentsConfig["advisorThinkingLevel"] {
+	return ["inherit", "off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value as string);
 }
 
 function isToolsProjectionMode(value: unknown): value is ToolsProjectionMode {

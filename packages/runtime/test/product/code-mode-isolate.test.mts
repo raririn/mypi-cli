@@ -134,13 +134,14 @@ test("concurrent cells run independently", async () => {
 test("R1: no ambient Node globals reachable", async () => {
 	const result = await runCodeCell(`
 		text([
-			typeof process, typeof require, typeof console, typeof fetch,
+			typeof process, typeof require, typeof fetch,
 			typeof setTimeout, typeof setInterval, typeof Buffer, typeof WebAssembly,
 		].join(","));
 	`);
 	assert.equal(result.status, "ok");
 	// QuickJS ships no WebAssembly global either — nothing embeds a second VM.
-	assert.deepEqual(result.emitted, [{ type: "text", text: "undefined,undefined,undefined,undefined,undefined,undefined,undefined,undefined" }]);
+	// (console exists as a frozen shim onto the curated output channel.)
+	assert.deepEqual(result.emitted, [{ type: "text", text: "undefined,undefined,undefined,undefined,undefined,undefined,undefined" }]);
 });
 
 test("R1: static and dynamic imports are rejected", async () => {
@@ -287,4 +288,14 @@ test("Promise.all over tools.* runs host calls CONCURRENTLY (sync-build deferred
 	assert.equal(result.status, "ok", result.error?.message);
 	const wall = Date.now() - started;
 	assert.ok(wall < 300, `expected concurrent host awaits (~120ms), got ${wall}ms`);
+});
+
+
+test("console.log is a curated-output shim (weak-model rescue)", async () => {
+	const result = await runCodeCell(`console.log("a", 1, true); console.debug("dropped"); text("done");`);
+	assert.equal(result.status, "ok");
+	assert.deepEqual(result.emitted, [
+		{ type: "text", text: "a 1 true" },
+		{ type: "text", text: "done" },
+	]);
 });

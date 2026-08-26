@@ -33,7 +33,23 @@ const CONTRACT = `Execute JavaScript in an isolated runtime to orchestrate tools
 - store(key, value) / load(key) persist JSON values across exec_code calls this session. exit() ends the script early. ALL_TOOLS lists { name, description } for every callable tool (including ones not declared below).
 - When the script finishes, its runtime is destroyed; unawaited promises are silently discarded.
 - exec_code cannot invoke itself.
-- Prefer direct tool calls for single operations; use exec_code when a workflow needs loops, filtering, aggregation, or multiple dependent calls.`;
+- Prefer direct tool calls for single operations (when available); use exec_code when a workflow needs loops, filtering, aggregation, or multiple dependent calls.
+
+Example:
+const manifest = JSON.parse((await tools.read({ path: "package.json" })).output);
+const hits = [];
+for (const file of ["a.ts", "b.ts"]) {
+	const body = (await tools.read({ path: file })).output;
+	if (body.includes(manifest.name)) hits.push(file);
+}
+text(manifest.name + " referenced in: " + hits.join(", "));`;
+
+/** Model-facing hints for the most common weak-model scripting mistakes. */
+const ERROR_HINTS: readonly { readonly pattern: RegExp; readonly hint: string }[] = [
+	{ pattern: /return not in a function/i, hint: "Top-level return is invalid — emit results with text(...) and just end the script (or call exit())." },
+	{ pattern: /could not load module/i, hint: "Imports are not available — every effect goes through tools.* (e.g. tools.read, tools.bash)." },
+	{ pattern: /is not defined/i, hint: "Only tools.*, ALL_TOOLS, text(), store()/load(), parallel(), console.log and standard JavaScript are available." },
+];
 
 const execCodeSchema = Type.Object({
 	code: Type.String({ description: "Raw JavaScript source, evaluated as an async ES module in the isolated runtime." }),
@@ -135,6 +151,12 @@ export function createExecCodeToolDefinition(
 		executionMode: "sequential",
 		execute: async (toolCallId, params, signal) => {
 			const input = params as ExecCodeToolInput;
+			if (!input.code || !input.code.trim()) {
+				return {
+					content: [{ type: "text", text: "Exit: error: code must be a non-empty JavaScript program. Write the script inline in the code parameter — e.g. text((await tools.read({ path: \"README.md\" })).output.length);" }],
+					details: { status: "error", wallTimeMs: 0 },
+				};
+			}
 			const timeoutMs = Math.min(Math.max(input.timeout_ms ?? DEFAULT_TIMEOUT_MS, 1_000), MAX_TIMEOUT_MS);
 			const bridge = buildCodeModeBridge(executorFor(session, toolCallId));
 			let result: Awaited<ReturnType<typeof runCodeCell>>;
@@ -160,7 +182,8 @@ export function createExecCodeToolDefinition(
 				};
 			}
 			const body = result.emitted.map((item) => item.text).join("\n");
-			const status = result.status === "ok" ? "ok" : `${result.status}${result.error ? `: ${result.error.message}` : ""}`;
+			const hint = result.error ? ERROR_HINTS.find((entry) => entry.pattern.test(result.error!.message))?.hint : undefined;
+			const status = result.status === "ok" ? "ok" : `${result.status}${result.error ? `: ${result.error.message}` : ""}${hint ? `\nHint: ${hint}` : ""}`;
 			const header = `Exit: ${status}\nWall time: ${(result.wallTimeMs / 1000).toFixed(1)}s`;
 			const text = body ? `${header}\nOutput:\n${body}` : `${header}\nOutput: (empty — use text(...) to emit results)`;
 			// Failures return structured status text rather than throwing — the

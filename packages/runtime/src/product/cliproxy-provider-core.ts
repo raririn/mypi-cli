@@ -184,7 +184,10 @@ export function mapCliProxyCatalog(payload: unknown, endpoints: CliProxyEndpoint
         supportsPriorityServiceTier: fastCapable,
         // CLIProxy fronts thinking-mode models (DeepSeek/GLM families) that
         // reject tool loops when a replayed step is missing its reasoning.
-        requiresReasoningItemReplay: true,
+        // OpenAI-family models must NOT get the synthetic replay item: real
+        // Codex endpoints enforce reasoning.content maxItems 0 on input and
+        // reject the whole request ("array too long", dogfood 2026-08-26).
+        requiresReasoningItemReplay: !/^(gpt-|o\d|codex|chatgpt)/i.test(id),
       },
     });
   }

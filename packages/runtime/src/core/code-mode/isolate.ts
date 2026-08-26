@@ -135,6 +135,14 @@ globalThis.parallel = async (calls) => __call("__parallel", calls);
 		: ""
 }
 globalThis.text = (value) => { __emit("text", String(value)); };
+// Weak-model rescue: console maps onto the curated output channel.
+globalThis.console = Object.freeze({
+	log: (...parts) => __emit("text", parts.map(String).join(" ")),
+	info: (...parts) => __emit("text", parts.map(String).join(" ")),
+	warn: (...parts) => __emit("text", parts.map(String).join(" ")),
+	error: (...parts) => __emit("text", parts.map(String).join(" ")),
+	debug: () => {},
+});
 globalThis.store = (key, value) => { __store(String(key), JSON.stringify(value === undefined ? null : value)); };
 globalThis.load = (key) => JSON.parse(__load(String(key)));
 globalThis.exit = () => { const e = new Error("${EXIT_SENTINEL}"); e.name = "${EXIT_SENTINEL}"; throw e; };

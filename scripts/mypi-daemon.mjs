@@ -140,6 +140,7 @@ import {
   daemonProviderLogout,
   listDaemonAuthProviders,
   readGlobalDefaultSafetyMode,
+  readGlobalDefaultThinkingLevel,
   readPersistedSession,
   runDaemonProviderLogin,
 	readDaemonResourceFile,
@@ -157,6 +158,7 @@ import {
   updateDefaultModel,
 	updateGlobalConfigField,
 	updateGlobalDefaultSafetyMode,
+	updateGlobalDefaultThinkingLevel,
 	sanitizeGlobalConfig,
   WorkspaceTracker,
 } from "@earendil-works/pi-coding-agent";
@@ -282,12 +284,14 @@ const daemonGlobalConfigPath = resolve(daemonAgentDir, "config.yaml");
  *  `safety` section; newly created sessions capture safety.defaultMode). */
 function composeSanitizedGlobalConfig(config) {
   let defaultMode = "full";
+  let defaultThinkingLevel = "medium";
   try {
     defaultMode = readGlobalDefaultSafetyMode(daemonAgentDir);
+    defaultThinkingLevel = readGlobalDefaultThinkingLevel(daemonAgentDir);
   } catch {
     // Unreadable settings.json must not break config service replies.
   }
-  return { ...sanitizeGlobalConfig(config), safety: { defaultMode } };
+  return { ...sanitizeGlobalConfig(config), safety: { defaultMode }, thinking: { defaultLevel: defaultThinkingLevel } };
 }
 
 let server = null;
@@ -2101,6 +2105,16 @@ function handleClientFrame(client, frame) {
 
   if (frame?.type === "update_global_config") {
     const field = typeof frame.field === "string" ? frame.field : "";
+    if (field === "thinking.defaultLevel") {
+      // settings.json authority (defaultThinkingLevel): newly created
+      // sessions start at this level, clamped per model.
+      sendDaemonResponse(client, frame, "update_global_config", Promise.resolve().then(async () => {
+        await updateGlobalDefaultThinkingLevel(frame.value, daemonAgentDir);
+        const loaded = await loadGlobalConfig(daemonGlobalConfigPath);
+        return { config: composeSanitizedGlobalConfig(loaded.config) };
+      }));
+      return;
+    }
     if (field === "safety.defaultMode") {
       // settings.json authority, not config.yaml: newly created sessions on
       // every client capture this default (agent-session safety seeding).

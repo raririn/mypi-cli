@@ -142,6 +142,25 @@ describe("tools.mode projection", () => {
 		expect(harness.session.listCodeModeTools()).toEqual([]);
 	});
 
+	it('"code" mode: nested calls resolve from the CALLABLE surface, not the visible list (regression 01a03f40)', async () => {
+		const harness = await createHarness({ tools: [echoTool], settings: { tools: { mode: "code" } } });
+		harnesses.push(harness);
+		harness.setResponses([
+			fauxAssistantMessage(
+				fauxToolCall(EXEC_CODE_TOOL_NAME, {
+					code: `const r = await tools.echo({ text: "collapsed" }); text(r.output);`,
+				}),
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("done"),
+		]);
+		await harness.session.prompt("go");
+		const cellResult = harness.session.messages.find((message) => message.role === "toolResult");
+		const body = textOf((cellResult as { content?: unknown })?.content);
+		expect(body).toContain("Exit: ok");
+		expect(body).toContain("echo:collapsed");
+	});
+
 	it("end-to-end: the model drives exec_code as a registered tool", async () => {
 		const harness = await createHarness({ tools: [echoTool] });
 		harnesses.push(harness);

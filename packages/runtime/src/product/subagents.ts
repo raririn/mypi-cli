@@ -580,6 +580,7 @@ export class SubagentManager {
 		}
 		this.assertRoleAllowed(role, ctx);
 		const model = await this.resolveModel(role, ctx);
+		const childThinkingLevel = await this.resolveThinkingLevel(role, ctx);
 		const batchId = createSubagentBatchId();
 		const ownerGoalId = activeGoalId(ctx.sessionManager.getBranch());
 		if (role === "advisor") {
@@ -605,7 +606,7 @@ export class SubagentManager {
 				task: job.task.trim(),
 				cwd: ctx.cwd,
 				model: { provider: model.provider, id: model.id },
-				thinkingLevel: ctx.thinkingLevel,
+				thinkingLevel: childThinkingLevel,
 				createdAt: now,
 				updatedAt: now,
 				grants: [grant],
@@ -872,6 +873,14 @@ export class SubagentManager {
 			throw new SubagentUnavailableError(role as "advisor" | "review", "auth", `Configured advisor model has no usable authentication: ${configured}. Use /advisor-model inherit or select an available model.`);
 		}
 		return { provider, id };
+	}
+
+	/** Advisor/review children may run a configured thinking level; work and
+	 *  explore children inherit the parent's. */
+	private async resolveThinkingLevel(role: SubagentRole, ctx: ExtensionContext): Promise<typeof ctx.thinkingLevel> {
+		if (role !== "advisor" && role !== "review") return ctx.thinkingLevel;
+		const configured = (await loadGlobalConfig()).config.subagents.advisorThinkingLevel;
+		return configured === "inherit" ? ctx.thinkingLevel : configured;
 	}
 
 	private requireOwned(childId: string): SubagentChildRecord {

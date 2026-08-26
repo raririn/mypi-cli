@@ -1549,7 +1549,13 @@ export class AgentSession {
 		args: unknown,
 		options: { readonly parentToolCallId: string; readonly signal?: AbortSignal },
 	): Promise<{ result: { content?: unknown; details?: unknown }; isError: boolean; message: ToolResultMessage }> {
-		const tools = this.agent.state.tools ?? [];
+		// Resolve from the CALLABLE surface (post-safety names → registry),
+		// NOT agent.state.tools: in "code" mode the model-visible list is only
+		// exec_code + communication tools, and resolving against it made every
+		// nested call fail "not available" (dogfood session 01a03f40).
+		const tools = this._codeCallableToolNames
+			.map((callable) => this._toolRegistry.get(callable))
+			.filter((candidate): candidate is AgentTool => Boolean(candidate));
 		const tool = tools.find((candidate) => candidate.name === name);
 		if (!tool) throw new Error(`Tool "${name}" is not available in this session (check the safety mode).`);
 		const toolCall: AgentToolCall = {

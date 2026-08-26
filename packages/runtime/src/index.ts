@@ -270,10 +270,12 @@ export {
 	type PackageSource,
 	type RetrySettings,
 	readGlobalDefaultSafetyMode,
+	readGlobalDefaultThinkingLevel,
 	type SafetySettings,
 	SettingsManager,
 	type SettingsManagerCreateOptions,
 	updateGlobalDefaultSafetyMode,
+	updateGlobalDefaultThinkingLevel,
 } from "./core/settings-manager.ts";
 // Skills
 export {

@@ -1342,6 +1342,25 @@ export function readGlobalDefaultSafetyMode(agentDir: string = getAgentDir()): S
 	return SettingsManager.create(resolvePath(agentDir), agentDir).getDefaultSafetyMode();
 }
 
+const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+/** Daemon-level access to settings.json `defaultThinkingLevel` — the level
+ *  newly created sessions start with (clamped per model at use). */
+export function readGlobalDefaultThinkingLevel(agentDir: string = getAgentDir()): ThinkingLevel {
+	return SettingsManager.create(resolvePath(agentDir), agentDir).getDefaultThinkingLevel() ?? "medium";
+}
+
+export async function updateGlobalDefaultThinkingLevel(level: string, agentDir: string = getAgentDir()): Promise<ThinkingLevel> {
+	if (!THINKING_LEVELS.has(level)) throw new Error(`Invalid thinking level: ${String(level)}`);
+	const manager = SettingsManager.create(resolvePath(agentDir), agentDir);
+	manager.setDefaultThinkingLevel(level as ThinkingLevel);
+	// Settings writes are queued; surface persistence before replying.
+	await manager.flush();
+	const failure = manager.drainErrors().find((entry) => entry.scope === "global");
+	if (failure) throw new Error(`Could not persist the default thinking level: ${failure.error.message}`);
+	return manager.getDefaultThinkingLevel() ?? "medium";
+}
+
 export async function updateGlobalDefaultSafetyMode(mode: SafetyMode, agentDir: string = getAgentDir()): Promise<SafetyMode> {
 	if (!isSafetyMode(mode)) throw new Error(`Invalid safety mode: ${String(mode)}`);
 	const manager = SettingsManager.create(resolvePath(agentDir), agentDir);
