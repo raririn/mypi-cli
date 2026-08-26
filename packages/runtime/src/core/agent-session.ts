@@ -56,10 +56,10 @@ function contentTextBounded(content: unknown, maxBytes: number): string {
 const CODE_MODE_DIRECT_ONLY_TOOLS: ReadonlySet<string> = new Set([
 	"commentary",
 	"deep_thinking",
+	// ask_user blocks on interactive UI mid-cell; keep it a direct call so
+	// approval surfaces stay conversation-shaped. Goal tools are data
+	// operations and ARE cell-callable (dogfood evidence 2026-08-26).
 	"ask_user",
-	"create_goal",
-	"get_goal",
-	"get_goal_plan",
 ]);
 import { contentText, normalizeImageInputs } from "@earendil-works/pi-ai";
 import type {
@@ -408,6 +408,10 @@ export interface AgentSessionConfig {
 	customTools?: ToolDefinition[];
 	/** Canonical model/auth runtime used by coding-agent internals. */
 	modelRuntime: ModelRuntime;
+	/** FEAT-087: tool projection from config.yaml tools.mode; settings.json
+	 *  remains a dev override when absent. Applied at construction — a daemon
+	 *  restart makes a config change effective. */
+	toolsMode?: "flat" | "code" | "compatible";
 	/** Initial active built-in tool names. Default: [read, bash, edit, write, commentary] */
 	initialActiveToolNames?: string[];
 	/** Optional allowlist of tool names. When provided, only these tool names are exposed. */
@@ -595,6 +599,8 @@ export class AgentSession {
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
 	private _requestedActiveToolNames: string[] | undefined;
+	/** FEAT-087: config-resolved projection mode (see AgentSessionConfig). */
+	private readonly _toolsModeOverride?: "flat" | "code" | "compatible";
 	/** FEAT-087: post-safety callable names for nested code-mode calls. */
 	private _codeCallableToolNames: string[] = [];
 	/** FEAT-087: session-lifetime store()/load() scratchpad (R8). */
@@ -614,6 +620,7 @@ export class AgentSession {
 		this.agent = config.agent;
 		this.sessionManager = config.sessionManager;
 		this.settingsManager = config.settingsManager;
+		this._toolsModeOverride = config.toolsMode;
 		this._scopedModels = config.scopedModels ?? [];
 		this._resourceLoader = config.resourceLoader;
 		this._customTools = config.customTools ?? [];
@@ -1313,14 +1320,14 @@ export class AgentSession {
 		// FEAT-087 code mode: the CALLABLE surface (nested tools.* inside a
 		// cell) is the full post-safety list; the MODEL-VISIBLE surface may be
 		// narrower ("code-only" collapses it to exec_code + direct-only).
-		const mode = this.settingsManager.getToolsMode();
+		const mode = this._toolsMode();
 		this._codeCallableToolNames =
 			mode === "flat" || !this._toolRegistry.has(EXEC_CODE_TOOL_NAME)
 				? []
 				: toolNames.filter((name) => name !== EXEC_CODE_TOOL_NAME);
 		let visibleNames = toolNames;
 		if (mode !== "flat" && this._toolRegistry.has(EXEC_CODE_TOOL_NAME)) {
-			if (mode === "code-only") {
+			if (mode === "code") {
 				const directOnly = this.codeModeDirectOnlyTools();
 				visibleNames = toolNames.filter((name) => name === EXEC_CODE_TOOL_NAME || directOnly.has(name));
 			}
@@ -1348,7 +1355,7 @@ export class AgentSession {
 	/** FEAT-087: in "code-only" mode the exec_code description embeds TS
 	 *  declarations for the callable set; recomputed whenever the active
 	 *  tools change (safety mode flips, mcp_load, --tools). */
-	private _refreshExecCodeDescription(mode: "flat" | "code" | "code-only"): void {
+	private _refreshExecCodeDescription(mode: "flat" | "code" | "compatible"): void {
 		if (mode === "flat") return;
 		const execTool = this.agent.state.tools?.find((tool) => tool.name === EXEC_CODE_TOOL_NAME);
 		if (!execTool) return;
@@ -1367,6 +1374,10 @@ export class AgentSession {
 	/** FEAT-087: communication/UI tools stay model-direct, never on tools.*. */
 	codeModeDirectOnlyTools(): ReadonlySet<string> {
 		return CODE_MODE_DIRECT_ONLY_TOOLS;
+	}
+
+	private _toolsMode(): "flat" | "code" | "compatible" {
+		return this._toolsModeOverride ?? this.settingsManager.getToolsMode();
 	}
 
 	private _resolveSafetyToolNames(requested: string[]): string[] {
@@ -3689,10 +3700,10 @@ export class AgentSession {
 		// The "code" description is static (contract + mirror note);
 		// "code-only" embeds declarations, refreshed on every active-tool
 		// application.
-		if (this.settingsManager.getToolsMode() !== "flat") {
+		if (this._toolsMode() !== "flat") {
 			this._baseToolDefinitions.set(
 				EXEC_CODE_TOOL_NAME,
-				createExecCodeToolDefinition(this, renderExecCodeDescription("code", [])) as unknown as ToolDefinition,
+				createExecCodeToolDefinition(this, renderExecCodeDescription("compatible", [])) as unknown as ToolDefinition,
 			);
 		}
 

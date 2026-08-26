@@ -199,8 +199,18 @@ test("the durable result inbox replays pending grants and reconciles accepted tr
 		await new Promise((resolve) => setTimeout(resolve, 150));
 		assert.equal(sends.length, 1, "a persisted pending result wakes the idle parent");
 		manager.confirmDelivery(sends[0]!.message.details);
-		await new Promise((resolve) => setTimeout(resolve, 25));
-		assert.equal((await SubagentStore.open(agentDir, child.parentSessionId)).get(child.childId)?.grants[0]?.delivery?.state, "delivered");
+	// BUG-115 flake fix: delivered-state persistence rides an unref'd
+	// setTimeout(0) + async store write; under parallel suite load a fixed
+	// sleep loses the race. Poll with a deadline instead.
+	const awaitDeliveryState = async (): Promise<string | undefined> => {
+		const deadline = Date.now() + 5_000;
+		for (;;) {
+			const state = (await SubagentStore.open(agentDir, child.parentSessionId)).get(child.childId)?.grants[0]?.delivery?.state;
+			if (state === "delivered" || Date.now() > deadline) return state;
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+	};
+		assert.equal(await awaitDeliveryState(), "delivered");
 		await manager.shutdown("test_complete");
 
 		const replay = (await SubagentStore.open(agentDir, child.parentSessionId)).get(child.childId)!;
@@ -224,7 +234,7 @@ test("the durable result inbox replays pending grants and reconciles accepted tr
 		});
 		await new Promise((resolve) => setTimeout(resolve, 150));
 		assert.equal(replaySends.length, 0, "an accepted transcript result is never replayed");
-		assert.equal((await SubagentStore.open(agentDir, child.parentSessionId)).get(child.childId)?.grants[0]?.delivery?.state, "delivered");
+		assert.equal(await awaitDeliveryState(), "delivered");
 		await reconciler.shutdown("test_complete");
 	} finally {
 		if (previousAgentDir === undefined) delete process.env.MYPI_AGENT_DIR;

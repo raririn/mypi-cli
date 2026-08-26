@@ -44,6 +44,8 @@ export interface CodeCellOptions {
 	 *  starting with "__" are reserved primitives (e.g. __parallel) exposed
 	 *  as dedicated globals rather than tools.* entries. */
 	readonly tools?: Readonly<Record<string, HostFunction>>;
+	/** name/description metadata for the ALL_TOOLS global. */
+	readonly allTools?: readonly { readonly name: string; readonly description: string }[];
 	/** Session-owned cross-cell scratchpad backing store()/load(). */
 	readonly scratchpad?: Map<string, unknown>;
 	/** External abort (user abort of the turn): ends the cell like a deadline. */
@@ -91,7 +93,7 @@ const EXIT_SENTINEL = "__MYPI_CODE_CELL_EXIT__";
 /** In-isolate prelude: builds the `tools` facade and helper globals from the
  *  primitive host bindings, then removes the primitives from global scope so
  *  scripts only ever see the curated surface. */
-function preludeSource(toolNames: readonly string[]): string {
+function preludeSource(toolNames: readonly string[], allTools: readonly { name: string; description: string }[]): string {
 	return `
 const __invoke = globalThis.__host_invoke;
 const __emit = globalThis.__host_emit;
@@ -120,6 +122,7 @@ for (const name of ${JSON.stringify(toolNames)}) {
 	Object.freeze(tools[name]);
 }
 globalThis.tools = Object.freeze(tools);
+globalThis.ALL_TOOLS = Object.freeze(${JSON.stringify(allTools)});
 ${
 	toolNames.includes("__parallel")
 		? `
@@ -289,7 +292,7 @@ export async function runCodeCell(source: string, options: CodeCellOptions = {})
 		loadFn.dispose();
 
 		// --- prelude (facade construction; plain script, no awaits) ---
-		const prelude = ctx.evalCode(preludeSource(Object.keys(tools)), "prelude.js");
+		const prelude = ctx.evalCode(preludeSource(Object.keys(tools), options.allTools ?? []), "prelude.js");
 		if (prelude.error) {
 			const error = formatError(ctx.dump(prelude.error));
 			prelude.error.dispose();

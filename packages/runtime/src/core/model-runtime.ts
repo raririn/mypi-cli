@@ -442,6 +442,26 @@ export class ModelRuntime implements Models {
 	 */
 	async reloadPersistedModelState(): Promise<ModelsRefreshResult> {
 		this.reloadCredentials();
+		// Self-healing: models-store entries for providers that no longer have
+		// configured credentials are stale catalog ghosts (logouts predating
+		// the delete-on-logout fix, or external auth.json edits). Purge them
+		// so no disk-fallback reader ever resurrects logged-out providers.
+		const store = this.modelsStore as typeof this.modelsStore & { list?: () => Promise<string[]> };
+		if (typeof store.list === "function") {
+			try {
+				for (const providerId of await store.list()) {
+					let configured = false;
+					try {
+						configured = this.getProviderAuthStatus(providerId).configured === true;
+					} catch {
+						// Unknown provider id — its cache is stale by definition.
+					}
+					if (!configured) await this.modelsStore.delete(providerId).catch(() => undefined);
+				}
+			} catch {
+				// Pruning is best-effort; the refresh below stays authoritative.
+			}
+		}
 		return this.refresh({ allowNetwork: false });
 	}
 

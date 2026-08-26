@@ -2,7 +2,8 @@ import { join } from "node:path";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@earendil-works/pi-ai/compat";
 import { getAgentDir, VERSION } from "../config.ts";
-import { loadConfiguredHonestUserAgent, resolveConfiguredDefaultModel, splitConfiguredDefaultModel } from "../product/global-config.ts";
+import { loadConfiguredHonestUserAgent, loadGlobalConfig, resolveConfiguredDefaultModel, splitConfiguredDefaultModel } from "../product/global-config.ts";
+import { join as joinPath, resolve as resolvePathAbs } from "node:path";
 import { getHonestModelUserAgent } from "../utils/pi-user-agent.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
@@ -389,12 +390,20 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		sessionManager.appendThinkingLevelChange(thinkingLevel);
 	}
 
+	// FEAT-087: config.yaml owns the tool projection; read once per session.
+	let configuredToolsMode: "flat" | "code" | "compatible" | undefined;
+	try {
+		configuredToolsMode = (await loadGlobalConfig(joinPath(resolvePathAbs(agentDir), "config.yaml"))).config.tools.mode;
+	} catch {
+		// Settings/default fallback inside the session.
+	}
 	const session = new AgentSession({
 		agent,
 		sessionManager,
 		settingsManager,
 		cwd,
 		agentDir,
+		...(configuredToolsMode ? { toolsMode: configuredToolsMode } : {}),
 		scopedModels: options.scopedModels,
 		resourceLoader,
 		customTools: options.customTools,

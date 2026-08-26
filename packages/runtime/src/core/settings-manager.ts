@@ -65,13 +65,13 @@ export interface SafetySettings {
 	defaultMode?: SafetyMode;
 }
 
-/** FEAT-087 code mode. */
-export type ToolsMode = "flat" | "code" | "code-only";
+/** FEAT-087 code mode. "compatible" = flat schemas AND exec_code;
+ *  "code" = exec_code only; "flat" = code mode off. */
+export type ToolsMode = "flat" | "code" | "compatible";
 export interface ToolsSettings {
 	mode?: ToolsMode;
 }
-/** Dev-branch default (FEAT-087 decision b): code mode on for dogfooding. */
-export const DEFAULT_TOOLS_MODE: ToolsMode = "code";
+export const DEFAULT_TOOLS_MODE: ToolsMode = "compatible";
 
 export type DefaultProjectTrust = "ask" | "always" | "never";
 
@@ -800,12 +800,14 @@ export class SettingsManager {
 	 *  registered alongside flat schemas); "code-only" collapses the model-
 	 *  visible list; "flat" disables code mode entirely. */
 	getToolsMode(): ToolsMode {
-		const mode = this.globalSettings.tools?.mode;
-		return mode === "flat" || mode === "code" || mode === "code-only" ? mode : DEFAULT_TOOLS_MODE;
+		const mode = this.globalSettings.tools?.mode as string | undefined;
+		// Legacy value map from the first dev-branch naming.
+		if (mode === "code-only") return "code";
+		return mode === "flat" || mode === "code" || mode === "compatible" ? mode : DEFAULT_TOOLS_MODE;
 	}
 
 	setToolsMode(mode: ToolsMode): void {
-		if (mode !== "flat" && mode !== "code" && mode !== "code-only") {
+		if (mode !== "flat" && mode !== "code" && mode !== "compatible") {
 			throw new Error(`Invalid tools mode: ${String(mode)}`);
 		}
 		this.globalSettings.tools ??= {};

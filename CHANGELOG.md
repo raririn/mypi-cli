@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Code Mode dogfood round 1: `ALL_TOOLS` is now actually defined inside
+  cells (was promised by the contract but never injected); goal tools
+  (`create_goal`/`get_goal`/`get_goal_plan`) are cell-callable — only
+  `commentary`/`deep_thinking`/`ask_user` stay model-direct; tool
+  projection moved to config.yaml `tools.mode: flat | code | compatible`
+  (compatible = classic schemas AND exec_code, the default; code =
+  exec_code only; settings.json remains a dev override) — a daemon restart
+  applies changes; a QuickJS load failure now returns actionable guidance
+  (restart the daemon or switch tools.mode) instead of a bare stack.
+- Model catalog: `reloadPersistedModelState` prunes models-store.json
+  entries for providers with no configured credentials (stale ghosts from
+  logouts predating the delete-on-logout fix); providers with ambient
+  credentials (e.g. ~/.codex OAuth) are kept.
+- Fixed BUG-115: the durable-inbox delivery test now polls for the
+  persisted state instead of racing the unref'd persistence timer —
+  test:product is fully green in parallel runs.
+
 - **Code Mode (FEAT-087)**: a programmable tool runtime. The model can call
   the new `exec_code` tool with raw JavaScript that runs in a hermetic
   QuickJS-WASM isolate (no fs/net/console/imports; 30s default timeout,

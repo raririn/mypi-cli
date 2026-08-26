@@ -108,7 +108,7 @@ describe("tools.mode projection", () => {
 		}),
 	};
 
-	it('dev default is "code": exec_code registered ALONGSIDE flat schemas, contract-only description', async () => {
+	it('default "compatible": exec_code registered ALONGSIDE flat schemas, contract-only description', async () => {
 		const harness = await createHarness({ tools: [echoTool] });
 		harnesses.push(harness);
 		const names = (harness.session.agent.state.tools ?? []).map((tool) => tool.name);
@@ -120,8 +120,8 @@ describe("tools.mode projection", () => {
 		expect(execTool.description).not.toContain("declare const tools");
 	});
 
-	it('"code-only" collapses the visible list and embeds declarations; callable surface stays full', async () => {
-		const harness = await createHarness({ tools: [echoTool], settings: { tools: { mode: "code-only" } } });
+	it('"code" collapses the visible list and embeds declarations; callable surface stays full', async () => {
+		const harness = await createHarness({ tools: [echoTool], settings: { tools: { mode: "code" } } });
 		harnesses.push(harness);
 		const names = (harness.session.agent.state.tools ?? []).map((tool) => tool.name);
 		expect(names).toContain(EXEC_CODE_TOOL_NAME);

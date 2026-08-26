@@ -80,12 +80,22 @@ export interface GlobalConfig {
 	/** When true, model requests advertise the app's honest identity
 	 *  (`pizzeria/<version>`) instead of any compatibility user-agent. */
 	readonly honestUserAgent: boolean;
+	/** FEAT-087 tool projection: "compatible" advertises flat schemas AND
+	 *  exec_code; "code" advertises only exec_code (+ communication tools);
+	 *  "flat" disables code mode. Applied at session creation — a daemon
+	 *  restart makes a change effective. */
+	readonly tools: ToolsProjectionConfig;
 	readonly history: HistoryConfig;
 	readonly subagents: SubagentsConfig;
 	readonly tracking: TrackingConfig;
 	readonly gui: GuiConfig;
 	/** Raw `mcp` section; validated separately by the core MCP config parser. */
 	readonly mcp?: unknown;
+}
+
+export type ToolsProjectionMode = "flat" | "code" | "compatible";
+export interface ToolsProjectionConfig {
+	readonly mode: ToolsProjectionMode;
 }
 
 export interface GlobalConfigDiagnostic {
@@ -106,6 +116,7 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfig = Object.freeze({
 	defaultModel: null,
 	serviceTier: "default",
 	honestUserAgent: false,
+	tools: Object.freeze({ mode: "compatible" as const }),
 	history: Object.freeze({
 		autoArchive: true,
 		shortTestMaxWords: 10,
@@ -149,6 +160,7 @@ export type GlobalConfigField =
 	| "defaultModel"
 	| "serviceTier"
 	| "honestUserAgent"
+	| "tools.mode"
 	| `history.${HistoryKey}`
 	| "subagents.advisorModel"
 	| "subagents.requireAdvisor"
@@ -182,7 +194,7 @@ export interface SanitizedGlobalConfig extends Omit<GlobalConfig, "mcp"> {
 	readonly mcpServerIds: readonly string[];
 }
 const GLOBAL_CONFIG_FIELDS = new Set<GlobalConfigField>([
-	"defaultModel", "serviceTier", "honestUserAgent",
+	"defaultModel", "serviceTier", "honestUserAgent", "tools.mode",
 	"history.autoArchive", "history.shortTestMaxWords", "history.maxActive", "history.maxArchived",
 	"subagents.advisorModel", "subagents.requireAdvisor", "subagents.requireReviewer",
 	"tracking.maxSessionCheckpoints", "tracking.maxDetachedCheckpoints", "tracking.warningFiles", "tracking.warningBytes",
@@ -597,6 +609,7 @@ function parseConfigRecord(
 				: DEFAULT_GLOBAL_CONFIG.defaultModel,
 			serviceTier: source.serviceTier === "priority" ? "priority" : DEFAULT_GLOBAL_CONFIG.serviceTier,
 			honestUserAgent: readBoolean(source.honestUserAgent, DEFAULT_GLOBAL_CONFIG.honestUserAgent),
+			tools: { mode: readToolsProjectionMode(isRecord(source.tools) ? (source.tools as ConfigRecord).mode : undefined) },
 			history: {
 				autoArchive: readBoolean(history.autoArchive, DEFAULT_GLOBAL_CONFIG.history.autoArchive),
 				shortTestMaxWords: readBoundedInteger(history.shortTestMaxWords, 1, 100, DEFAULT_GLOBAL_CONFIG.history.shortTestMaxWords),
@@ -639,6 +652,7 @@ function parseConfigRecord(
 			(source.defaultModel !== undefined && source.defaultModel !== null && !isConfiguredModel(source.defaultModel)) ||
 			(source.serviceTier !== undefined && source.serviceTier !== "default" && source.serviceTier !== "priority") ||
 			(source.honestUserAgent !== undefined && typeof source.honestUserAgent !== "boolean") ||
+			(isRecord(source.tools) && (source.tools as ConfigRecord).mode !== undefined && !isToolsProjectionMode((source.tools as ConfigRecord).mode)) ||
 			(history.autoArchive !== undefined && typeof history.autoArchive !== "boolean") ||
 			!validOptionalInteger(history.shortTestMaxWords, 1, 100) ||
 			!validOptionalInteger(history.maxActive, 1, 1_000) ||
@@ -780,6 +794,7 @@ function cloneDefaults(): GlobalConfig {
 		defaultModel: DEFAULT_GLOBAL_CONFIG.defaultModel,
 		serviceTier: DEFAULT_GLOBAL_CONFIG.serviceTier,
 		honestUserAgent: DEFAULT_GLOBAL_CONFIG.honestUserAgent,
+		tools: { ...DEFAULT_GLOBAL_CONFIG.tools },
 		history: { ...DEFAULT_GLOBAL_CONFIG.history },
 		subagents: { ...DEFAULT_GLOBAL_CONFIG.subagents },
 		tracking: { ...DEFAULT_GLOBAL_CONFIG.tracking },
@@ -808,6 +823,14 @@ function diagnostic(code: GlobalConfigDiagnostic["code"], message: string, path:
 
 function readBoolean(value: unknown, fallback: boolean): boolean {
 	return typeof value === "boolean" ? value : fallback;
+}
+
+function isToolsProjectionMode(value: unknown): value is ToolsProjectionMode {
+	return value === "flat" || value === "code" || value === "compatible";
+}
+
+function readToolsProjectionMode(value: unknown): ToolsProjectionMode {
+	return isToolsProjectionMode(value) ? value : DEFAULT_GLOBAL_CONFIG.tools.mode;
 }
 
 function readBoundedInteger(value: unknown, minimum: number, maximum: number, fallback: number): number {

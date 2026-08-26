@@ -106,10 +106,10 @@ function executorFor(session: ExecCodeSessionSurface, parentToolCallId: string):
 /** Description for the current mode + callable set. Recomputed on registry
  *  refresh so mode changes and dynamic tools (mcp_load) stay accurate. */
 export function renderExecCodeDescription(
-	mode: "code" | "code-only",
+	mode: "compatible" | "code",
 	callable: readonly { name: string; description?: string; parametersSchema?: unknown }[],
 ): string {
-	if (mode === "code") {
+	if (mode === "compatible") {
 		return `${CONTRACT}\n\ntools.* mirrors the visible tool list (same names, same parameters as their schemas).`;
 	}
 	const inputs: ToolDeclarationInput[] = callable.map((tool) => ({
@@ -137,13 +137,28 @@ export function createExecCodeToolDefinition(
 			const input = params as ExecCodeToolInput;
 			const timeoutMs = Math.min(Math.max(input.timeout_ms ?? DEFAULT_TIMEOUT_MS, 1_000), MAX_TIMEOUT_MS);
 			const bridge = buildCodeModeBridge(executorFor(session, toolCallId));
-			const result = await runCodeCell(input.code, {
-				tools: bridge.tools,
-				timeoutMs,
-				scratchpad: session.codeModeScratchpad,
-				...(signal ? { abortSignal: signal } : {}),
-				...(input.max_output_tokens ? { maxEmittedBytes: Math.max(1024, input.max_output_tokens * BYTES_PER_TOKEN) } : {}),
-			});
+			let result: Awaited<ReturnType<typeof runCodeCell>>;
+			try {
+				result = await runCodeCell(input.code, {
+					tools: bridge.tools,
+					allTools: bridge.allTools,
+					timeoutMs,
+					scratchpad: session.codeModeScratchpad,
+					...(signal ? { abortSignal: signal } : {}),
+					...(input.max_output_tokens ? { maxEmittedBytes: Math.max(1024, input.max_output_tokens * BYTES_PER_TOKEN) } : {}),
+				});
+			} catch (error) {
+				// Engine-level failure (e.g. the QuickJS WASM could not load):
+				// actionable guidance instead of a bare stack.
+				const message = error instanceof Error ? error.message : String(error);
+				return {
+					content: [{
+						type: "text",
+						text: `Exit: runtime-unavailable: ${message}\nThe code-mode runtime failed to load. Ask the user to restart the MyPi daemon, or to set tools.mode: flat in config.yaml (and restart) to disable code mode.`,
+					}],
+					details: { status: "runtime-unavailable", wallTimeMs: 0 },
+				};
+			}
 			const body = result.emitted.map((item) => item.text).join("\n");
 			const status = result.status === "ok" ? "ok" : `${result.status}${result.error ? `: ${result.error.message}` : ""}`;
 			const header = `Exit: ${status}\nWall time: ${(result.wallTimeMs / 1000).toFixed(1)}s`;

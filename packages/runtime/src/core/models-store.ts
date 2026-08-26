@@ -19,6 +19,10 @@ export class InMemoryCodingAgentModelsStore implements ModelsStore {
 	async delete(providerId: string): Promise<void> {
 		this.entries.delete(providerId);
 	}
+
+	async list(): Promise<string[]> {
+		return [...this.entries.keys()];
+	}
 }
 
 /** Locked JSON-backed storage for dynamically refreshed provider catalogs. */
@@ -53,5 +57,9 @@ export class FileModelsStore implements ModelsStore {
 			delete current[providerId];
 			return { result: undefined, next: JSON.stringify(current, null, 2) };
 		});
+	}
+
+	async list(): Promise<string[]> {
+		return this.storage.withLock((content) => ({ result: Object.keys(this.parse(content)) }));
 	}
 }
