@@ -119,6 +119,49 @@ test("resuming an unnamed TUI session backfills from its first textual user mess
   });
 });
 
+test("backfill titles from the typed objective, not the /goal template expansion", async () => {
+  await withAgentDir(async (agentDir) => {
+    const manager = SessionManager.create(join(agentDir, "workspace"));
+    manager.appendMessage({
+      role: "user",
+      content: [{
+        type: "text",
+        text: "Create the authoritative structured Goal plan for the objective below.\n\n<objective>\nShip the flavor batch\n</objective>\n\nFollow the Goal planning contract, keep the plan proportional.",
+      }],
+      timestamp: Date.now(),
+    });
+    manager.appendMessage(assistantMessage("Planning"));
+    const prompts: string[] = [];
+    const harness = createHarness(manager, async (prompt) => { prompts.push(prompt); return "Flavor batch"; });
+
+    await harness.emit("session_start", { reason: "startup" });
+    await flushAsyncWork();
+    assert.deepEqual(prompts, ["Ship the flavor batch"], "title source is the objective, not the wrapper");
+  });
+});
+
+test("backfill prefers a skill invocation's original typed text over its expansion", async () => {
+  await withAgentDir(async (agentDir) => {
+    const manager = SessionManager.create(join(agentDir, "workspace"));
+    manager.appendMessage({
+      role: "user",
+      content: [{
+        type: "text",
+        text: "# Review skill\n\nLong expanded skill body that should never become the title source.",
+        mypiSkillInvocation: { version: 1, skillName: "review", originalText: "/review the auth flow" },
+      } as never],
+      timestamp: Date.now(),
+    });
+    manager.appendMessage(assistantMessage("Reviewing"));
+    const prompts: string[] = [];
+    const harness = createHarness(manager, async (prompt) => { prompts.push(prompt); return "Auth flow review"; });
+
+    await harness.emit("session_start", { reason: "startup" });
+    await flushAsyncWork();
+    assert.deepEqual(prompts, ["/review the auth flow"]);
+  });
+});
+
 test("manual or existing names win over delayed generation and later inputs never retrigger", async () => {
   await withAgentDir(async (agentDir) => {
     const manager = SessionManager.create(join(agentDir, "workspace"));

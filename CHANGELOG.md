@@ -1,5 +1,35 @@
 # MyPi CLI changelog
 
+## Unreleased
+
+- Sessions announce persisted message entries: after `message_end` (which
+  intentionally precedes persistence and so cannot carry an id), the engine
+  emits `entry_appended` with the stored entry — GUI clients use it as the
+  live fork handle instead of reloading history. The TUI→GUI bridge
+  forwards it too.
+- Auto-title reads what the user actually typed: the session-start backfill
+  prefers a skill invocation's `originalText` and unwraps `<objective>`
+  command templates (e.g. /goal), so goal sessions no longer all title from
+  the shared planning-template preamble.
+- GUI config schema gains `gui.favouritePi` (additive): the desktop brand
+  decoration preference — "rotate" (default) or a catalog slug the GUI
+  owns; the daemon validates the slug shape only, so new decorations never
+  need a daemon release.
+- GUI config schema gains configurable Home (`gui.shortcuts.home`,
+  CmdOrCtrl+Shift+H) and New session (`gui.shortcuts.newSession`,
+  CmdOrCtrl+N) shortcuts (additive keys, validated like the rest).
+
+- Engine-free archive cleanup over the daemon wire (additive, protocol
+  stays 2): `preview_archive_cleanup` reports the excess beyond
+  `history.maxArchived` for a project and `execute_archive_cleanup`
+  permanently deletes it (confirm-gated), broadcasting `persisted_changed`
+  removals so clients refresh.
+- /archive-manage learns orphaned-session hygiene: `list_session_archives`
+  gains an `orphaned_only` filter (sessions whose recorded project folder no
+  longer exists) and the new `delete_orphaned_session` tool permanently
+  removes one such session — active or archived — refusing whenever the
+  folder still exists. Default GUI workbench width raised to 576px.
+
 ## 2.0.0-beta.10 — 2026-08-25
 
 - Model-callable agent hooks return with the reviewed greedy one-trigger

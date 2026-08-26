@@ -939,9 +939,10 @@ export class AgentSession {
 		// Handle session persistence
 		if (event.type === "message_end") {
 			// Check if this is a custom message from extensions
+			let persistedEntryId: string | undefined;
 			if (event.message.role === "custom") {
 				// Persist as CustomMessageEntry
-				this.sessionManager.appendCustomMessageEntry(
+				persistedEntryId = this.sessionManager.appendCustomMessageEntry(
 					event.message.customType,
 					event.message.content,
 					event.message.display,
@@ -953,7 +954,17 @@ export class AgentSession {
 				event.message.role === "toolResult"
 			) {
 				// Regular LLM message - persist as SessionMessageEntry
-				this.sessionManager.appendMessage(event.message);
+				persistedEntryId = this.sessionManager.appendMessage(event.message);
+			}
+			// message_end intentionally precedes persistence, so it can never
+			// carry the transcript entry id. Surfaces that need the id as a
+			// fork/rewind handle (GUI live tails) get it from this follow-up
+			// event instead of waiting for a history reload.
+			if (persistedEntryId !== undefined) {
+				const persistedEntry = this.sessionManager.getEntry(persistedEntryId);
+				if (persistedEntry) {
+					this._emit({ type: "entry_appended", entry: persistedEntry });
+				}
 			}
 			// Other message types (bashExecution, compactionSummary, branchSummary) are persisted elsewhere
 

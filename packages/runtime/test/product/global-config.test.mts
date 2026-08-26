@@ -171,23 +171,28 @@ test("GUI config validates, preserves unrelated YAML, and migrates absent fields
 		assert.equal(loaded.config.gui.shortcuts.commandPalette, "Ctrl+Alt+K");
 		assert.equal(loaded.config.gui.shortcuts.globalSearch, "CmdOrCtrl+Shift+F");
 
+		assert.equal(loaded.config.gui.favouritePi, "rotate", "decorative identity defaults to rotate");
+
 		await Promise.all([
 			updateGlobalConfigField("gui.layout.railWidth", 320, path),
 			updateGlobalConfigField("gui.layout.workbenchWidth", 640, path),
 			updateGlobalConfigField("history.maxActive", 44, path),
 			updateGlobalConfigField("gui.shortcuts.threadSearch", "Ctrl+Alt+T", path),
+			updateGlobalConfigField("gui.favouritePi", "moonpi", path),
 		]);
 		loaded = await loadGlobalConfig(path);
 		assert.equal(loaded.config.gui.layout.railWidth, 320);
 		assert.equal(loaded.config.gui.layout.workbenchWidth, 640);
 		assert.equal(loaded.config.history.maxActive, 44);
 		assert.equal(loaded.config.gui.shortcuts.threadSearch, "Ctrl+Alt+T");
+		assert.equal(loaded.config.gui.favouritePi, "moonpi");
 		const source = parse(await readFile(path, "utf8"));
 		assert.deepEqual(source.future, { retained: true });
 		assert.equal(source.mcp.servers.private.tokenEnv, "SECRET");
 
 		await assert.rejects(updateGlobalConfigField("gui.shortcuts.commandPalette", "P", path), /invalid|configuration/i);
 		await assert.rejects(updateGlobalConfigField("gui.layout.railWidth", 999, path), /invalid|configuration/i);
+		await assert.rejects(updateGlobalConfigField("gui.favouritePi", "Not A Slug!", path), /invalid|configuration/i);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

@@ -147,10 +147,34 @@ export async function generateTuiTitle(
 function firstTextualUserMessage(ctx: ExtensionContext): string | undefined {
   for (const entry of ctx.sessionManager.getBranch()) {
     if (entry.type !== "message" || entry.message.role !== "user") continue;
-    const text = extractText(entry.message.content);
+    const text = originalUserText(entry.message.content);
     if (text) return text;
   }
   return undefined;
+}
+
+/** Title from what the user actually typed, not what dispatch persisted:
+ *  skill invocations carry the typed text in `mypiSkillInvocation`, and
+ *  command templates (e.g. /goal) wrap it in <objective> — titling the raw
+ *  expansion makes every such session share one template-derived title. */
+function originalUserText(content: unknown): string {
+  const typed = skillInvocationOriginalText(content);
+  if (typed) return typed;
+  const text = extractText(content);
+  const objective = /<objective>\n?([\s\S]*?)\n?<\/objective>/.exec(text)?.[1]?.trim();
+  return objective || text;
+}
+
+function skillInvocationOriginalText(content: unknown): string {
+  if (!Array.isArray(content)) return "";
+  for (const block of content) {
+    const invocation = (block as { mypiSkillInvocation?: { originalText?: unknown } } | null)
+      ?.mypiSkillInvocation;
+    if (invocation && typeof invocation.originalText === "string" && invocation.originalText.trim()) {
+      return invocation.originalText.trim();
+    }
+  }
+  return "";
 }
 
 function extractText(content: unknown): string {

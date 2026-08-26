@@ -58,6 +58,7 @@ Socket failures are nonfatal. If no GUI is running, enabled control waits quietl
 const EVENT_NAMES = [
   'session_info_changed', 'session_tree', 'session_compact', 'model_select', 'thinking_level_select',
   'agent_start', 'agent_end', 'agent_settled', 'turn_start', 'turn_end', 'message_start', 'message_update', 'message_end',
+  'entry_appended',
   'tool_execution_start', 'tool_execution_update', 'tool_execution_end', 'queue_update', 'auto_retry_start', 'auto_retry_end', 'extension_error'
 ] as const
 

@@ -133,7 +133,9 @@ import {
 	resetGlobalConfig,
 	removeWorkspaceTracker,
   runNewSessionMaintenance,
+  cleanupArchivedSessions,
   compactPersistedSession,
+  previewArchiveCleanup,
   setPersistedSessionArchived,
 	saveMcpWizardServer,
 	setMcpWizardServerEnabled,
@@ -1790,6 +1792,39 @@ function handleClientFrame(client, frame) {
       includeArchived: frame.includeArchived !== false,
     }));
     return;
+  }
+
+  if (frame?.type === "preview_archive_cleanup") {
+    const cwd = typeof frame.cwd === "string" ? frame.cwd : "";
+    sendDaemonResponse(client, frame, "preview_archive_cleanup", (async () => {
+      if (!cwd) throw new Error("preview_archive_cleanup requires cwd");
+      const preview = await previewArchiveCleanup(cwd, daemonAgentDir);
+      // Candidates carry absolute paths; clients only need counts + ids.
+      return {
+        cwd: preview.cwd,
+        maxArchived: preview.maxArchived,
+        archivedCount: preview.archivedCount,
+        excess: preview.excess,
+        candidateIds: preview.candidates.map((session) => session.id),
+        ...(preview.configDiagnostic ? { configDiagnostic: { code: preview.configDiagnostic.code, message: preview.configDiagnostic.message } } : {}),
+      };
+    })());
+    return true;
+  }
+  if (frame?.type === "execute_archive_cleanup") {
+    const cwd = typeof frame.cwd === "string" ? frame.cwd : "";
+    sendDaemonResponse(client, frame, "execute_archive_cleanup", (async () => {
+      if (!cwd || frame.confirm !== true) throw new Error("execute_archive_cleanup requires cwd and confirm: true");
+      const result = await cleanupArchivedSessions(cwd, { confirm: true, agentDir: daemonAgentDir });
+      for (const id of result.deleted) broadcastAll({ type: "persisted_changed", sessionId: id, kind: "removed" });
+      return {
+        deleted: result.deleted,
+        failures: result.failures,
+        excess: result.preview.excess,
+        maxArchived: result.preview.maxArchived,
+      };
+    })());
+    return true;
   }
 
   if (frame?.type === "compact_session") {

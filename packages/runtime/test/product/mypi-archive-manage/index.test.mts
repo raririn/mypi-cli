@@ -18,6 +18,7 @@ const ARCHIVE_TOOLS = [
   "restore_archived_session",
   "delete_archived_session",
   "delete_archived_sessions_older_than",
+  "delete_orphaned_session",
 ];
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -600,6 +601,54 @@ test("single-session tools move, restore, and permanently delete JSONL history w
 	assert.equal(await exists(childRoot), false, "permanent parent deletion removes its child subtree");
     const finalList = await harness.tools.get("list_session_archives").execute("final-list", { state: "archived" }, undefined, undefined, context);
     assert.equal(finalList.content[0].text, "No matching sessions found.");
+  } finally {
+    restoreAgentDir();
+    await rm(agentDir, { recursive: true, force: true });
+  }
+});
+
+test("orphaned sessions are listable and deletable only while their folder is gone", async () => {
+  const agentDir = await mkdtemp(join(tmpdir(), "mypi-archive-orphans-"));
+  const restoreAgentDir = setTestAgentDir(agentDir);
+  try {
+    const keptWorkspace = join(agentDir, "kept-workspace");
+    const goneWorkspace = join(agentDir, "gone-workspace");
+    await mkdir(keptWorkspace, { recursive: true });
+    await mkdir(goneWorkspace, { recursive: true });
+    const kept = createPersistedSession(keptWorkspace, "kept project session", Date.now());
+    const orphan = createPersistedSession(goneWorkspace, "orphaned project session", Date.now());
+    const current = createTestSession(keptWorkspace);
+    await rm(goneWorkspace, { recursive: true, force: true });
+
+    const harness = createHarness();
+    archiveManageExtension(harness.api as any);
+    harness.finishLoading();
+    const context = harness.makeContext(current);
+    await harness.commands.get("archive-manage").handler("clean orphans", context);
+
+    const listTool = harness.tools.get("list_session_archives");
+    const orphanList = await listTool.execute("orphans", { orphaned_only: true }, undefined, undefined, context);
+    assert.match(orphanList.content[0].text, new RegExp(orphan.getSessionId()));
+    assert.doesNotMatch(orphanList.content[0].text, new RegExp(kept.getSessionId()));
+
+    const deleteTool = harness.tools.get("delete_orphaned_session");
+    await assert.rejects(
+      () => deleteTool.execute("refuse", { session_id: kept.getSessionId(), confirm: true }, undefined, undefined, context),
+      /is not orphaned/,
+    );
+    const deleted = await deleteTool.execute(
+      "delete",
+      { session_id: orphan.getSessionId(), confirm: true },
+      undefined,
+      undefined,
+      context,
+    );
+    assert.match(deleted.content[0].text, /Permanently deleted orphaned active session/);
+    assert.equal(await exists(orphan.getSessionFile()!), false);
+    assert.equal(await exists(kept.getSessionFile()!), true);
+
+    const remaining = await listTool.execute("orphans-after", { orphaned_only: true }, undefined, undefined, context);
+    assert.equal(remaining.content[0].text, "No matching sessions found.");
   } finally {
     restoreAgentDir();
     await rm(agentDir, { recursive: true, force: true });

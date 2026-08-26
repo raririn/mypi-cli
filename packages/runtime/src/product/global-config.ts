@@ -45,9 +45,15 @@ export interface GuiRemoteHostConfig {
 
 export interface GuiConfig {
 	readonly appMode: "work" | "chat";
+	/** Decorative launch identity: "rotate" picks per launch; any other slug
+	 * pins one entry of the GUI-owned catalog (the daemon stores the slug
+	 * opaquely so new decorations never require a daemon release). */
+	readonly favouritePi: string;
 	readonly theme: { readonly mode: "dark" | "light"; readonly preset: GuiThemePreset };
 	readonly layout: { readonly railWidth: number; readonly workbenchWidth: number };
 	readonly shortcuts: {
+		readonly home: string;
+		readonly newSession: string;
 		readonly commandPalette: string;
 		readonly globalSearch: string;
 		readonly threadSearch: string;
@@ -111,9 +117,12 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfig = Object.freeze({
 	}),
 	gui: Object.freeze({
 		appMode: "work",
+		favouritePi: "rotate",
 		theme: Object.freeze({ mode: "dark", preset: "default" }),
-		layout: Object.freeze({ railWidth: 256, workbenchWidth: 512 }),
+		layout: Object.freeze({ railWidth: 256, workbenchWidth: 576 }),
 		shortcuts: Object.freeze({
+			home: "CmdOrCtrl+Shift+H",
+			newSession: "CmdOrCtrl+N",
 			commandPalette: "CmdOrCtrl+Shift+P",
 			globalSearch: "CmdOrCtrl+Shift+F",
 			threadSearch: "CmdOrCtrl+F",
@@ -144,10 +153,13 @@ export type GlobalConfigField =
 	| "tracking.warningFiles"
 	| "tracking.warningBytes"
 	| "gui.appMode"
+	| "gui.favouritePi"
 	| "gui.theme.mode"
 	| "gui.theme.preset"
 	| "gui.layout.railWidth"
 	| "gui.layout.workbenchWidth"
+	| "gui.shortcuts.home"
+	| "gui.shortcuts.newSession"
 	| "gui.shortcuts.commandPalette"
 	| "gui.shortcuts.globalSearch"
 	| "gui.shortcuts.threadSearch"
@@ -169,7 +181,8 @@ const GLOBAL_CONFIG_FIELDS = new Set<GlobalConfigField>([
 	"history.autoArchive", "history.shortTestMaxWords", "history.maxActive", "history.maxArchived",
 	"subagents.advisorModel", "subagents.requireAdvisor", "subagents.requireReviewer",
 	"tracking.maxSessionCheckpoints", "tracking.maxDetachedCheckpoints", "tracking.warningFiles", "tracking.warningBytes",
-	"gui.appMode", "gui.theme.mode", "gui.theme.preset", "gui.layout.railWidth", "gui.layout.workbenchWidth",
+	"gui.appMode", "gui.favouritePi", "gui.theme.mode", "gui.theme.preset", "gui.layout.railWidth", "gui.layout.workbenchWidth",
+	"gui.shortcuts.home", "gui.shortcuts.newSession",
 	"gui.shortcuts.commandPalette", "gui.shortcuts.globalSearch", "gui.shortcuts.threadSearch",
 	"gui.shortcuts.terminal", "gui.shortcuts.sidebar", "gui.shortcuts.openFolder", "gui.shortcuts.settings",
 	"gui.shortcuts.zoomIn", "gui.shortcuts.zoomOut", "gui.shortcuts.zoomReset", "gui.shortcuts.stopRun",
@@ -582,6 +595,7 @@ function parseConfigRecord(
 			},
 			gui: {
 				appMode: gui.appMode === "chat" ? "chat" : DEFAULT_GLOBAL_CONFIG.gui.appMode,
+				favouritePi: isPiIdentitySlug(gui.favouritePi) ? gui.favouritePi : DEFAULT_GLOBAL_CONFIG.gui.favouritePi,
 				theme: {
 					mode: guiTheme.mode === "light" ? "light" : DEFAULT_GLOBAL_CONFIG.gui.theme.mode,
 					preset: isGuiThemePreset(guiTheme.preset) ? guiTheme.preset : DEFAULT_GLOBAL_CONFIG.gui.theme.preset,
@@ -619,6 +633,7 @@ function parseConfigRecord(
 			)
 			|| config.tracking.maxDetachedCheckpoints > config.tracking.maxSessionCheckpoints
 			|| (gui.appMode !== undefined && gui.appMode !== "work" && gui.appMode !== "chat")
+			|| (gui.favouritePi !== undefined && !isPiIdentitySlug(gui.favouritePi))
 			|| (guiTheme.mode !== undefined && guiTheme.mode !== "dark" && guiTheme.mode !== "light")
 			|| (guiTheme.preset !== undefined && !isGuiThemePreset(guiTheme.preset))
 			|| !validOptionalInteger(guiLayout.railWidth, 200, 440)
@@ -745,6 +760,7 @@ function cloneDefaults(): GlobalConfig {
 		tracking: { ...DEFAULT_GLOBAL_CONFIG.tracking },
 		gui: {
 			appMode: DEFAULT_GLOBAL_CONFIG.gui.appMode,
+			favouritePi: DEFAULT_GLOBAL_CONFIG.gui.favouritePi,
 			theme: { ...DEFAULT_GLOBAL_CONFIG.gui.theme },
 			layout: { ...DEFAULT_GLOBAL_CONFIG.gui.layout },
 			shortcuts: { ...DEFAULT_GLOBAL_CONFIG.gui.shortcuts },
@@ -810,6 +826,10 @@ function applyConfigField(source: ConfigRecord, field: GlobalConfigField, value:
 	}
 	next[root!] = rootRecord;
 	return next;
+}
+
+function isPiIdentitySlug(value: unknown): value is string {
+	return typeof value === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/u.test(value);
 }
 
 function isGuiThemePreset(value: unknown): value is GuiThemePreset {

@@ -298,6 +298,12 @@ test("daemon lists and reads persisted history, models, resources, and commands 
     assert.equal(response("set_default_model").success, true);
     assert.match(await readFile(join(daemon.agentDir, "config.yaml"), "utf8"), /^defaultModel: faux\/faux-2$/m);
 
+    client.send({ id: "cleanup-preview", type: "preview_archive_cleanup", cwd });
+    await waitFor(() => response("preview_archive_cleanup"), 5_000, "archive cleanup preview");
+    assert.equal(response("preview_archive_cleanup").success, true);
+    assert.equal(typeof response("preview_archive_cleanup").data.excess, "number");
+    assert.ok(Array.isArray(response("preview_archive_cleanup").data.candidateIds));
+
     client.send({ id: "global-config", type: "get_global_config" });
     await waitFor(() => response("get_global_config"), 5_000, "global config read");
     assert.equal(response("get_global_config").data.config.gui.shortcuts.commandPalette, "CmdOrCtrl+Shift+P");

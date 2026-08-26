@@ -1,4 +1,4 @@
-import { constants, type Dirent } from "node:fs";
+import { constants, existsSync, type Dirent } from "node:fs";
 import { copyFile, mkdir, readdir, readFile, rename, rm, rmdir, stat } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
@@ -22,6 +22,7 @@ const TOOL_NAMES = [
 	"restore_archived_session",
 	"delete_archived_session",
 	"delete_archived_sessions_older_than",
+	"delete_orphaned_session",
 ] as const;
 const TOOL_NAME_SET = new Set<string>(TOOL_NAMES);
 const DEFAULT_LIST_LIMIT = 20;
@@ -57,6 +58,7 @@ const HELP = `# /archive-manage — manage MyPi session archives
 /archive-manage archive all sessions with at most 3 user messages
 /archive-manage permanently delete archived sessions older than 24 hours
 /archive-manage find archived sessions from this project
+/archive-manage list orphaned sessions whose project folder is gone, then delete them
 
 ## Behavior and state lifetime
 
@@ -185,13 +187,20 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 					description: `Include a normalized first-message preview capped at ${MAX_PREVIEW_CHARS} characters`,
 				}),
 			),
+			orphaned_only: Type.Optional(
+				Type.Boolean({
+					description: "Only sessions whose recorded project folder no longer exists on this host",
+				}),
+			),
 		}),
 		async execute(_toolCallId, params) {
 			assertArchiveMode(active);
 			const state = (params.state ?? "all") as RequestedState;
 			const cutoff = params.older_than_hours === undefined ? undefined : ageCutoff(params.older_than_hours);
 			const records = (await loadSessionRecords(paths, state)).filter(
-				(record) => cutoff === undefined || record.session.modified.getTime() < cutoff,
+				(record) =>
+					(cutoff === undefined || record.session.modified.getTime() < cutoff) &&
+					(!params.orphaned_only || !existsSync(record.session.cwd)),
 			);
 			const offset = params.offset ?? 0;
 			const limit = params.limit ?? DEFAULT_LIST_LIMIT;
@@ -487,6 +496,45 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 				cutoff,
 				failures,
 			);
+		},
+	});
+
+	pi.registerTool({
+		name: "delete_orphaned_session",
+		label: "Delete Orphaned Session",
+		description:
+			"Permanently remove one session (active or archived) whose recorded project folder no longer exists on this host. Refuses when the folder still exists — use list_session_archives with orphaned_only to find candidates. Requires explicit user confirmation. Available only during /archive-manage.",
+		promptSnippet: "Permanently delete one orphaned MyPi session",
+		parameters: Type.Object({
+			session_id: Type.String({
+				minLength: 1,
+				description: "Exact session ID returned by list_session_archives with orphaned_only=true",
+			}),
+			confirm: Type.Literal(true, {
+				description: "Must be true only after the user explicitly requests or confirms permanent deletion",
+			}),
+		}),
+		async execute(_toolCallId, params) {
+			assertArchiveMode(active);
+			if (params.confirm !== true) throw new Error("Permanent deletion requires confirm=true.");
+			const record = requireUniqueRecord(await loadSessionRecords(paths, "all"), params.session_id);
+			const session = record.session;
+			if (existsSync(session.cwd)) {
+				throw new Error(
+					`Session ${session.id} is not orphaned: its project folder still exists at ${session.cwd}. Use archive_session or delete_archived_session instead.`,
+				);
+			}
+			const storageRoot = record.state === "archived" ? paths.archiveRoot : paths.sessionsRoot;
+			assertContained(session.path, storageRoot, record.state === "archived" ? "archive" : "session storage");
+			return withSessionWriterLock(session.path, async () => {
+				await removeSubagentParentStorage(dirname(paths.sessionsRoot), session.id);
+				await rm(session.path);
+				await removeEmptyParent(session.path, storageRoot);
+				return textResult(
+					`Permanently deleted orphaned ${record.state} session ${session.id} (project folder ${session.cwd} is gone).`,
+					{ sessionId: session.id, state: record.state, cwd: session.cwd },
+				);
+			});
 		},
 	});
 
