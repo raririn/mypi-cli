@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Provider auth over the daemon wire (GUI /login parity, engine-free):
+  `list_auth_providers` enumerates every provider and its auth state;
+  `provider_login` runs one flow with an async-start ack, then streams the
+  provider's own prompts (`auth_prompt`, incl. secret/select/manual-code and
+  a retract signal) and notices (`auth_notice`, incl. auth_url/device_code)
+  to the client, answered via `answer_auth_prompt` and ended by `auth_done`;
+  `cancel_provider_login` and client disconnect abort cleanly;
+  `provider_logout` is confirm-gated. Credentials land in the shared
+  auth.json that live engines re-read on their next model listing. New
+  runtime exports: `listDaemonAuthProviders`, `runDaemonProviderLogin`,
+  `daemonProviderLogout`.
 - Sessions announce persisted message entries: after `message_end` (which
   intentionally precedes persistence and so cannot carry an id), the engine
   emits `entry_appended` with the stored entry — GUI clients use it as the

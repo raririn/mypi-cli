@@ -358,6 +358,65 @@ test("daemon lists and reads persisted history, models, resources, and commands 
   }
 });
 
+test("GUI provider login round-trips an API key over daemon frames and logs out", async () => {
+  const daemon = await startDaemon();
+  try {
+    const cwd = join(daemon.daemonDir, "workspace");
+    await mkdir(cwd, { recursive: true });
+    const client = connect(daemon.socketPath);
+    await client.connected();
+    await client.hello();
+    const byId = (id) => client.frames.find((frame) => frame.type === "response" && frame.id === id);
+
+    client.send({ id: "providers", type: "list_auth_providers", cwd });
+    await waitFor(() => byId("providers"), 20_000, "auth provider listing");
+    assert.equal(byId("providers").success, true);
+    const providers = byId("providers").data.providers;
+    assert.ok(Array.isArray(providers) && providers.length > 0);
+    assert.ok(providers.find((p) => p.id === "anthropic" && p.authType === "oauth" && p.hasLogin), "anthropic OAuth flow offered");
+    assert.ok(providers.find((p) => p.id === "openai" && p.authType === "api_key" && p.hasLogin), "openai API-key flow offered");
+
+    client.send({ id: "bad-login", type: "provider_login", loginId: "L0", providerId: "openai" });
+    await waitFor(() => byId("bad-login"), 5_000, "invalid login refusal");
+    assert.equal(byId("bad-login").success, false, "authType is mandatory");
+
+    client.send({ id: "login", type: "provider_login", loginId: "L1", providerId: "openai", authType: "api_key", cwd });
+    await waitFor(() => byId("login"), 5_000, "async-start ack");
+    assert.equal(byId("login").success, true);
+    await waitFor(() => client.frames.some((f) => f.type === "auth_prompt" && f.loginId === "L1"), 20_000, "secret prompt");
+    const prompt = client.frames.find((f) => f.type === "auth_prompt" && f.loginId === "L1");
+    assert.equal(prompt.prompt.type, "secret");
+    client.send({ id: "answer", type: "answer_auth_prompt", loginId: "L1", promptId: prompt.promptId, value: "sk-test-123" });
+    await waitFor(() => client.frames.some((f) => f.type === "auth_done" && f.loginId === "L1"), 30_000, "login completion");
+    const done = client.frames.find((f) => f.type === "auth_done" && f.loginId === "L1");
+    assert.equal(done.success, true);
+    assert.match(await readFile(join(daemon.agentDir, "auth.json"), "utf8"), /sk-test-123/);
+
+    client.send({ id: "providers-2", type: "list_auth_providers", cwd });
+    await waitFor(() => byId("providers-2"), 20_000, "post-login listing");
+    const after = byId("providers-2").data.providers.find((p) => p.id === "openai" && p.authType === "api_key");
+    assert.equal(after.status?.type, "api_key", "stored credential surfaces in status");
+
+    client.send({ id: "logout-bare", type: "provider_logout", providerId: "openai", cwd });
+    await waitFor(() => byId("logout-bare"), 5_000, "unconfirmed logout refusal");
+    assert.equal(byId("logout-bare").success, false, "logout is confirm-gated");
+    client.send({ id: "logout", type: "provider_logout", providerId: "openai", confirm: true, cwd });
+    await waitFor(() => byId("logout"), 20_000, "logout");
+    assert.equal(byId("logout").success, true);
+    assert.doesNotMatch(await readFile(join(daemon.agentDir, "auth.json"), "utf8"), /sk-test-123/);
+
+    // Cancellation: a fresh login aborts cleanly and reports auth_done failure.
+    client.send({ id: "login-2", type: "provider_login", loginId: "L2", providerId: "openai", authType: "api_key", cwd });
+    await waitFor(() => client.frames.some((f) => f.type === "auth_prompt" && f.loginId === "L2"), 20_000, "second prompt");
+    client.send({ id: "cancel", type: "cancel_provider_login", loginId: "L2" });
+    await waitFor(() => client.frames.some((f) => f.type === "auth_done" && f.loginId === "L2"), 20_000, "cancelled completion");
+    assert.equal(client.frames.find((f) => f.type === "auth_done" && f.loginId === "L2").success, false);
+    client.socket.destroy();
+  } finally {
+    await daemon.cleanup();
+  }
+});
+
 test("fresh daemon sessions run configured project maintenance and request archive cleanup", async () => {
   const daemon = await startDaemon({
     configContent: "version: 1\nhistory:\n  autoArchive: true\n  shortTestMaxWords: 1\n  maxActive: 1\n  maxArchived: 1\n",

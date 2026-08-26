@@ -2,7 +2,7 @@ import { constants, existsSync, realpathSync } from "node:fs";
 import { lstat, mkdir, open, readFile, readdir, realpath, rename, rm } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
-import type { Api, Model, Usage } from "@earendil-works/pi-ai";
+import type { Api, AuthInteraction, AuthType, Model, Usage } from "@earendil-works/pi-ai";
 import lockfile from "@bybrave/proper-lockfile2";
 import { getAgentDir } from "../config.ts";
 import { createAgentSessionServices, type AgentSessionServices } from "../core/agent-session-services.ts";
@@ -351,6 +351,79 @@ export async function getDaemonModelCatalog(cwd: string, agentDir = getAgentDir(
 		models: services.modelRuntime.getAvailableSnapshot().map(serializeModel),
 		defaultModel: initial.model ? serializeModel(initial.model) : null,
 	};
+}
+
+/** One selectable login flow (a provider appears once per supported flow,
+ *  mirroring the TUI's /login picker). */
+export interface DaemonAuthProviderEntry {
+	readonly id: string;
+	readonly name: string;
+	readonly authType: "oauth" | "api_key";
+	/** OAuth button caption (e.g. "Claude Pro/Max"); absent for API keys. */
+	readonly loginLabel?: string;
+	/** False = ambient-only (env vars); the flow cannot be driven interactively. */
+	readonly hasLogin: boolean;
+	/** Present when the provider currently has working credentials. */
+	readonly status?: { readonly type: "oauth" | "api_key"; readonly source: string };
+}
+
+/** GUI /login parity: enumerate providers exactly like the TUI picker
+ *  (interactive-mode getLoginProviderOptions), but engine-free. */
+export async function listDaemonAuthProviders(cwd: string, agentDir = getAgentDir()): Promise<DaemonAuthProviderEntry[]> {
+	const runtime = (await daemonServices(cwd, agentDir)).modelRuntime;
+	await runtime.reloadPersistedModelState();
+	const entries: DaemonAuthProviderEntry[] = [];
+	for (const provider of runtime.getProviders()) {
+		const authStatus = runtime.getProviderAuthStatus(provider.id);
+		const status = authStatus.configured
+			? {
+					type: runtime.isUsingOAuth(provider.id) ? ("oauth" as const) : ("api_key" as const),
+					source: authStatus.label ?? authStatus.source ?? "configured",
+				}
+			: undefined;
+		if (provider.auth.oauth) {
+			entries.push({
+				id: provider.id,
+				name: provider.name,
+				authType: "oauth",
+				...(provider.auth.oauth.loginLabel ? { loginLabel: provider.auth.oauth.loginLabel } : {}),
+				hasLogin: true,
+				...(status ? { status } : {}),
+			});
+		}
+		if (provider.auth.apiKey) {
+			entries.push({
+				id: provider.id,
+				name: provider.name,
+				authType: "api_key",
+				hasLogin: typeof provider.auth.apiKey.login === "function",
+				...(status ? { status } : {}),
+			});
+		}
+	}
+	return entries.sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** Run one provider login on the daemon's engine-free runtime. The caller
+ *  owns the interaction transport (prompts/notifications over daemon frames)
+ *  and cancellation via interaction.signal. Credentials land in the shared
+ *  auth.json, which live engines re-read on their next model listing. */
+export async function runDaemonProviderLogin(
+	cwd: string,
+	providerId: string,
+	authType: AuthType,
+	interaction: AuthInteraction,
+	agentDir = getAgentDir(),
+): Promise<{ providerId: string; source: string }> {
+	const runtime = (await daemonServices(cwd, agentDir)).modelRuntime;
+	await runtime.login(providerId, authType, interaction);
+	const status = runtime.getProviderAuthStatus(providerId);
+	return { providerId, source: status.label ?? status.source ?? "stored" };
+}
+
+export async function daemonProviderLogout(cwd: string, providerId: string, agentDir = getAgentDir()): Promise<void> {
+	const runtime = (await daemonServices(cwd, agentDir)).modelRuntime;
+	await runtime.logout(providerId);
 }
 
 export async function listDaemonSkills(cwd: string, agentDir = getAgentDir()): Promise<DaemonResourceInventoryEntry[]> {

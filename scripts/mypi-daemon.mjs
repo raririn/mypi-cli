@@ -23,6 +23,14 @@
 //     {type:"read_session", sessionId?|sessionFile?, since?, limit?, maxBytes?}
 //     {type:"get_available_models", cwd?}             no engine required
 //     {type:"set_default_model", provider, modelId}   no engine required
+//     {type:"list_auth_providers", cwd?}              no engine required
+//     {type:"provider_login", loginId, providerId,
+//       authType:"oauth"|"api_key", cwd?}             async-start: ack response,
+//       then auth_prompt/auth_notice/auth_prompt_dismissed frames to the
+//       owning client, finished by an auth_done frame
+//     {type:"answer_auth_prompt", loginId, promptId, value?|cancelled:true}
+//     {type:"cancel_provider_login", loginId}
+//     {type:"provider_logout", providerId, confirm:true, cwd?}
 //     {type:"list_skills"|"list_extensions"|"list_commands", cwd?}
 //                                                       no engine required
 //     {type:"get_session_stats", sessionId|sessionFile} no engine required
@@ -127,8 +135,11 @@ import {
   prepareChatEngineLaunch,
 	probeMcpWizardTarget,
 	removeMcpWizardServer,
+  daemonProviderLogout,
+  listDaemonAuthProviders,
   readGlobalDefaultSafetyMode,
   readPersistedSession,
+  runDaemonProviderLogin,
 	readDaemonResourceFile,
 	resetGlobalConfig,
 	removeWorkspaceTracker,
@@ -146,6 +157,9 @@ import {
 	sanitizeGlobalConfig,
   WorkspaceTracker,
 } from "@earendil-works/pi-coding-agent";
+
+/** In-flight GUI provider logins: loginId → {client, controller, pending}. */
+const activeProviderLogins = new Map();
 
 const DEFAULT_IDLE_GRACE_MS = 5 * 60_000;
 const ENGINE_CLOSE_GRACE_MS = 2_000;
@@ -1896,6 +1910,125 @@ function handleClientFrame(client, frame) {
     return;
   }
 
+  // ── GUI /login parity: engine-free provider auth over the daemon wire ──
+  // provider_login is async-start: the response only acknowledges the flow.
+  // Prompts stream to the OWNING client as auth_prompt (answered via
+  // answer_auth_prompt; retracted via auth_prompt_dismissed when a raced
+  // callback wins), notifications as auth_notice, completion as auth_done.
+  // Disconnect or cancel_provider_login aborts the flow.
+  if (frame?.type === "list_auth_providers" && typeof frame.sessionId !== "string") {
+    const cwd = typeof frame.cwd === "string" ? frame.cwd : process.cwd();
+    sendDaemonResponse(client, frame, "list_auth_providers",
+      listDaemonAuthProviders(cwd, daemonAgentDir).then((providers) => ({ providers })));
+    return;
+  }
+
+  if (frame?.type === "provider_login" && typeof frame.sessionId !== "string") {
+    const loginId = typeof frame.loginId === "string" ? frame.loginId : "";
+    const providerId = typeof frame.providerId === "string" ? frame.providerId : "";
+    const authType = frame.authType === "oauth" || frame.authType === "api_key" ? frame.authType : null;
+    if (!loginId || !providerId || !authType || activeProviderLogins.has(loginId)) {
+      sendDaemonResponse(client, frame, "provider_login",
+        Promise.reject(new Error("provider_login requires a fresh loginId, a providerId, and authType oauth|api_key.")));
+      return;
+    }
+    const cwd = typeof frame.cwd === "string" ? frame.cwd : process.cwd();
+    const controller = new AbortController();
+    const login = { client, controller, pending: new Map(), counter: 0 };
+    activeProviderLogins.set(loginId, login);
+    const failPending = (reason) => {
+      for (const entry of login.pending.values()) entry.reject(reason instanceof Error ? reason : new Error(String(reason)));
+      login.pending.clear();
+    };
+    const interaction = {
+      signal: controller.signal,
+      prompt: (prompt) => new Promise((resolvePrompt, rejectPrompt) => {
+        const promptId = `p${(login.counter += 1)}`;
+        login.pending.set(promptId, { resolve: resolvePrompt, reject: rejectPrompt });
+        // A flow may retract this prompt (e.g. manual-code paste raced
+        // against the localhost callback server winning first).
+        prompt.signal?.addEventListener("abort", () => {
+          if (!login.pending.delete(promptId)) return;
+          rejectPrompt(new Error("Prompt superseded"));
+          sendToClient(client, { type: "auth_prompt_dismissed", loginId, promptId });
+        }, { once: true });
+        sendToClient(client, {
+          type: "auth_prompt",
+          loginId,
+          promptId,
+          prompt: {
+            type: prompt.type,
+            message: String(prompt.message ?? ""),
+            ...(prompt.placeholder ? { placeholder: String(prompt.placeholder) } : {}),
+            ...(prompt.type === "select"
+              ? { options: prompt.options.map((option) => ({
+                  id: String(option.id),
+                  label: String(option.label),
+                  ...(option.description ? { description: String(option.description) } : {}),
+                })) }
+              : {}),
+          },
+        });
+      }),
+      notify: (event) => sendToClient(client, { type: "auth_notice", loginId, event }),
+    };
+    sendDaemonResponse(client, frame, "provider_login", Promise.resolve({ started: true, loginId }));
+    runDaemonProviderLogin(cwd, providerId, authType, interaction, daemonAgentDir).then(
+      (result) => sendToClient(client, {
+        type: "auth_done", loginId, success: true, providerId: result.providerId, source: result.source,
+      }),
+      (error) => sendToClient(client, {
+        type: "auth_done", loginId, success: false, providerId, error: boundedError(error),
+      }),
+    ).finally(() => {
+      failPending(new Error("Login finished"));
+      activeProviderLogins.delete(loginId);
+    });
+    return;
+  }
+
+  if (frame?.type === "answer_auth_prompt") {
+    const login = activeProviderLogins.get(typeof frame.loginId === "string" ? frame.loginId : "");
+    const promptId = typeof frame.promptId === "string" ? frame.promptId : "";
+    const entry = login && login.client === client ? login.pending.get(promptId) : undefined;
+    if (!entry) {
+      sendDaemonResponse(client, frame, "answer_auth_prompt", Promise.reject(new Error("No such pending auth prompt.")));
+      return;
+    }
+    login.pending.delete(promptId);
+    if (frame.cancelled === true) {
+      login.controller.abort();
+      entry.reject(new Error("Login cancelled by the user."));
+    } else {
+      entry.resolve(String(frame.value ?? ""));
+    }
+    sendDaemonResponse(client, frame, "answer_auth_prompt", Promise.resolve({ accepted: true }));
+    return;
+  }
+
+  if (frame?.type === "cancel_provider_login") {
+    const login = activeProviderLogins.get(typeof frame.loginId === "string" ? frame.loginId : "");
+    if (login && login.client === client) {
+      login.controller.abort();
+      for (const entry of login.pending.values()) entry.reject(new Error("Login cancelled by the user."));
+      login.pending.clear();
+    }
+    sendDaemonResponse(client, frame, "cancel_provider_login", Promise.resolve({ cancelled: true }));
+    return;
+  }
+
+  if (frame?.type === "provider_logout" && typeof frame.sessionId !== "string") {
+    if (frame.confirm !== true) {
+      sendDaemonResponse(client, frame, "provider_logout", Promise.reject(new Error("provider_logout requires confirm: true.")));
+      return;
+    }
+    const providerId = typeof frame.providerId === "string" ? frame.providerId : "";
+    const cwd = typeof frame.cwd === "string" ? frame.cwd : process.cwd();
+    sendDaemonResponse(client, frame, "provider_logout",
+      daemonProviderLogout(cwd, providerId, daemonAgentDir).then(() => ({ providerId })));
+    return;
+  }
+
   if (frame?.type === "set_default_model" && typeof frame.sessionId !== "string") {
     const provider = typeof frame.provider === "string" ? frame.provider : "";
     const modelId = typeof frame.modelId === "string" ? frame.modelId : "";
@@ -2427,6 +2560,15 @@ function acceptConnection(socket) {
   });
   const drop = () => {
     clients.delete(client);
+    // A vanished client cannot answer auth prompts; abort its login flows so
+    // device-code polls and callback servers don't linger.
+    for (const [loginId, login] of activeProviderLogins) {
+      if (login.client !== client) continue;
+      login.controller.abort();
+      for (const entry of login.pending.values()) entry.reject(new Error("Client disconnected"));
+      login.pending.clear();
+      activeProviderLogins.delete(loginId);
+    }
     for (const sessionId of [...client.sessions]) {
       const session = sessions.get(sessionId);
       if (session) detachClientFromSession(client, session);
