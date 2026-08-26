@@ -5,6 +5,7 @@ import { createInterface } from "node:readline";
 import type { Api, AuthInteraction, AuthType, Model, Usage } from "@earendil-works/pi-ai";
 import lockfile from "@bybrave/proper-lockfile2";
 import { getAgentDir } from "../config.ts";
+import { disposeHandoffNote } from "../core/tools/checkpoint.ts";
 import { createAgentSessionServices, type AgentSessionServices } from "../core/agent-session-services.ts";
 import { SettingsManager } from "../core/settings-manager.ts";
 import { removeSubagentParentStorage } from "../core/subagents/storage.ts";
@@ -618,6 +619,7 @@ export async function cleanupArchivedSessions(
 				await handle.close();
 				await removeSubagentParentStorage(agentDir, session.id);
 				await rm(session.sessionFile);
+				disposeHandoffNote(session.sessionFile);
 			});
 			deleted.push(session.id);
 		} catch (error) {
@@ -1030,6 +1032,7 @@ export async function deletePersistedSession(
 		await handle.close();
 		await removeSubagentParentStorage(agentDir, session.id);
 		await rm(session.sessionFile);
+		disposeHandoffNote(session.sessionFile);
 	});
 	const snapshotsRemoved = await destroySessionSnapshots(agentDir, session.cwd, session.id).catch(() => 0);
 	clearDaemonServiceCache();
@@ -1056,6 +1059,9 @@ export async function setPersistedSessionArchived(
 		const roots = resolveSessionRoots(agentDir);
 		if (archived) {
 			const move = await archiveStoredSession(session, roots, agentDir);
+			// An archived session will never compact again; its handoff note
+			// (which lives next to the ACTIVE-root file) would just be orphaned.
+			disposeHandoffNote(session.sessionFile);
 			clearDaemonServiceCache();
 			return { sessionId, archived, profile: session.profile, snapshotsRemoved: move.snapshotsRemoved ?? 0 };
 		}

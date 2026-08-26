@@ -32,6 +32,15 @@ import {
 	EXEC_CODE_TOOL_NAME,
 	renderExecCodeDescription,
 } from "./code-mode/exec-code-tool.ts";
+import {
+	CHECKPOINT_TOOL_NAME,
+	createCheckpointToolDefinition,
+	disposeHandoffNote,
+	HANDOFF_ALERT_CUSTOM_TYPE,
+	HANDOFF_ALERT_TEXT,
+	readHandoffNote,
+	shouldAlertHandoff,
+} from "./tools/checkpoint.ts";
 
 /** FEAT-087: bounded text extraction for code-mode audit entries. */
 function contentTextBounded(content: unknown, maxBytes: number): string {
@@ -60,6 +69,8 @@ const CODE_MODE_DIRECT_ONLY_TOOLS: ReadonlySet<string> = new Set([
 	// approval surfaces stay conversation-shaped. Goal tools are data
 	// operations and ARE cell-callable (dogfood evidence 2026-08-26).
 	"ask_user",
+	// FEAT-088: the handoff checkpoint is a harness-prompted conversation act.
+	CHECKPOINT_TOOL_NAME,
 ]);
 import { contentText, normalizeImageInputs } from "@earendil-works/pi-ai";
 import type {
@@ -1334,6 +1345,12 @@ export class AgentSession {
 			// Requested lists predating code mode (persisted sessions, tool
 			// overrides) never name exec_code — the projection adds it.
 			if (!visibleNames.includes(EXEC_CODE_TOOL_NAME)) visibleNames = [...visibleNames, EXEC_CODE_TOOL_NAME];
+		}
+		// FEAT-088: persisted active-tool lists never name checkpoint either;
+		// self-append whenever it is registered (an explicit --tools allowlist
+		// that omits it keeps it out of the registry entirely).
+		if (this._toolRegistry.has(CHECKPOINT_TOOL_NAME) && !visibleNames.includes(CHECKPOINT_TOOL_NAME)) {
+			visibleNames = [...visibleNames, CHECKPOINT_TOOL_NAME];
 		}
 		const tools: AgentTool[] = [];
 		const validToolNames: string[] = [];
@@ -2823,6 +2840,7 @@ export class AgentSession {
 				sourceBranchHeadId: pathEntries.at(-1)?.id,
 			});
 			preparation.backup = checkpointBackup;
+			preparation.handoffNote = readHandoffNote(this.sessionManager.getSessionFile());
 
 			let extensionCompaction: CompactionResult | undefined;
 			let fromExtension = false;
@@ -2899,6 +2917,8 @@ export class AgentSession {
 			);
 			markBackupStatus(checkpointBackup, "applied");
 			checkpointApplied = true;
+			disposeHandoffNote(this.sessionManager.getSessionFile());
+			this._handoffAlertArmed = true;
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
@@ -3068,7 +3088,28 @@ export class AgentSession {
 		if (shouldCompact(contextTokens, contextWindow, settings)) {
 			return await this._runAutoCompaction("threshold", false);
 		}
+		this._maybeQueueHandoffAlert(contextTokens, contextWindow, settings.reserveTokens);
 		return false;
+	}
+
+	/** FEAT-088: one-shot pre-compaction nudge, re-armed by each applied
+	 *  compaction. Delivered as a next-turn note so it rides the user's next
+	 *  prompt instead of resurrecting a settled turn. */
+	private _handoffAlertArmed = true;
+
+	private _maybeQueueHandoffAlert(contextTokens: number, contextWindow: number, reserveTokens: number): void {
+		if (!this._handoffAlertArmed) return;
+		if (!shouldAlertHandoff(contextTokens, contextWindow, reserveTokens)) return;
+		if (!this._toolRegistry.has(CHECKPOINT_TOOL_NAME)) return;
+		this._handoffAlertArmed = false;
+		void this.sendCustomMessage(
+			{
+				customType: HANDOFF_ALERT_CUSTOM_TYPE,
+				content: [{ type: "text", text: HANDOFF_ALERT_TEXT }],
+				display: true,
+			},
+			{ deliverAs: "nextTurn" },
+		).catch(() => undefined);
 	}
 
 	/**
@@ -3106,6 +3147,7 @@ export class AgentSession {
 				sourceBranchHeadId: pathEntries.at(-1)?.id,
 			});
 			preparation.backup = checkpointBackup;
+			preparation.handoffNote = readHandoffNote(this.sessionManager.getSessionFile());
 
 			this._emit({ type: "compaction_start", reason });
 			this._autoCompactionAbortController = new AbortController();
@@ -3200,6 +3242,8 @@ export class AgentSession {
 			);
 			markBackupStatus(checkpointBackup, "applied");
 			checkpointApplied = true;
+			disposeHandoffNote(this.sessionManager.getSessionFile());
+			this._handoffAlertArmed = true;
 			const newEntries = this.sessionManager.getEntries();
 			const sessionContext = this.sessionManager.buildSessionContext();
 			this.agent.state.messages = sessionContext.messages;
@@ -3712,6 +3756,14 @@ export class AgentSession {
 				createExecCodeToolDefinition(this, renderExecCodeDescription("compatible", [])) as unknown as ToolDefinition,
 			);
 		}
+		// FEAT-088: checkpoint is always registered — a mid-session tool-set
+		// change would bust prompt caches and the Codex WS delta path right
+		// when context is nearly full. Use is gated behaviorally (description
+		// + context alert), not by registration.
+		this._baseToolDefinitions.set(
+			CHECKPOINT_TOOL_NAME,
+			createCheckpointToolDefinition(this.sessionManager) as unknown as ToolDefinition,
+		);
 
 		const extensionsResult = this._resourceLoader.getExtensions();
 		if (options.flagValues) {
