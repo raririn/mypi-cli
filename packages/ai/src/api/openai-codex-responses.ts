@@ -392,6 +392,16 @@ export const stream: StreamFunction<"openai-codex-responses", OpenAICodexRespons
 						httpTimeoutMs !== undefined && httpTimeoutMs > 0 ? AbortSignal.timeout(httpTimeoutMs) : undefined;
 					const combinedSignal = combineAbortSignals([options?.signal, headerTimeoutSignal]);
 					try {
+						// Debug aid: PI_DUMP_CODEX_REQUEST=<path> appends each
+						// outgoing request body (JSONL) for wire-shape triage.
+						if (process.env.PI_DUMP_CODEX_REQUEST) {
+							// Debug aid; dynamic import keeps this module node-free.
+							void import("node:fs").then(({ appendFileSync }) => {
+								try {
+									appendFileSync(process.env.PI_DUMP_CODEX_REQUEST!, `${sseBody}\n`);
+								} catch {}
+							}).catch(() => undefined);
+						}
 						response = await fetch(resolveCodexUrl(model.baseUrl), {
 							method: "POST",
 							headers: sseHeaders,
@@ -1482,6 +1492,15 @@ async function processWebSocketStream(
 		}
 	}
 	try {
+		if (process.env.PI_DUMP_CODEX_REQUEST) {
+			// Debug aid (see the SSE twin); dynamic import keeps this module node-free.
+			const wsDumpBody = JSON.stringify({ transport: "ws", ...requestBody });
+			void import("node:fs").then(({ appendFileSync }) => {
+				try {
+					appendFileSync(process.env.PI_DUMP_CODEX_REQUEST!, `${wsDumpBody}\n`);
+				} catch {}
+			}).catch(() => undefined);
+		}
 		socket.send(JSON.stringify({ type: "response.create", ...requestBody }));
 		await processResponsesStream(
 			startWebSocketOutputOnFirstEvent(
