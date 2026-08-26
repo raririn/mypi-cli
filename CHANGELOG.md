@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **Code Mode (FEAT-087)**: a programmable tool runtime. The model can call
+  the new `exec_code` tool with raw JavaScript that runs in a hermetic
+  QuickJS-WASM isolate (no fs/net/console/imports; 30s default timeout,
+  memory/stack caps) where every session tool is available as
+  `await tools.<name>(args)`. Nested calls run the exact model-path pipeline
+  (validation/coercion, safety ladder, /readonly, hooks, subagent leases)
+  and emit `tool_execution_*` events tagged `callSource:"code_mode"` +
+  `parentToolCallId`; their results persist as bounded
+  `mypi-code-mode-call` transcript audit entries and never enter model
+  context — only `text()` output returns. `Promise.all` over tools runs
+  host-side concurrently; `parallel([...])` adds per-tool execution-mode
+  batching; `store()`/`load()` persist across cells. `settings.json
+  tools.mode: flat | code | code-only` (dev default `code`; `code-only`
+  collapses the visible tool list to `exec_code` + communication tools and
+  embeds compact TS declarations — ≥60% smaller than JSON schemas —
+  rendered under hard byte budgets with degrade-to-`unknown`). Verified
+  end-to-end against gpt-5.3-codex-spark, gpt-5.6-luna and
+  deepseek-v4-flash (cliproxyapi): single-cell multi-file workflows produce
+  exact curated output with full nested audit.
+
 - Honest user-agent option: new `honestUserAgent` global config field (off by
   default). When on, model requests advertise `pizzeria/<version>` instead of
   any compatibility user-agent — applied in the request header transform
