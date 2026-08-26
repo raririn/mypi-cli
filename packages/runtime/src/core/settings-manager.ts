@@ -65,6 +65,14 @@ export interface SafetySettings {
 	defaultMode?: SafetyMode;
 }
 
+/** FEAT-087 code mode. */
+export type ToolsMode = "flat" | "code" | "code-only";
+export interface ToolsSettings {
+	mode?: ToolsMode;
+}
+/** Dev-branch default (FEAT-087 decision b): code mode on for dogfooding. */
+export const DEFAULT_TOOLS_MODE: ToolsMode = "code";
+
 export type DefaultProjectTrust = "ask" | "always" | "never";
 
 export type TransportSetting = Transport;
@@ -129,6 +137,7 @@ export interface Settings {
 	markdown?: MarkdownSettings;
 	warnings?: WarningSettings;
 	safety?: SafetySettings; // host-global default captured only by newly created sessions
+	tools?: ToolsSettings; // FEAT-087: tool-projection mode (flat | code | code-only)
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
 	httpProxy?: string; // Proxy URL applied as HTTP_PROXY and HTTPS_PROXY for Pi-managed HTTP clients
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
@@ -785,6 +794,24 @@ export class SettingsManager {
 	getDefaultSafetyMode(): SafetyMode {
 		const mode = this.globalSettings.safety?.defaultMode;
 		return isSafetyMode(mode) ? mode : DEFAULT_SAFETY_MODE;
+	}
+
+	/** FEAT-087 tool-projection mode. Dev-branch default is "code" (exec_code
+	 *  registered alongside flat schemas); "code-only" collapses the model-
+	 *  visible list; "flat" disables code mode entirely. */
+	getToolsMode(): ToolsMode {
+		const mode = this.globalSettings.tools?.mode;
+		return mode === "flat" || mode === "code" || mode === "code-only" ? mode : DEFAULT_TOOLS_MODE;
+	}
+
+	setToolsMode(mode: ToolsMode): void {
+		if (mode !== "flat" && mode !== "code" && mode !== "code-only") {
+			throw new Error(`Invalid tools mode: ${String(mode)}`);
+		}
+		this.globalSettings.tools ??= {};
+		this.globalSettings.tools.mode = mode;
+		this.markModified("tools", "mode");
+		this.save();
 	}
 
 	setDefaultSafetyMode(mode: SafetyMode): void {

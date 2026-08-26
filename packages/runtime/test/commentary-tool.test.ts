@@ -31,7 +31,7 @@ describe("commentary tool", () => {
 	test("maps a legacy active-tool selection onto the canonical schema", async () => {
 		const harness = await createHarness({ initialActiveToolNames: ["deep_thinking"] });
 		try {
-			expect(harness.session.getActiveToolNames()).toEqual(["commentary"]);
+			expect(harness.session.getActiveToolNames()).toEqual(["commentary", "exec_code"]);
 			expect(harness.session.systemPrompt).toContain("use the `commentary` tool");
 			expect(harness.session.systemPrompt).not.toContain("deep_thinking");
 		} finally {

@@ -46,6 +46,8 @@ export interface CodeCellOptions {
 	readonly tools?: Readonly<Record<string, HostFunction>>;
 	/** Session-owned cross-cell scratchpad backing store()/load(). */
 	readonly scratchpad?: Map<string, unknown>;
+	/** External abort (user abort of the turn): ends the cell like a deadline. */
+	readonly abortSignal?: AbortSignal;
 	readonly maxEmittedItems?: number;
 	readonly maxEmittedBytes?: number;
 	readonly maxScratchpadBytes?: number;
@@ -180,7 +182,7 @@ export async function runCodeCell(source: string, options: CodeCellOptions = {})
 	runtime.setMemoryLimit(options.memoryLimitBytes ?? DEFAULT_MEMORY_LIMIT_BYTES);
 	runtime.setMaxStackSize(options.maxStackBytes ?? DEFAULT_MAX_STACK_BYTES);
 	runtime.setInterruptHandler(() => {
-		if (Date.now() > deadline) {
+		if (Date.now() > deadline || options.abortSignal?.aborted) {
 			interrupted = true;
 			return true;
 		}
@@ -321,14 +323,17 @@ export async function runCodeCell(source: string, options: CodeCellOptions = {})
 			}
 		});
 		while (settled === null) {
-			if (Date.now() > deadline) {
+			const aborted = options.abortSignal?.aborted === true;
+			if (Date.now() > deadline || aborted) {
 				interrupted = true;
-				hostAbort.abort(new Error("Execution deadline exceeded."));
+				hostAbort.abort(new Error(aborted ? "Execution aborted." : "Execution deadline exceeded."));
 				completion.dispose();
 				disposeIsolate();
 				return finish({
-					status: "timeout",
-					error: { name: "TimeoutError", message: `Execution exceeded ${timeoutMs}ms.` },
+					status: aborted ? "error" : "timeout",
+					error: aborted
+						? { name: "AbortError", message: "Execution aborted." }
+						: { name: "TimeoutError", message: `Execution exceeded ${timeoutMs}ms.` },
 					emitted,
 				});
 			}

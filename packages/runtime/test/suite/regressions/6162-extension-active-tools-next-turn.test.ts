@@ -55,12 +55,12 @@ describe("extension active tools next-turn refresh", () => {
 				},
 			]);
 
-			expect(harness.session.getActiveToolNames()).toEqual(["switch_tools"]);
+			expect(harness.session.getActiveToolNames()).toEqual(["switch_tools", "exec_code"]);
 
 			await harness.session.prompt("start");
 
-			expect(harness.session.getActiveToolNames()).toEqual(["after_switch"]);
-			expect(providerToolNames).toEqual([["switch_tools"], ["after_switch"]]);
+			expect(harness.session.getActiveToolNames()).toEqual(["after_switch", "exec_code"]);
+			expect(providerToolNames).toEqual([["exec_code", "switch_tools"], ["after_switch", "exec_code"]]);
 		} finally {
 			harness.cleanup();
 		}
@@ -115,7 +115,7 @@ describe("extension active tools next-turn refresh", () => {
 
 			await harness.session.prompt("start");
 
-			expect(harness.session.getActiveToolNames()).toEqual(["load_more_tools", "after_load"]);
+			expect(harness.session.getActiveToolNames()).toEqual(["load_more_tools", "after_load", "exec_code"]);
 			expect(addedToolNames).toEqual([["after_load"]]);
 		} finally {
 			harness.cleanup();
@@ -181,7 +181,7 @@ describe("extension active tools next-turn refresh", () => {
 
 			await harness.session.prompt("start");
 
-			expect(providerToolNames).toEqual([["switch_tools"], ["after_switch"]]);
+			expect(providerToolNames).toEqual([["exec_code", "switch_tools"], ["after_switch", "exec_code"]]);
 			expect(providerSystemPrompts).toHaveLength(2);
 			expect(providerSystemPrompts[0]).toContain("keep this run override");
 			expect(providerSystemPrompts[1]).toContain("keep this run override");

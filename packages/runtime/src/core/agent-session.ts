@@ -27,6 +27,22 @@ import type {
 } from "@earendil-works/pi-agent-core";
 import { executeSingleToolCall, uuidv7, type AgentEvent as PiAgentEvent, type AgentToolCall } from "@earendil-works/pi-agent-core";
 import type { ToolResultMessage } from "@earendil-works/pi-ai/compat";
+import {
+	createExecCodeToolDefinition,
+	EXEC_CODE_TOOL_NAME,
+	renderExecCodeDescription,
+} from "./code-mode/exec-code-tool.ts";
+
+/** FEAT-087: communication/UI tools that never appear on the nested tools.*
+ *  surface (they are conversation acts, not data operations). */
+const CODE_MODE_DIRECT_ONLY_TOOLS: ReadonlySet<string> = new Set([
+	"commentary",
+	"deep_thinking",
+	"ask_user",
+	"create_goal",
+	"get_goal",
+	"get_goal_plan",
+]);
 import { contentText, normalizeImageInputs } from "@earendil-works/pi-ai";
 import type {
 	AssistantMessage,
@@ -561,6 +577,10 @@ export class AgentSession {
 	private _toolPromptSnippets: Map<string, string> = new Map();
 	private _toolPromptGuidelines: Map<string, string[]> = new Map();
 	private _requestedActiveToolNames: string[] | undefined;
+	/** FEAT-087: post-safety callable names for nested code-mode calls. */
+	private _codeCallableToolNames: string[] = [];
+	/** FEAT-087: session-lifetime store()/load() scratchpad (R8). */
+	readonly codeModeScratchpad = new Map<string, unknown>();
 	private _safetyPolicyEnabled: boolean;
 	private _effectiveSafetyMode: SafetyMode = DEFAULT_SAFETY_MODE;
 	private _pendingSafetyMode: SafetyMode | undefined;
@@ -1272,9 +1292,27 @@ export class AgentSession {
 
 	private _applyRequestedActiveTools(): void {
 		const toolNames = this._resolveSafetyToolNames(this._requestedActiveToolNames ?? []);
+		// FEAT-087 code mode: the CALLABLE surface (nested tools.* inside a
+		// cell) is the full post-safety list; the MODEL-VISIBLE surface may be
+		// narrower ("code-only" collapses it to exec_code + direct-only).
+		const mode = this.settingsManager.getToolsMode();
+		this._codeCallableToolNames =
+			mode === "flat" || !this._toolRegistry.has(EXEC_CODE_TOOL_NAME)
+				? []
+				: toolNames.filter((name) => name !== EXEC_CODE_TOOL_NAME);
+		let visibleNames = toolNames;
+		if (mode !== "flat" && this._toolRegistry.has(EXEC_CODE_TOOL_NAME)) {
+			if (mode === "code-only") {
+				const directOnly = this.codeModeDirectOnlyTools();
+				visibleNames = toolNames.filter((name) => name === EXEC_CODE_TOOL_NAME || directOnly.has(name));
+			}
+			// Requested lists predating code mode (persisted sessions, tool
+			// overrides) never name exec_code — the projection adds it.
+			if (!visibleNames.includes(EXEC_CODE_TOOL_NAME)) visibleNames = [...visibleNames, EXEC_CODE_TOOL_NAME];
+		}
 		const tools: AgentTool[] = [];
 		const validToolNames: string[] = [];
-		for (const name of toolNames) {
+		for (const name of visibleNames) {
 			const tool = this._toolRegistry.get(name);
 			if (tool) {
 				tools.push(tool);
@@ -1282,10 +1320,35 @@ export class AgentSession {
 			}
 		}
 		this.agent.state.tools = tools;
+		this._refreshExecCodeDescription(mode);
 
 		// Rebuild base system prompt with new tool set
 		this._baseSystemPrompt = this._rebuildSystemPrompt(validToolNames);
 		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
+	}
+
+	/** FEAT-087: in "code-only" mode the exec_code description embeds TS
+	 *  declarations for the callable set; recomputed whenever the active
+	 *  tools change (safety mode flips, mcp_load, --tools). */
+	private _refreshExecCodeDescription(mode: "flat" | "code" | "code-only"): void {
+		if (mode === "flat") return;
+		const execTool = this.agent.state.tools?.find((tool) => tool.name === EXEC_CODE_TOOL_NAME);
+		if (!execTool) return;
+		const callable = this._codeCallableToolNames
+			.map((name) => this._toolRegistry.get(name))
+			.filter((tool): tool is AgentTool => Boolean(tool))
+			.filter((tool) => !this.codeModeDirectOnlyTools().has(tool.name))
+			.map((tool) => ({
+				name: tool.name,
+				...(tool.description ? { description: tool.description } : {}),
+				parametersSchema: tool.parameters,
+			}));
+		execTool.description = renderExecCodeDescription(mode, callable);
+	}
+
+	/** FEAT-087: communication/UI tools stay model-direct, never on tools.*. */
+	codeModeDirectOnlyTools(): ReadonlySet<string> {
+		return CODE_MODE_DIRECT_ONLY_TOOLS;
 	}
 
 	private _resolveSafetyToolNames(requested: string[]): string[] {
@@ -1296,6 +1359,12 @@ export class AgentSession {
 		};
 		for (const name of requested) {
 			const entry = this._toolDefinitions.get(name);
+			// exec_code is capability-neutral: every nested call re-enters this
+			// ladder, so the cell can do exactly what the substituted list can.
+			if (name === EXEC_CODE_TOOL_NAME) {
+				add(name);
+				continue;
+			}
 			if (["read", "grep", "find", "ls"].includes(name)) {
 				add("read_workspace");
 				continue;
@@ -1425,15 +1494,20 @@ export class AgentSession {
 		return approved ? undefined : { block: true, reason: `User declined ${toolName} under safety policy.` };
 	}
 
-	/** FEAT-087 code mode: the ACTIVE tool surface for nested calls — the
-	 *  post-safety-substitution list the model itself would see. Sourcing
-	 *  anywhere else would re-open read/write/edit in bounded safety modes. */
+	/** FEAT-087 code mode: the CALLABLE tool surface for nested calls — the
+	 *  post-safety-substitution list (computed in _applyRequestedActiveTools),
+	 *  which in "code-only" mode is wider than the model-visible list.
+	 *  Sourcing anywhere else would re-open read/write/edit in bounded
+	 *  safety modes. */
 	listCodeModeTools(): readonly { name: string; description?: string; executionMode?: "sequential" | "parallel" }[] {
-		return (this.agent.state.tools ?? []).map((tool) => ({
-			name: tool.name,
-			...(tool.description ? { description: tool.description } : {}),
-			...(tool.executionMode ? { executionMode: tool.executionMode } : {}),
-		}));
+		return this._codeCallableToolNames
+			.map((name) => this._toolRegistry.get(name))
+			.filter((tool): tool is AgentTool => Boolean(tool))
+			.map((tool) => ({
+				name: tool.name,
+				...(tool.description ? { description: tool.description } : {}),
+				...(tool.executionMode ? { executionMode: tool.executionMode } : {}),
+			}));
 	}
 
 	/** FEAT-087 code mode: execute one nested tool call exactly as if the
@@ -3575,6 +3649,18 @@ export class AgentSession {
 		this._baseToolDefinitions = new Map(
 			Object.entries(baseToolDefinitions).map(([name, tool]) => [name, tool as ToolDefinition]),
 		);
+		// FEAT-087 code mode: register exec_code unless flat mode — even under
+		// a base-tools override (it is projection infrastructure, not a
+		// capability; nested calls only reach whatever else is registered).
+		// The "code" description is static (contract + mirror note);
+		// "code-only" embeds declarations, refreshed on every active-tool
+		// application.
+		if (this.settingsManager.getToolsMode() !== "flat") {
+			this._baseToolDefinitions.set(
+				EXEC_CODE_TOOL_NAME,
+				createExecCodeToolDefinition(this, renderExecCodeDescription("code", [])) as unknown as ToolDefinition,
+			);
+		}
 
 		const extensionsResult = this._resourceLoader.getExtensions();
 		if (options.flagValues) {
