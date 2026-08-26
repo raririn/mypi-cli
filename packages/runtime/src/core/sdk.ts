@@ -1,8 +1,9 @@
 import { join } from "node:path";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@earendil-works/pi-ai/compat";
-import { getAgentDir } from "../config.ts";
-import { resolveConfiguredDefaultModel, splitConfiguredDefaultModel } from "../product/global-config.ts";
+import { getAgentDir, VERSION } from "../config.ts";
+import { loadConfiguredHonestUserAgent, resolveConfiguredDefaultModel, splitConfiguredDefaultModel } from "../product/global-config.ts";
+import { getHonestModelUserAgent } from "../utils/pi-user-agent.ts";
 import { resolvePath } from "../utils/paths.ts";
 import { AgentSession } from "./agent-session.ts";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.ts";
@@ -329,10 +330,17 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 						settingsManager,
 						options?.sessionId,
 						requestHeaders,
-					);
+					) ?? {};
+					// Honest identity: replace any compatibility user-agent with the
+					// app's real one. Applied last (before extensions) so it wins over
+					// the provider's spoofed header. Key is lowercase to overwrite the
+					// existing "user-agent" rather than add a duplicate.
+					if (await loadConfiguredHonestUserAgent(join(agentDir, "config.yaml"))) {
+						headers["user-agent"] = getHonestModelUserAgent(VERSION);
+					}
 					return headerRunner?.hasHandlers("before_provider_headers")
-						? headerRunner.emitBeforeProviderHeaders(headers ?? {})
-						: (headers ?? {});
+						? headerRunner.emitBeforeProviderHeaders(headers)
+						: headers;
 				},
 			});
 		},

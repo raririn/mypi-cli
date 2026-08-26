@@ -77,6 +77,9 @@ export interface GlobalConfig {
 	readonly defaultModel: string | null;
 	/** Provider-neutral request tier. Unsupported models ignore `priority`. */
 	readonly serviceTier: ServiceTier;
+	/** When true, model requests advertise the app's honest identity
+	 *  (`pizzeria/<version>`) instead of any compatibility user-agent. */
+	readonly honestUserAgent: boolean;
 	readonly history: HistoryConfig;
 	readonly subagents: SubagentsConfig;
 	readonly tracking: TrackingConfig;
@@ -102,6 +105,7 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfig = Object.freeze({
 	version: GLOBAL_CONFIG_VERSION,
 	defaultModel: null,
 	serviceTier: "default",
+	honestUserAgent: false,
 	history: Object.freeze({
 		autoArchive: true,
 		shortTestMaxWords: 10,
@@ -144,6 +148,7 @@ type HistoryKey = "autoArchive" | "shortTestMaxWords" | "maxActive" | "maxArchiv
 export type GlobalConfigField =
 	| "defaultModel"
 	| "serviceTier"
+	| "honestUserAgent"
 	| `history.${HistoryKey}`
 	| "subagents.advisorModel"
 	| "subagents.requireAdvisor"
@@ -177,7 +182,7 @@ export interface SanitizedGlobalConfig extends Omit<GlobalConfig, "mcp"> {
 	readonly mcpServerIds: readonly string[];
 }
 const GLOBAL_CONFIG_FIELDS = new Set<GlobalConfigField>([
-	"defaultModel", "serviceTier",
+	"defaultModel", "serviceTier", "honestUserAgent",
 	"history.autoArchive", "history.shortTestMaxWords", "history.maxActive", "history.maxArchived",
 	"subagents.advisorModel", "subagents.requireAdvisor", "subagents.requireReviewer",
 	"tracking.maxSessionCheckpoints", "tracking.maxDetachedCheckpoints", "tracking.warningFiles", "tracking.warningBytes",
@@ -343,6 +348,23 @@ export async function updateServiceTier(
 export async function loadConfiguredServiceTier(path = resolveGlobalConfigPath()): Promise<ServiceTier> {
 	await pendingServiceTierUpdate?.catch(() => undefined);
 	return (await loadGlobalConfig(path)).config.serviceTier;
+}
+
+// Short TTL cache so per-request header transforms honor a live toggle without
+// reading config.yaml on every model call.
+const honestUaCache = new Map<string, { value: boolean; readAt: number }>();
+const HONEST_UA_TTL_MS = 5_000;
+
+/** Whether model requests should advertise the honest `pizzeria/<version>`
+ *  identity. Cached briefly; a GUI toggle takes effect within a few seconds
+ *  on already-running engines. */
+export async function loadConfiguredHonestUserAgent(path = resolveGlobalConfigPath()): Promise<boolean> {
+	const cached = honestUaCache.get(path);
+	const now = Date.now();
+	if (cached && now - cached.readAt < HONEST_UA_TTL_MS) return cached.value;
+	const value = (await loadGlobalConfig(path)).config.honestUserAgent;
+	honestUaCache.set(path, { value, readAt: now });
+	return value;
 }
 
 export async function updateAdvisorModel(
@@ -574,6 +596,7 @@ function parseConfigRecord(
 				? source.defaultModel
 				: DEFAULT_GLOBAL_CONFIG.defaultModel,
 			serviceTier: source.serviceTier === "priority" ? "priority" : DEFAULT_GLOBAL_CONFIG.serviceTier,
+			honestUserAgent: readBoolean(source.honestUserAgent, DEFAULT_GLOBAL_CONFIG.honestUserAgent),
 			history: {
 				autoArchive: readBoolean(history.autoArchive, DEFAULT_GLOBAL_CONFIG.history.autoArchive),
 				shortTestMaxWords: readBoundedInteger(history.shortTestMaxWords, 1, 100, DEFAULT_GLOBAL_CONFIG.history.shortTestMaxWords),
@@ -615,6 +638,7 @@ function parseConfigRecord(
 		if (
 			(source.defaultModel !== undefined && source.defaultModel !== null && !isConfiguredModel(source.defaultModel)) ||
 			(source.serviceTier !== undefined && source.serviceTier !== "default" && source.serviceTier !== "priority") ||
+			(source.honestUserAgent !== undefined && typeof source.honestUserAgent !== "boolean") ||
 			(history.autoArchive !== undefined && typeof history.autoArchive !== "boolean") ||
 			!validOptionalInteger(history.shortTestMaxWords, 1, 100) ||
 			!validOptionalInteger(history.maxActive, 1, 1_000) ||
@@ -755,6 +779,7 @@ function cloneDefaults(): GlobalConfig {
 		version: GLOBAL_CONFIG_VERSION,
 		defaultModel: DEFAULT_GLOBAL_CONFIG.defaultModel,
 		serviceTier: DEFAULT_GLOBAL_CONFIG.serviceTier,
+		honestUserAgent: DEFAULT_GLOBAL_CONFIG.honestUserAgent,
 		history: { ...DEFAULT_GLOBAL_CONFIG.history },
 		subagents: { ...DEFAULT_GLOBAL_CONFIG.subagents },
 		tracking: { ...DEFAULT_GLOBAL_CONFIG.tracking },
@@ -812,7 +837,7 @@ function isConfiguredModel(value: unknown): value is string {
 function applyConfigField(source: ConfigRecord, field: GlobalConfigField, value: unknown): ConfigRecord {
 	const next: ConfigRecord = { ...source, version: GLOBAL_CONFIG_VERSION };
 	const section = (name: string): ConfigRecord => isRecord(next[name]) ? { ...(next[name] as ConfigRecord) } : {};
-	if (field === "defaultModel" || field === "serviceTier") {
+	if (field === "defaultModel" || field === "serviceTier" || field === "honestUserAgent") {
 		next[field] = value;
 		return next;
 	}

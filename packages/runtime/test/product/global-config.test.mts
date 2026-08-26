@@ -172,6 +172,10 @@ test("GUI config validates, preserves unrelated YAML, and migrates absent fields
 		assert.equal(loaded.config.gui.shortcuts.globalSearch, "CmdOrCtrl+Shift+F");
 
 		assert.equal(loaded.config.gui.favouritePi, "rotate", "decorative identity defaults to rotate");
+		assert.equal(loaded.config.honestUserAgent, false, "honest user-agent defaults off");
+		await updateGlobalConfigField("honestUserAgent", true, path);
+		assert.equal((await loadGlobalConfig(path)).config.honestUserAgent, true);
+		await assert.rejects(updateGlobalConfigField("honestUserAgent", "yes" as never, path), /invalid|configuration/i);
 
 		await Promise.all([
 			updateGlobalConfigField("gui.layout.railWidth", 320, path),

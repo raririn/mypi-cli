@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Honest user-agent option: new `honestUserAgent` global config field (off by
+  default). When on, model requests advertise `pizzeria/<version>` instead of
+  any compatibility user-agent — applied in the request header transform
+  (sdk.ts), read from config.yaml with a short TTL so a toggle takes effect
+  on running engines within seconds. The app's own non-model HTTP user-agent
+  (`getPiUserAgent`) is renamed from `pi/…` to `pizzeria/…`.
 - Provider auth over the daemon wire (GUI /login parity, engine-free):
   `list_auth_providers` enumerates every provider and its auth state;
   `provider_login` runs one flow with an async-start ack, then streams the
