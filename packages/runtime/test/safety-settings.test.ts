@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
 describe("safety settings", () => {
@@ -26,8 +27,9 @@ describe("safety settings", () => {
 		expect(settings.getDefaultSafetyMode()).toBe("sandbox");
 		await settings.flush();
 
-		expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"))).toMatchObject({
-			safety: { defaultMode: "sandbox" },
+		// The unified config.yaml is the authority for the safety default.
+		expect(parse(readFileSync(join(agentDir, "config.yaml"), "utf8"))).toMatchObject({
+			shared: { safety: { defaultMode: "sandbox" } },
 		});
 	});
 
@@ -36,8 +38,8 @@ describe("safety settings", () => {
 		settings.setDefaultSafetyMode("ask");
 		await settings.flush();
 		expect(settings.getDefaultSafetyMode()).toBe("ask");
-		expect(JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf8"))).toMatchObject({
-			safety: { defaultMode: "ask" },
+		expect(parse(readFileSync(join(agentDir, "config.yaml"), "utf8"))).toMatchObject({
+			shared: { safety: { defaultMode: "ask" } },
 		});
 	});
 });

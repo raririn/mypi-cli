@@ -1,15 +1,30 @@
 import { randomUUID } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { chmod, lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { parseDocument, stringify } from "yaml";
 import { getAgentDir } from "../config.ts";
 import type { ExtensionAPI, ExtensionContext } from "../core/extensions/types.ts";
+import { DEFAULT_SAFETY_MODE, isSafetyMode, type SafetyMode } from "../core/safety-mode.ts";
+import {
+	CLI_SECTION_KEYS,
+	LEGACY_CONFIG_VERSION,
+	MAX_UNIFIED_CONFIG_BYTES,
+	SHARED_SECTION_KEYS,
+	UNIFIED_CONFIG_FILENAME,
+	UNIFIED_CONFIG_VERSION,
+	applySettingsToUnifiedSource,
+	liftUnifiedSource,
+	lockUnifiedConfigSync,
+	serializeUnifiedConfig,
+	settingsViewFromUnifiedSource,
+	writeUnifiedSourceSync,
+} from "../core/unified-config.ts";
 
-export const GLOBAL_CONFIG_VERSION = 1;
-export const GLOBAL_CONFIG_FILENAME = "config.yaml";
-const MAX_GLOBAL_CONFIG_BYTES = 1024 * 1024;
+export const GLOBAL_CONFIG_VERSION = UNIFIED_CONFIG_VERSION;
+export const GLOBAL_CONFIG_FILENAME = UNIFIED_CONFIG_FILENAME;
+const MAX_GLOBAL_CONFIG_BYTES = MAX_UNIFIED_CONFIG_BYTES;
 
 export interface HistoryConfig {
 	readonly autoArchive: boolean;
@@ -73,8 +88,20 @@ export interface GuiConfig {
 
 export type ServiceTier = "default" | "priority";
 
+export type DefaultThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+
+export interface SafetyDefaultsConfig {
+	/** Host-global default safety mode; captured only by newly created sessions. */
+	readonly defaultMode: SafetyMode;
+}
+
+export interface ThinkingDefaultsConfig {
+	/** Level newly created sessions start with (clamped per model at use). */
+	readonly defaultLevel: DefaultThinkingLevel;
+}
+
 export interface GlobalConfig {
-	readonly version: 1;
+	readonly version: 2;
 	/** Persistent provider/model selected by `/model --global`; null uses runtime resolution. */
 	readonly defaultModel: string | null;
 	/** Provider-neutral request tier. Unsupported models ignore `priority`. */
@@ -87,11 +114,14 @@ export interface GlobalConfig {
 	 *  "flat" disables code mode. Applied at session creation — a daemon
 	 *  restart makes a change effective. */
 	readonly tools: ToolsProjectionConfig;
+	readonly safety: SafetyDefaultsConfig;
+	readonly thinking: ThinkingDefaultsConfig;
 	readonly history: HistoryConfig;
 	readonly subagents: SubagentsConfig;
 	readonly tracking: TrackingConfig;
 	readonly gui: GuiConfig;
-	/** Raw `mcp` section; validated separately by the core MCP config parser. */
+	/** Raw `mcp` section (stored under `shared.mcp` on disk); validated
+	 *  separately by the core MCP config parser. */
 	readonly mcp?: unknown;
 }
 
@@ -119,6 +149,8 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfig = Object.freeze({
 	serviceTier: "default",
 	honestUserAgent: false,
 	tools: Object.freeze({ mode: "compatible" as const }),
+	safety: Object.freeze({ defaultMode: DEFAULT_SAFETY_MODE }),
+	thinking: Object.freeze({ defaultLevel: "medium" as const }),
 	history: Object.freeze({
 		autoArchive: true,
 		shortTestMaxWords: 10,
@@ -163,6 +195,8 @@ export type GlobalConfigField =
 	| "serviceTier"
 	| "honestUserAgent"
 	| "tools.mode"
+	| "safety.defaultMode"
+	| "thinking.defaultLevel"
 	| `history.${HistoryKey}`
 	| "subagents.advisorModel"
 	| "subagents.advisorThinkingLevel"
@@ -197,7 +231,7 @@ export interface SanitizedGlobalConfig extends Omit<GlobalConfig, "mcp"> {
 	readonly mcpServerIds: readonly string[];
 }
 const GLOBAL_CONFIG_FIELDS = new Set<GlobalConfigField>([
-	"defaultModel", "serviceTier", "honestUserAgent", "tools.mode",
+	"defaultModel", "serviceTier", "honestUserAgent", "tools.mode", "safety.defaultMode", "thinking.defaultLevel",
 	"history.autoArchive", "history.shortTestMaxWords", "history.maxActive", "history.maxArchived",
 	"subagents.advisorModel", "subagents.advisorThinkingLevel", "subagents.requireAdvisor", "subagents.requireReviewer",
 	"tracking.maxSessionCheckpoints", "tracking.maxDetachedCheckpoints", "tracking.warningFiles", "tracking.warningBytes",
@@ -256,7 +290,8 @@ export async function loadGlobalConfig(path = resolveGlobalConfigPath()): Promis
 
 	const parsed = parseConfigRecord(raw, path);
 	if ("diagnostic" in parsed) return { config: cloneDefaults(), diagnostic: parsed.diagnostic, defaultModelConfigured: false };
-	return { config: parsed.config, defaultModelConfigured: Object.hasOwn(parsed.source, "defaultModel") };
+	const shared = isRecord(parsed.source.shared) ? parsed.source.shared : {};
+	return { config: parsed.config, defaultModelConfigured: Object.hasOwn(shared, "defaultModel") };
 }
 
 export async function updateDefaultModel(
@@ -268,10 +303,10 @@ export async function updateDefaultModel(
 	}
 	return withConfigLock(path, async () => {
 		const source = await readConfigSourceForMutation(path);
-		const next = { ...source, version: GLOBAL_CONFIG_VERSION, defaultModel };
+		const next = withShared(source, (shared) => { shared.defaultModel = defaultModel; });
 		const parsed = parseConfigRecord(stringify(next), path);
 		if ("diagnostic" in parsed) throw new Error(parsed.diagnostic.message);
-		await atomicWriteConfig(path, stringify(next, { lineWidth: 0 }));
+		await atomicWriteConfig(path, serializeUnifiedConfig(next));
 		return parsed.config;
 	});
 }
@@ -301,14 +336,15 @@ export async function resolveConfiguredDefaultModel(options: {
 			if (info.size > MAX_GLOBAL_CONFIG_BYTES) return null;
 			const parsed = parseConfigRecord(await readFile(path, "utf8"), path);
 			if ("diagnostic" in parsed) return null;
-			if (Object.hasOwn(parsed.source, "defaultModel")) return parsed.config.defaultModel;
+			const shared = isRecord(parsed.source.shared) ? parsed.source.shared : {};
+			if (Object.hasOwn(shared, "defaultModel")) return parsed.config.defaultModel;
 			source = parsed.source;
 		} catch (error) {
 			if (!isErrorCode(error, "ENOENT")) return null;
 			source = { version: GLOBAL_CONFIG_VERSION };
 		}
-		const next = { ...source, version: GLOBAL_CONFIG_VERSION, defaultModel: legacy };
-		await atomicWriteConfig(path, stringify(next, { lineWidth: 0 }));
+		const next = withShared(source, (shared) => { shared.defaultModel = legacy; });
+		await atomicWriteConfig(path, serializeUnifiedConfig(next));
 		return legacy;
 	});
 }
@@ -329,12 +365,14 @@ export async function updateHistoryConfig(
 ): Promise<GlobalConfig> {
 	return withConfigLock(path, async () => {
 		const source = await readConfigSourceForMutation(path);
-		const history = isRecord(source.history) ? { ...source.history } : {};
-		history[key] = value;
-		const next = { ...source, version: GLOBAL_CONFIG_VERSION, history };
+		const next = withShared(source, (shared) => {
+			const history = isRecord(shared.history) ? { ...shared.history } : {};
+			history[key] = value;
+			shared.history = history;
+		});
 		const parsed = parseConfigRecord(stringify(next), path);
 		if ("diagnostic" in parsed) throw new Error(parsed.diagnostic.message);
-		await atomicWriteConfig(path, stringify(next, { lineWidth: 0 }));
+		await atomicWriteConfig(path, serializeUnifiedConfig(next));
 		return parsed.config;
 	});
 }
@@ -346,10 +384,10 @@ export async function updateServiceTier(
 	if (serviceTier !== "default" && serviceTier !== "priority") throw new Error("Service tier must be default or priority.");
 	const update = withConfigLock(path, async () => {
 		const source = await readConfigSourceForMutation(path);
-		const next = { ...source, version: GLOBAL_CONFIG_VERSION, serviceTier };
+		const next = withShared(source, (shared) => { shared.serviceTier = serviceTier; });
 		const parsed = parseConfigRecord(stringify(next), path);
 		if ("diagnostic" in parsed) throw new Error(parsed.diagnostic.message);
-		await atomicWriteConfig(path, stringify(next, { lineWidth: 0 }));
+		await atomicWriteConfig(path, serializeUnifiedConfig(next));
 		return parsed.config;
 	});
 	pendingServiceTierUpdate = update;
@@ -389,12 +427,14 @@ export async function updateAdvisorModel(
 	if (!isAdvisorModel(advisorModel)) throw new Error("Advisor model must be inherit or provider/model.");
 	return withConfigLock(path, async () => {
 		const source = await readConfigSourceForMutation(path);
-		const subagents = isRecord(source.subagents) ? { ...source.subagents } : {};
-		subagents.advisorModel = advisorModel;
-		const next = { ...source, version: GLOBAL_CONFIG_VERSION, subagents };
+		const next = withShared(source, (shared) => {
+			const subagents = isRecord(shared.subagents) ? { ...shared.subagents } : {};
+			subagents.advisorModel = advisorModel;
+			shared.subagents = subagents;
+		});
 		const parsed = parseConfigRecord(stringify(next), path);
 		if ("diagnostic" in parsed) throw new Error(parsed.diagnostic.message);
-		await atomicWriteConfig(path, stringify(next, { lineWidth: 0 }));
+		await atomicWriteConfig(path, serializeUnifiedConfig(next));
 		return parsed.config;
 	});
 }
@@ -406,12 +446,14 @@ export async function updateSubagentRequirement(
 ): Promise<GlobalConfig> {
 	return withConfigLock(path, async () => {
 		const source = await readConfigSourceForMutation(path);
-		const subagents = isRecord(source.subagents) ? { ...source.subagents } : {};
-		subagents[key] = value;
-		const next = { ...source, version: GLOBAL_CONFIG_VERSION, subagents };
+		const next = withShared(source, (shared) => {
+			const subagents = isRecord(shared.subagents) ? { ...shared.subagents } : {};
+			subagents[key] = value;
+			shared.subagents = subagents;
+		});
 		const parsed = parseConfigRecord(stringify(next), path);
 		if ("diagnostic" in parsed) throw new Error(parsed.diagnostic.message);
-		await atomicWriteConfig(path, stringify(next, { lineWidth: 0 }));
+		await atomicWriteConfig(path, serializeUnifiedConfig(next));
 		return parsed.config;
 	});
 }
@@ -434,7 +476,7 @@ export async function updateGlobalConfigField(
 		const next = applyConfigField(source, field, value);
 		const parsed = parseConfigRecord(stringify(next), path);
 		if ("diagnostic" in parsed) throw new Error(parsed.diagnostic.message);
-		await atomicWriteConfig(path, stringify(next, { lineWidth: 0 }));
+		await atomicWriteConfig(path, serializeUnifiedConfig(next));
 		return parsed.config;
 	});
 }
@@ -461,7 +503,7 @@ export async function migrateGuiConfig(
 		const next = { ...source, version: GLOBAL_CONFIG_VERSION, gui };
 		const parsed = parseConfigRecord(stringify(next), path);
 		if ("diagnostic" in parsed) throw new Error(parsed.diagnostic.message);
-		await atomicWriteConfig(path, stringify(next, { lineWidth: 0 }));
+		await atomicWriteConfig(path, serializeUnifiedConfig(next));
 		return parsed.config;
 	});
 }
@@ -479,18 +521,20 @@ export async function updateMcpServer(
 ): Promise<GlobalConfig> {
 	return withConfigLock(path, async () => {
 		const source = await readConfigSourceForMutation(path);
-		const mcp = isRecord(source.mcp) ? { ...source.mcp } : {};
-		const servers = isRecord(mcp.servers) ? { ...mcp.servers } : {};
-		if (record === undefined) delete servers[serverId];
-		else servers[serverId] = record;
-		mcp.servers = servers;
-		const next = { ...source, version: GLOBAL_CONFIG_VERSION, mcp };
-		if (record === undefined && Object.keys(servers).length === 0) {
-			delete (next as ConfigRecord).mcp;
-		}
+		const next = withShared(source, (shared) => {
+			const mcp = isRecord(shared.mcp) ? { ...shared.mcp } : {};
+			const servers = isRecord(mcp.servers) ? { ...mcp.servers } : {};
+			if (record === undefined) delete servers[serverId];
+			else servers[serverId] = record;
+			mcp.servers = servers;
+			shared.mcp = mcp;
+			if (record === undefined && Object.keys(servers).length === 0) {
+				delete shared.mcp;
+			}
+		});
 		const parsed = parseConfigRecord(stringify(next), path);
 		if ("diagnostic" in parsed) throw new Error(parsed.diagnostic.message);
-		await atomicWriteConfig(path, stringify(next, { lineWidth: 0 }));
+		await atomicWriteConfig(path, serializeUnifiedConfig(next));
 		return parsed.config;
 	});
 }
@@ -499,9 +543,128 @@ export async function resetGlobalConfig(path = resolveGlobalConfigPath()): Promi
 	return withConfigLock(path, async () => {
 		await assertResetTargetSafe(path);
 		const next = cloneDefaults();
-		await atomicWriteConfig(path, stringify(next, { lineWidth: 0 }));
+		await atomicWriteConfig(path, serializeUnifiedConfig(sourceFromConfig(next)));
 		return next;
 	});
+}
+
+export interface UnifiedMigrationResult {
+	readonly migrated: boolean;
+	readonly diagnostic?: GlobalConfigDiagnostic;
+}
+
+/**
+ * One-shot migration to the unified (version 2) configuration layout: lifts a
+ * version-1 config.yaml into shared/cli/gui sections and absorbs user
+ * preference keys from settings.json, which keeps only machine state and
+ * resource lists. Existing config.yaml values win conflicts. Malformed or
+ * unsafe files are never touched (originals are backed up under
+ * backups/unified-config/ before any rewrite). Sync so both CLI startup
+ * (runMigrations) and the daemon can run it before their first read.
+ */
+export function migrateUnifiedGlobalConfig(agentDir: string = getAgentDir()): UnifiedMigrationResult {
+	const path = join(agentDir, GLOBAL_CONFIG_FILENAME);
+	const settingsPath = join(agentDir, "settings.json");
+	const preview = planUnifiedMigration(path, settingsPath);
+	if ("diagnostic" in preview) return { migrated: false, diagnostic: preview.diagnostic };
+	if (!preview.needsWrite) return { migrated: false };
+	const release = lockUnifiedConfigSync(path);
+	try {
+		const plan = planUnifiedMigration(path, settingsPath);
+		if ("diagnostic" in plan) return { migrated: false, diagnostic: plan.diagnostic };
+		if (!plan.needsWrite) return { migrated: false };
+		const backupRoot = join(agentDir, "backups", "unified-config");
+		mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
+		const stamp = new Date().toISOString().replaceAll(":", "-");
+		if (plan.backupConfig) copyFileSync(path, join(backupRoot, `config-${stamp}.yaml`));
+		if (plan.settingsRest !== undefined) copyFileSync(settingsPath, join(backupRoot, `settings-${stamp}.json`));
+		writeUnifiedSourceSync(path, plan.source);
+		if (plan.settingsRest !== undefined) {
+			writeFileSync(settingsPath, `${JSON.stringify(plan.settingsRest, null, 2)}\n`, "utf8");
+		}
+		return { migrated: true };
+	} finally {
+		release();
+	}
+}
+
+function planUnifiedMigration(
+	path: string,
+	settingsPath: string,
+):
+	| { readonly diagnostic: GlobalConfigDiagnostic }
+	| { readonly needsWrite: boolean; readonly source: ConfigRecord; readonly backupConfig: boolean; readonly settingsRest?: ConfigRecord } {
+	let raw: string | undefined;
+	if (existsSync(path)) {
+		const info = lstatSync(path);
+		if (info.isSymbolicLink() || !info.isFile()) {
+			return { diagnostic: diagnostic("unsafe-file", `MyPi global configuration is not a regular non-symlink file: ${path}`, path) };
+		}
+		if (info.size > MAX_GLOBAL_CONFIG_BYTES) {
+			return { diagnostic: diagnostic("malformed", `MyPi global configuration exceeds ${MAX_GLOBAL_CONFIG_BYTES} bytes: ${path}`, path) };
+		}
+		raw = readFileSync(path, "utf8");
+	}
+	let source: ConfigRecord = { version: GLOBAL_CONFIG_VERSION };
+	let backupConfig = false;
+	if (raw !== undefined && raw.trim().length > 0) {
+		const parsed = parseConfigRecord(raw, path);
+		if ("diagnostic" in parsed) return { diagnostic: parsed.diagnostic };
+		source = parsed.source;
+		backupConfig = parsed.sourceVersion !== UNIFIED_CONFIG_VERSION;
+	}
+	let settingsRest: ConfigRecord | undefined;
+	let mergedSource = source;
+	if (existsSync(settingsPath)) {
+		try {
+			const info = lstatSync(settingsPath);
+			if (info.isFile() && !info.isSymbolicLink()) {
+				const settings: unknown = JSON.parse(readFileSync(settingsPath, "utf8"));
+				if (isRecord(settings)) {
+					const prefs: ConfigRecord = {};
+					const rest: ConfigRecord = {};
+					for (const [key, value] of Object.entries(settings)) {
+						if (CLI_SECTION_KEYS.has(key) || SHARED_SECTION_KEYS.has(key) || key === "defaultThinkingLevel") prefs[key] = value;
+						else rest[key] = value;
+					}
+					if (Object.keys(prefs).length > 0) {
+						if (isRecord(prefs.tools) && (prefs.tools as ConfigRecord).mode === "code-only") {
+							prefs.tools = { ...(prefs.tools as ConfigRecord), mode: "code" };
+						}
+						const current = settingsViewFromUnifiedSource(source);
+						const merged = fillAbsentSettings(prefs, current);
+						const candidate = applySettingsToUnifiedSource(source, merged).source;
+						// Absorb only if the merged result still validates; otherwise
+						// leave settings.json alone rather than poison the authority.
+						const check = parseConfigRecord(stringify(candidate), path);
+						if (!("diagnostic" in check)) {
+							mergedSource = candidate;
+							settingsRest = rest;
+						}
+					}
+				}
+			}
+		} catch {
+			// Malformed settings.json: skip absorption; still lift the yaml.
+		}
+	}
+	return {
+		needsWrite: backupConfig || settingsRest !== undefined,
+		source: mergedSource,
+		backupConfig,
+		settingsRest,
+	};
+}
+
+/** `winner` (existing unified values) beats `base` (settings.json imports);
+ *  nested records merge one level, mirroring SettingsManager's semantics. */
+function fillAbsentSettings(base: ConfigRecord, winner: ConfigRecord): ConfigRecord {
+	const result: ConfigRecord = { ...base };
+	for (const [key, value] of Object.entries(winner)) {
+		const baseValue = result[key];
+		result[key] = isRecord(value) && isRecord(baseValue) ? { ...baseValue, ...value } : value;
+	}
+	return result;
 }
 
 export default function globalConfigExtension(pi: ExtensionAPI): void {
@@ -579,22 +742,31 @@ export default function globalConfigExtension(pi: ExtensionAPI): void {
 function parseConfigRecord(
 	raw: string,
 	path: string,
-): { readonly config: GlobalConfig; readonly source: ConfigRecord } | { readonly diagnostic: GlobalConfigDiagnostic } {
+): { readonly config: GlobalConfig; readonly source: ConfigRecord; readonly sourceVersion: number } | { readonly diagnostic: GlobalConfigDiagnostic } {
 	try {
 		const document = parseDocument(raw, { uniqueKeys: true });
 		if (document.errors.length > 0) {
 			return { diagnostic: diagnostic("malformed", `MyPi global configuration is malformed; defaults are active. Repair ${path} or run /config reset --confirm.`, path) };
 		}
-		const source = document.toJS({ maxAliasCount: 0 });
-		if (!isRecord(source)) return { diagnostic: diagnostic("malformed", `MyPi global configuration must be a YAML mapping; defaults are active. Repair ${path} or run /config reset --confirm.`, path) };
-		if (source.version !== GLOBAL_CONFIG_VERSION) {
+		const parsedSource = document.toJS({ maxAliasCount: 0 });
+		if (!isRecord(parsedSource)) return { diagnostic: diagnostic("malformed", `MyPi global configuration must be a YAML mapping; defaults are active. Repair ${path} or run /config reset --confirm.`, path) };
+		if (parsedSource.version !== UNIFIED_CONFIG_VERSION && parsedSource.version !== LEGACY_CONFIG_VERSION) {
 			return { diagnostic: diagnostic("unsupported-version", `MyPi global configuration version is unsupported; defaults are active. Repair ${path} or run /config reset --confirm.`, path) };
 		}
-		const history = source.history === undefined ? {} : source.history;
+		const sourceVersion = parsedSource.version;
+		const source = liftUnifiedSource(parsedSource);
+		const shared = source.shared === undefined ? {} : source.shared;
+		if (!isRecord(shared)) return { diagnostic: invalidOwnedConfig(path) };
+		if (source.cli !== undefined && !isRecord(source.cli)) return { diagnostic: invalidOwnedConfig(path) };
+		const safety = shared.safety === undefined ? {} : shared.safety;
+		if (!isRecord(safety)) return { diagnostic: invalidOwnedConfig(path) };
+		const thinking = shared.thinking === undefined ? {} : shared.thinking;
+		if (!isRecord(thinking)) return { diagnostic: invalidOwnedConfig(path) };
+		const history = shared.history === undefined ? {} : shared.history;
 		if (!isRecord(history)) return { diagnostic: invalidOwnedConfig(path) };
-		const subagents = source.subagents === undefined ? {} : source.subagents;
+		const subagents = shared.subagents === undefined ? {} : shared.subagents;
 		if (!isRecord(subagents)) return { diagnostic: invalidOwnedConfig(path) };
-		const tracking = source.tracking === undefined ? {} : source.tracking;
+		const tracking = shared.tracking === undefined ? {} : shared.tracking;
 		if (!isRecord(tracking)) return { diagnostic: invalidOwnedConfig(path) };
 		const gui = source.gui === undefined ? {} : source.gui;
 		if (!isRecord(gui)) return { diagnostic: invalidOwnedConfig(path) };
@@ -607,12 +779,14 @@ function parseConfigRecord(
 		const remoteHosts = parseGuiRemoteHosts(gui.remoteHosts, DEFAULT_GLOBAL_CONFIG.gui.remoteHosts);
 		const config: GlobalConfig = {
 			version: GLOBAL_CONFIG_VERSION,
-			defaultModel: source.defaultModel === null || typeof source.defaultModel === "string"
-				? source.defaultModel
+			defaultModel: shared.defaultModel === null || typeof shared.defaultModel === "string"
+				? shared.defaultModel
 				: DEFAULT_GLOBAL_CONFIG.defaultModel,
-			serviceTier: source.serviceTier === "priority" ? "priority" : DEFAULT_GLOBAL_CONFIG.serviceTier,
-			honestUserAgent: readBoolean(source.honestUserAgent, DEFAULT_GLOBAL_CONFIG.honestUserAgent),
-			tools: { mode: readToolsProjectionMode(isRecord(source.tools) ? (source.tools as ConfigRecord).mode : undefined) },
+			serviceTier: shared.serviceTier === "priority" ? "priority" : DEFAULT_GLOBAL_CONFIG.serviceTier,
+			honestUserAgent: readBoolean(shared.honestUserAgent, DEFAULT_GLOBAL_CONFIG.honestUserAgent),
+			tools: { mode: readToolsProjectionMode(isRecord(shared.tools) ? (shared.tools as ConfigRecord).mode : undefined) },
+			safety: { defaultMode: isSafetyMode(safety.defaultMode) ? safety.defaultMode : DEFAULT_GLOBAL_CONFIG.safety.defaultMode },
+			thinking: { defaultLevel: isDefaultThinkingLevel(thinking.defaultLevel) ? thinking.defaultLevel : DEFAULT_GLOBAL_CONFIG.thinking.defaultLevel },
 			history: {
 				autoArchive: readBoolean(history.autoArchive, DEFAULT_GLOBAL_CONFIG.history.autoArchive),
 				shortTestMaxWords: readBoundedInteger(history.shortTestMaxWords, 1, 100, DEFAULT_GLOBAL_CONFIG.history.shortTestMaxWords),
@@ -652,13 +826,15 @@ function parseConfigRecord(
 				])) as unknown as GuiConfig["shortcuts"],
 				remoteHosts,
 			},
-			...(source.mcp !== undefined ? { mcp: source.mcp } : {}),
+			...(shared.mcp !== undefined ? { mcp: shared.mcp } : {}),
 		};
 		if (
-			(source.defaultModel !== undefined && source.defaultModel !== null && !isConfiguredModel(source.defaultModel)) ||
-			(source.serviceTier !== undefined && source.serviceTier !== "default" && source.serviceTier !== "priority") ||
-			(source.honestUserAgent !== undefined && typeof source.honestUserAgent !== "boolean") ||
-			(isRecord(source.tools) && (source.tools as ConfigRecord).mode !== undefined && !isToolsProjectionMode((source.tools as ConfigRecord).mode)) ||
+			(shared.defaultModel !== undefined && shared.defaultModel !== null && !isConfiguredModel(shared.defaultModel)) ||
+			(shared.serviceTier !== undefined && shared.serviceTier !== "default" && shared.serviceTier !== "priority") ||
+			(shared.honestUserAgent !== undefined && typeof shared.honestUserAgent !== "boolean") ||
+			(isRecord(shared.tools) && (shared.tools as ConfigRecord).mode !== undefined && !isToolsProjectionMode((shared.tools as ConfigRecord).mode)) ||
+			(safety.defaultMode !== undefined && !isSafetyMode(safety.defaultMode)) ||
+			(thinking.defaultLevel !== undefined && !isDefaultThinkingLevel(thinking.defaultLevel)) ||
 			(history.autoArchive !== undefined && typeof history.autoArchive !== "boolean") ||
 			!validOptionalInteger(history.shortTestMaxWords, 1, 100) ||
 			!validOptionalInteger(history.maxActive, 1, 1_000) ||
@@ -686,7 +862,7 @@ function parseConfigRecord(
 			|| Object.keys(DEFAULT_GLOBAL_CONFIG.gui.shortcuts).some((key) => guiShortcuts[key] !== undefined && !isShortcutChord(guiShortcuts[key]))
 			|| (gui.remoteHosts !== undefined && !validGuiRemoteHosts(gui.remoteHosts))
 		) return { diagnostic: invalidOwnedConfig(path) };
-		return { config, source };
+		return { config, source, sourceVersion };
 	} catch {
 		return { diagnostic: diagnostic("malformed", `MyPi global configuration is malformed; defaults are active. Repair ${path} or run /config reset --confirm.`, path) };
 	}
@@ -802,6 +978,8 @@ function cloneDefaults(): GlobalConfig {
 		serviceTier: DEFAULT_GLOBAL_CONFIG.serviceTier,
 		honestUserAgent: DEFAULT_GLOBAL_CONFIG.honestUserAgent,
 		tools: { ...DEFAULT_GLOBAL_CONFIG.tools },
+		safety: { ...DEFAULT_GLOBAL_CONFIG.safety },
+		thinking: { ...DEFAULT_GLOBAL_CONFIG.thinking },
 		history: { ...DEFAULT_GLOBAL_CONFIG.history },
 		subagents: { ...DEFAULT_GLOBAL_CONFIG.subagents },
 		tracking: { ...DEFAULT_GLOBAL_CONFIG.tracking },
@@ -840,6 +1018,10 @@ function isToolsProjectionMode(value: unknown): value is ToolsProjectionMode {
 	return value === "flat" || value === "code" || value === "compatible";
 }
 
+function isDefaultThinkingLevel(value: unknown): value is DefaultThinkingLevel {
+	return ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value as string);
+}
+
 function readToolsProjectionMode(value: unknown): ToolsProjectionMode {
 	return isToolsProjectionMode(value) ? value : DEFAULT_GLOBAL_CONFIG.tools.mode;
 }
@@ -868,23 +1050,48 @@ function isConfiguredModel(value: unknown): value is string {
 		&& !/[\r\n\0]/u.test(value);
 }
 
+/** Copy-on-write mutation of the v2 source's `shared` section. */
+function withShared(source: ConfigRecord, mutate: (shared: ConfigRecord) => void): ConfigRecord {
+	const shared = isRecord(source.shared) ? { ...(source.shared as ConfigRecord) } : {};
+	mutate(shared);
+	return { ...source, version: GLOBAL_CONFIG_VERSION, shared };
+}
+
+/** Disk (v2, namespaced) layout of an in-memory GlobalConfig. */
+function sourceFromConfig(config: GlobalConfig): ConfigRecord {
+	const { version, gui, mcp, ...sharedFields } = config;
+	const shared: ConfigRecord = { ...sharedFields };
+	if (mcp !== undefined) shared.mcp = mcp;
+	return { version, shared, gui };
+}
+
+/** Client-facing field names stay flat (e.g. "safety.defaultMode",
+ *  "history.maxActive", "gui.theme.mode"); this routes them to their
+ *  namespaced location in the v2 source (gui.* → gui, the rest → shared). */
 function applyConfigField(source: ConfigRecord, field: GlobalConfigField, value: unknown): ConfigRecord {
-	const next: ConfigRecord = { ...source, version: GLOBAL_CONFIG_VERSION };
-	const section = (name: string): ConfigRecord => isRecord(next[name]) ? { ...(next[name] as ConfigRecord) } : {};
-	if (field === "defaultModel" || field === "serviceTier" || field === "honestUserAgent") {
-		next[field] = value;
+	if (field.startsWith("gui.")) {
+		const next: ConfigRecord = { ...source, version: GLOBAL_CONFIG_VERSION };
+		const gui = isRecord(next.gui) ? { ...(next.gui as ConfigRecord) } : {};
+		const [, child, leaf] = field.split(".");
+		if (leaf === undefined) gui[child!] = value;
+		else {
+			const childRecord = isRecord(gui[child!]) ? { ...(gui[child!] as ConfigRecord) } : {};
+			childRecord[leaf] = value;
+			gui[child!] = childRecord;
+		}
+		next.gui = gui;
 		return next;
 	}
-	const [root, child, leaf] = field.split(".");
-	const rootRecord = section(root!);
-	if (leaf === undefined) rootRecord[child!] = value;
-	else {
-		const childRecord = isRecord(rootRecord[child!]) ? { ...(rootRecord[child!] as ConfigRecord) } : {};
-		childRecord[leaf] = value;
-		rootRecord[child!] = childRecord;
-	}
-	next[root!] = rootRecord;
-	return next;
+	return withShared(source, (shared) => {
+		if (field === "defaultModel" || field === "serviceTier" || field === "honestUserAgent") {
+			shared[field] = value;
+			return;
+		}
+		const [root, leaf] = field.split(".");
+		const rootRecord = isRecord(shared[root!]) ? { ...(shared[root!] as ConfigRecord) } : {};
+		rootRecord[leaf!] = value;
+		shared[root!] = rootRecord;
+	});
 }
 
 function isPiIdentitySlug(value: unknown): value is string {

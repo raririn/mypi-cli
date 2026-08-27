@@ -13,6 +13,7 @@ import {
 	loadConfiguredServiceTier,
 	loadGlobalConfig,
 	migrateGuiConfig,
+	migrateUnifiedGlobalConfig,
   resetGlobalConfig,
 	updateAdvisorModel,
 	updateDefaultModel,
@@ -22,6 +23,7 @@ import {
 	updateServiceTier,
 	resolveConfiguredDefaultModel,
 } from "../../src/product/global-config.ts";
+import { SettingsManager } from "../../src/core/settings-manager.ts";
 
 test("global YAML config defaults without creating a file and preserves unrelated configuration", async () => {
   const root = await mkdtemp(join(tmpdir(), "mypi-global-config-"));
@@ -43,14 +45,15 @@ test("global YAML config defaults without creating a file and preserves unrelate
 		warningBytes: 1024 * 1024 * 1024,
 	});
     const source = parse(await readFile(path, "utf8"));
+    assert.equal(source.version, 2, "mutations rewrite the file in the unified v2 layout");
     assert.deepEqual(source.future, { enabled: true });
-    assert.equal(source.history.maxActive, 17);
-    assert.equal(source.history.maxArchived, 23);
+    assert.equal(source.shared.history.maxActive, 17);
+    assert.equal(source.shared.history.maxArchived, 23);
 	const tierUpdate = updateServiceTier("priority", path);
 	assert.equal(await loadConfiguredServiceTier(path), "priority", "turn-boundary read waits for an in-flight settings write");
 	const tier = await tierUpdate;
 	assert.equal(tier.serviceTier, "priority");
-	assert.equal(parse(await readFile(path, "utf8")).serviceTier, "priority");
+	assert.equal(parse(await readFile(path, "utf8")).shared.serviceTier, "priority");
 	await updateAdvisorModel("anthropic/claude-haiku-4-5", path);
 	await updateDefaultModel("openai/gpt-5.5", path);
 	await updateSubagentRequirement("requireAdvisor", true, path);
@@ -76,7 +79,7 @@ test("legacy settings model migrates once while explicit config null remains aut
       legacyProvider: "anthropic",
       legacyModelId: "claude-sonnet",
     }), "anthropic/claude-sonnet");
-    assert.equal(parse(await readFile(path, "utf8")).defaultModel, "anthropic/claude-sonnet");
+    assert.equal(parse(await readFile(path, "utf8")).shared.defaultModel, "anthropic/claude-sonnet");
 
     await updateDefaultModel(null, path);
     assert.equal(await resolveConfiguredDefaultModel({
@@ -84,7 +87,7 @@ test("legacy settings model migrates once while explicit config null remains aut
       legacyProvider: "openai",
       legacyModelId: "gpt-5.5",
     }), null);
-    assert.equal(parse(await readFile(path, "utf8")).defaultModel, null);
+    assert.equal(parse(await readFile(path, "utf8")).shared.defaultModel, null);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -192,11 +195,61 @@ test("GUI config validates, preserves unrelated YAML, and migrates absent fields
 		assert.equal(loaded.config.gui.favouritePi, "moonpi");
 		const source = parse(await readFile(path, "utf8"));
 		assert.deepEqual(source.future, { retained: true });
-		assert.equal(source.mcp.servers.private.tokenEnv, "SECRET");
+		assert.equal(source.shared.mcp.servers.private.tokenEnv, "SECRET", "mcp lives under shared in the v2 layout");
 
 		await assert.rejects(updateGlobalConfigField("gui.shortcuts.commandPalette", "P", path), /invalid|configuration/i);
 		await assert.rejects(updateGlobalConfigField("gui.layout.railWidth", 999, path), /invalid|configuration/i);
 		await assert.rejects(updateGlobalConfigField("gui.favouritePi", "Not A Slug!", path), /invalid|configuration/i);
+	} finally {
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("unified migration lifts v1 config, absorbs settings.json preferences, and shares one authority with SettingsManager", async () => {
+	const root = await mkdtemp(join(tmpdir(), "mypi-unified-migrate-"));
+	const path = join(root, "config.yaml");
+	const settingsPath = join(root, "settings.json");
+	try {
+		await writeFile(path, "version: 1\ndefaultModel: faux/faux-1\ngui:\n  appMode: work\nmcp:\n  servers:\n    s1:\n      tokenEnv: SECRET\n", { mode: 0o600 });
+		await writeFile(settingsPath, `${JSON.stringify({
+			theme: "dark",
+			defaultThinkingLevel: "high",
+			safety: { defaultMode: "sandbox-ask" },
+			tools: { mode: "code-only" },
+			packages: ["/opt/pkg"],
+			lastChangelogVersion: "0.82.1",
+		}, null, 2)}\n`, { mode: 0o600 });
+
+		assert.equal(migrateUnifiedGlobalConfig(root).migrated, true);
+		const source = parse(await readFile(path, "utf8"));
+		assert.equal(source.version, 2);
+		assert.equal(source.shared.defaultModel, "faux/faux-1");
+		assert.equal(source.cli.theme, "dark");
+		assert.equal(source.shared.thinking.defaultLevel, "high");
+		assert.equal(source.shared.safety.defaultMode, "sandbox-ask");
+		assert.equal(source.shared.tools.mode, "code", "legacy code-only normalizes during absorption");
+		assert.equal(source.shared.mcp.servers.s1.tokenEnv, "SECRET");
+		assert.match(await readFile(path, "utf8"), /^# /m, "generated comments annotate the file");
+		const registry = JSON.parse(await readFile(settingsPath, "utf8"));
+		assert.deepEqual(registry, { packages: ["/opt/pkg"], lastChangelogVersion: "0.82.1" }, "settings.json keeps only machine state");
+		assert.equal(migrateUnifiedGlobalConfig(root).migrated, false, "second run is a no-op");
+
+		const loaded = await loadGlobalConfig(path);
+		assert.equal(loaded.config.safety.defaultMode, "sandbox-ask");
+		assert.equal(loaded.config.thinking.defaultLevel, "high");
+
+		// The daemon field router and SettingsManager write the same file.
+		await updateGlobalConfigField("safety.defaultMode", "sandbox", path);
+		const manager = SettingsManager.create(root, root);
+		assert.equal(manager.getDefaultSafetyMode(), "sandbox");
+		manager.setDefaultThinkingLevel("low");
+		await manager.flush();
+		assert.deepEqual(manager.drainErrors(), []);
+		const after = parse(await readFile(path, "utf8"));
+		assert.equal(after.shared.thinking.defaultLevel, "low");
+		assert.equal(after.cli.theme, "dark", "unrelated cli prefs survive manager writes");
+		assert.deepEqual(JSON.parse(await readFile(settingsPath, "utf8")), registry, "registry untouched by preference writes");
+		await assert.rejects(updateGlobalConfigField("safety.defaultMode", "danger" as never, path), /invalid|configuration/i);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}

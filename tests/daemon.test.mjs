@@ -296,7 +296,7 @@ test("daemon lists and reads persisted history, models, resources, and commands 
     client.send({ id: "default-model", type: "set_default_model", provider: "faux", modelId: "faux-2" });
     await waitFor(() => response("set_default_model"), 5_000, "default model update");
     assert.equal(response("set_default_model").success, true);
-    assert.match(await readFile(join(daemon.agentDir, "config.yaml"), "utf8"), /^defaultModel: faux\/faux-2$/m);
+    assert.match(await readFile(join(daemon.agentDir, "config.yaml"), "utf8"), /^  defaultModel: faux\/faux-2\b/m, "v2 layout stores the default model under shared:");
 
     client.send({ id: "cleanup-preview", type: "preview_archive_cleanup", cwd });
     await waitFor(() => response("preview_archive_cleanup"), 5_000, "archive cleanup preview");
@@ -308,7 +308,7 @@ test("daemon lists and reads persisted history, models, resources, and commands 
     await waitFor(() => response("get_global_config"), 5_000, "global config read");
     assert.equal(response("get_global_config").data.config.gui.shortcuts.commandPalette, "CmdOrCtrl+Shift+P");
     assert.equal("mcp" in response("get_global_config").data.config, false, "raw MCP values are not exposed");
-    assert.equal(response("get_global_config").data.config.safety.defaultMode, "full", "composed settings.json default safety mode");
+    assert.equal(response("get_global_config").data.config.safety.defaultMode, "full", "unified config carries the default safety mode natively");
 
     client.send({ id: "gui-shortcut", type: "update_global_config", field: "gui.shortcuts.commandPalette", value: "Ctrl+Alt+K" });
     await waitFor(() => response("update_global_config"), 5_000, "global config update");
@@ -324,7 +324,9 @@ test("daemon lists and reads persisted history, models, resources, and commands 
     const safetyUpdated = client.frames.find((frame) => frame.id === "safety-default");
     assert.equal(safetyUpdated.success, true);
     assert.equal(safetyUpdated.data.config.safety.defaultMode, "sandbox-ask");
-    assert.match(await readFile(join(daemon.agentDir, "settings.json"), "utf8"), /"defaultMode":\s*"sandbox-ask"/, "settings.json is the authority for the default safety mode");
+    const unifiedAfterSafety = await readFile(join(daemon.agentDir, "config.yaml"), "utf8");
+    assert.match(unifiedAfterSafety, /defaultMode: sandbox-ask/, "the unified config.yaml is the authority for the default safety mode");
+    assert.match(unifiedAfterSafety, /^shared:$/m, "safety default lives in the shared section");
     client.send({ id: "safety-invalid", type: "update_global_config", field: "safety.defaultMode", value: "everything" });
     await waitFor(() => client.frames.some((frame) => frame.id === "safety-invalid"), 5_000, "invalid safety mode rejection");
     assert.equal(client.frames.find((frame) => frame.id === "safety-invalid").success, false);

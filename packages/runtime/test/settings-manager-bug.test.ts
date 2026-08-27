@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
 /**
@@ -68,7 +69,8 @@ describe("SettingsManager - External Edit Preservation", () => {
 		const savedSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
 
 		expect(savedSettings.packages).toEqual([]);
-		expect(savedSettings.theme).toBe("light");
+		// The theme preference lands in the unified authority (config.yaml v2).
+		expect(parse(readFileSync(join(agentDir, "config.yaml"), "utf-8")).cli.theme).toBe("light");
 	});
 
 	it("should preserve file changes to extensions array when changing unrelated setting", async () => {

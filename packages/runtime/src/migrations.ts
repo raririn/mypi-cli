@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, w
 import { dirname, join } from "path";
 import { CONFIG_DIR_NAME, getAgentDir, getBinDir } from "./config.ts";
 import { migrateKeybindingsConfig } from "./core/keybindings.ts";
+import { migrateUnifiedGlobalConfig } from "./product/global-config.ts";
 
 const MIGRATION_GUIDE_URL =
 	"https://github.com/earendil-works/pi-mono/blob/main/packages/runtime/CHANGELOG.md#extensions-migration";
@@ -310,6 +311,13 @@ export function runMigrations(cwd: string): {
 	migrateSessionsFromAgentRoot();
 	migrateToolsToBin();
 	migrateKeybindingsConfigFile();
+	try {
+		// Unified config.yaml v2: lifts the v1 layout and absorbs settings.json
+		// preferences; no-op once migrated. Diagnostics surface on first load.
+		migrateUnifiedGlobalConfig();
+	} catch {
+		// A broken config must not block startup; loaders fall back to defaults.
+	}
 	const deprecationWarnings = migrateExtensionSystem(cwd);
 	return { migratedAuthProviders, deprecationWarnings };
 }

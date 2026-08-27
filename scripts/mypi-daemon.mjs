@@ -131,6 +131,7 @@ import {
   listPersistedSessions,
   loadGlobalConfig,
 	migrateGuiConfig,
+	migrateUnifiedGlobalConfig,
   previewProjectRemoval,
   ProjectTrustStore,
   resolveProjectTrustRoot,
@@ -139,8 +140,6 @@ import {
 	removeMcpWizardServer,
   daemonProviderLogout,
   listDaemonAuthProviders,
-  readGlobalDefaultSafetyMode,
-  readGlobalDefaultThinkingLevel,
   readPersistedSession,
   runDaemonProviderLogin,
 	readDaemonResourceFile,
@@ -157,8 +156,6 @@ import {
 	testMcpWizardServer,
   updateDefaultModel,
 	updateGlobalConfigField,
-	updateGlobalDefaultSafetyMode,
-	updateGlobalDefaultThinkingLevel,
 	sanitizeGlobalConfig,
   WorkspaceTracker,
 } from "@earendil-works/pi-coding-agent";
@@ -280,18 +277,18 @@ const liveChangeSets = new Map();
 const projectMaintenanceRoots = new Set();
 const daemonAgentDir = getAgentDir();
 const daemonGlobalConfigPath = resolve(daemonAgentDir, "config.yaml");
-/** Sanitized config.yaml plus daemon-composed settings.json extras (additive
- *  `safety` section; newly created sessions capture safety.defaultMode). */
+try {
+  // Unified config.yaml v2: lift the v1 layout and absorb settings.json
+  // preferences before the first read. No-op once migrated; a malformed
+  // config is left untouched and surfaces as a configuration_warning.
+  migrateUnifiedGlobalConfig(daemonAgentDir);
+} catch {
+  // Migration failures must not prevent daemon startup.
+}
+/** Sanitized unified config — config.yaml v2 owns `safety` and `thinking`
+ *  natively, so no settings.json grafting remains. */
 function composeSanitizedGlobalConfig(config) {
-  let defaultMode = "full";
-  let defaultThinkingLevel = "medium";
-  try {
-    defaultMode = readGlobalDefaultSafetyMode(daemonAgentDir);
-    defaultThinkingLevel = readGlobalDefaultThinkingLevel(daemonAgentDir);
-  } catch {
-    // Unreadable settings.json must not break config service replies.
-  }
-  return { ...sanitizeGlobalConfig(config), safety: { defaultMode }, thinking: { defaultLevel: defaultThinkingLevel } };
+  return sanitizeGlobalConfig(config);
 }
 
 let server = null;
@@ -2104,27 +2101,10 @@ function handleClientFrame(client, frame) {
   }
 
   if (frame?.type === "update_global_config") {
+    // Single authority: every field — including safety.defaultMode and
+    // thinking.defaultLevel (shared.* on disk, captured by newly created
+    // sessions) — routes through the unified config.yaml.
     const field = typeof frame.field === "string" ? frame.field : "";
-    if (field === "thinking.defaultLevel") {
-      // settings.json authority (defaultThinkingLevel): newly created
-      // sessions start at this level, clamped per model.
-      sendDaemonResponse(client, frame, "update_global_config", Promise.resolve().then(async () => {
-        await updateGlobalDefaultThinkingLevel(frame.value, daemonAgentDir);
-        const loaded = await loadGlobalConfig(daemonGlobalConfigPath);
-        return { config: composeSanitizedGlobalConfig(loaded.config) };
-      }));
-      return;
-    }
-    if (field === "safety.defaultMode") {
-      // settings.json authority, not config.yaml: newly created sessions on
-      // every client capture this default (agent-session safety seeding).
-      sendDaemonResponse(client, frame, "update_global_config", Promise.resolve().then(async () => {
-        await updateGlobalDefaultSafetyMode(frame.value, daemonAgentDir);
-        const loaded = await loadGlobalConfig(daemonGlobalConfigPath);
-        return { config: composeSanitizedGlobalConfig(loaded.config) };
-      }));
-      return;
-    }
     sendDaemonResponse(client, frame, "update_global_config", updateGlobalConfigField(field, frame.value, daemonGlobalConfigPath).then((config) => ({
       config: composeSanitizedGlobalConfig(config),
     })));

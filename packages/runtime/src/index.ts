@@ -471,6 +471,8 @@ export {
 	GLOBAL_CONFIG_VERSION,
 	loadGlobalConfig,
 	migrateGuiConfig,
+	migrateUnifiedGlobalConfig,
+	type UnifiedMigrationResult,
 	resetGlobalConfig,
 	resolveGlobalConfigPath,
 	updateDefaultModel,

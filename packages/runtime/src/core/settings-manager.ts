@@ -8,6 +8,16 @@ import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.ts";
 import { DEFAULT_SAFETY_MODE, isSafetyMode, type SafetyMode } from "./safety-mode.ts";
+import {
+	UNIFIED_CONFIG_VERSION,
+	applySettingsToUnifiedSource,
+	lockUnifiedConfigSync,
+	readUnifiedSourceSync,
+	resolveUnifiedConfigPath,
+	settingsViewFromUnifiedSource,
+	writeUnifiedSourceSync,
+	type ConfigRecord,
+} from "./unified-config.ts";
 
 export interface CompactionSettings {
 	enabled?: boolean; // default: true
@@ -201,6 +211,33 @@ export interface SettingsError {
 	error: Error;
 }
 
+function acquireLockSyncWithRetry(path: string): () => void {
+	const maxAttempts = 10;
+	const delayMs = 20;
+	let lastError: unknown;
+
+	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+		try {
+			return lockfile.lockSync(path, { realpath: false });
+		} catch (error) {
+			const code =
+				typeof error === "object" && error !== null && "code" in error
+					? String((error as { code?: unknown }).code)
+					: undefined;
+			if (code !== "ELOCKED" || attempt === maxAttempts) {
+				throw error;
+			}
+			lastError = error;
+			const start = Date.now();
+			while (Date.now() - start < delayMs) {
+				// Sleep synchronously to avoid changing callers to async.
+			}
+		}
+	}
+
+	throw (lastError as Error) ?? new Error("Failed to acquire settings lock");
+}
+
 export class FileSettingsStorage implements SettingsStorage {
 	private globalSettingsPath: string;
 	private projectSettingsPath: string;
@@ -212,33 +249,6 @@ export class FileSettingsStorage implements SettingsStorage {
 		this.projectSettingsPath = join(resolvedCwd, CONFIG_DIR_NAME, "settings.json");
 	}
 
-	private acquireLockSyncWithRetry(path: string): () => void {
-		const maxAttempts = 10;
-		const delayMs = 20;
-		let lastError: unknown;
-
-		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-			try {
-				return lockfile.lockSync(path, { realpath: false });
-			} catch (error) {
-				const code =
-					typeof error === "object" && error !== null && "code" in error
-						? String((error as { code?: unknown }).code)
-						: undefined;
-				if (code !== "ELOCKED" || attempt === maxAttempts) {
-					throw error;
-				}
-				lastError = error;
-				const start = Date.now();
-				while (Date.now() - start < delayMs) {
-					// Sleep synchronously to avoid changing callers to async.
-				}
-			}
-		}
-
-		throw (lastError as Error) ?? new Error("Failed to acquire settings lock");
-	}
-
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void {
 		const path = scope === "global" ? this.globalSettingsPath : this.projectSettingsPath;
 		const dir = dirname(path);
@@ -248,7 +258,7 @@ export class FileSettingsStorage implements SettingsStorage {
 			// Only create directory and lock if file exists or we need to write
 			const fileExists = existsSync(path);
 			if (fileExists) {
-				release = this.acquireLockSyncWithRetry(path);
+				release = acquireLockSyncWithRetry(path);
 			}
 			const current = fileExists ? readFileSync(path, "utf-8") : undefined;
 			const next = fn(current);
@@ -258,12 +268,99 @@ export class FileSettingsStorage implements SettingsStorage {
 					mkdirSync(dir, { recursive: true });
 				}
 				if (!release) {
-					release = this.acquireLockSyncWithRetry(path);
+					release = acquireLockSyncWithRetry(path);
 				}
 				writeFileSync(path, next, "utf-8");
 			}
 		} finally {
 			if (release) {
+				release();
+			}
+		}
+	}
+}
+
+/**
+ * Storage backend for the unified configuration authority (config.yaml v2).
+ *
+ * The global scope is a translating composite: user preferences live in the
+ * unified file's `cli:` + `shared:` sections while machine state and resource
+ * lists (packages/extensions/skills/prompts/themes, changelog stamp, tracking
+ * id, legacy provider/model pair) stay in settings.json — the registry that
+ * npm's converge-profile keeps rewriting. SettingsManager still sees one flat
+ * JSON document; this class routes each key to its home on write and folds
+ * both files together on read (unified values win, so pre-migration legacy
+ * keys in settings.json remain effective until their first rewrite).
+ *
+ * The project scope is untouched: `<cwd>/.mypi/settings.json` overrides.
+ */
+export class UnifiedSettingsStorage implements SettingsStorage {
+	private configPath: string;
+	private registryPath: string;
+	private projectStorage: FileSettingsStorage;
+
+	constructor(cwd: string, agentDir: string) {
+		const resolvedAgentDir = resolvePath(agentDir);
+		this.configPath = resolveUnifiedConfigPath(resolvedAgentDir);
+		this.registryPath = join(resolvedAgentDir, "settings.json");
+		this.projectStorage = new FileSettingsStorage(cwd, agentDir);
+	}
+
+	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void {
+		if (scope === "project") {
+			this.projectStorage.withLock(scope, fn);
+			return;
+		}
+		const releases: Array<() => void> = [];
+		let configLocked = false;
+		let registryLocked = false;
+		try {
+			const configExists = existsSync(this.configPath);
+			const registryExists = existsSync(this.registryPath);
+			if (configExists) {
+				releases.push(lockUnifiedConfigSync(this.configPath));
+				configLocked = true;
+			}
+			if (registryExists) {
+				releases.push(acquireLockSyncWithRetry(this.registryPath));
+				registryLocked = true;
+			}
+			// A malformed unified file or registry throws here; the manager
+			// records the load error and suppresses writes to this scope.
+			const source = configExists ? readUnifiedSourceSync(this.configPath) : undefined;
+			const registryRaw = registryExists ? readFileSync(this.registryPath, "utf-8") : undefined;
+			const registryParsed: unknown = registryRaw === undefined ? undefined : JSON.parse(registryRaw);
+			const registry: ConfigRecord =
+				typeof registryParsed === "object" && registryParsed !== null && !Array.isArray(registryParsed)
+					? (registryParsed as ConfigRecord)
+					: {};
+			const flat: ConfigRecord = { ...registry, ...(source ? settingsViewFromUnifiedSource(source) : {}) };
+			const current = configExists || registryExists ? JSON.stringify(flat) : undefined;
+			const next = fn(current);
+			if (next === undefined) {
+				return;
+			}
+			const merged = JSON.parse(next) as ConfigRecord;
+			const baseSource = source ?? { version: UNIFIED_CONFIG_VERSION };
+			const { source: nextSource, leftover } = applySettingsToUnifiedSource(baseSource, merged);
+			if (JSON.stringify(nextSource) !== JSON.stringify(baseSource) || !configExists) {
+				if (!configLocked) {
+					mkdirSync(dirname(this.configPath), { recursive: true });
+					releases.push(lockUnifiedConfigSync(this.configPath));
+					configLocked = true;
+				}
+				writeUnifiedSourceSync(this.configPath, nextSource);
+			}
+			if (JSON.stringify(leftover) !== JSON.stringify(registry)) {
+				if (!registryLocked) {
+					mkdirSync(dirname(this.registryPath), { recursive: true });
+					releases.push(acquireLockSyncWithRetry(this.registryPath));
+					registryLocked = true;
+				}
+				writeFileSync(this.registryPath, JSON.stringify(leftover, null, 2), "utf-8");
+			}
+		} finally {
+			for (const release of releases.reverse()) {
 				release();
 			}
 		}
@@ -327,7 +424,7 @@ export class SettingsManager {
 		agentDir: string = getAgentDir(),
 		options: SettingsManagerCreateOptions = {},
 	): SettingsManager {
-		const storage = new FileSettingsStorage(cwd, agentDir);
+		const storage = new UnifiedSettingsStorage(cwd, agentDir);
 		const manager = SettingsManager.fromStorage(storage, options);
 		manager.migrateLegacySandboxPreference(agentDir);
 		return manager;
@@ -1334,9 +1431,10 @@ export class SettingsManager {
 }
 
 /**
- * Daemon-level access to the host-global default safety mode
- * (settings.json `safety.defaultMode`) without a session or project scope.
- * Newly created sessions capture this value; running sessions are unaffected.
+ * Daemon-level access to the host-global default safety mode (the unified
+ * config.yaml's `shared.safety.defaultMode`) without a session or project
+ * scope. Newly created sessions capture this value; running sessions are
+ * unaffected.
  */
 export function readGlobalDefaultSafetyMode(agentDir: string = getAgentDir()): SafetyMode {
 	return SettingsManager.create(resolvePath(agentDir), agentDir).getDefaultSafetyMode();
@@ -1344,8 +1442,8 @@ export function readGlobalDefaultSafetyMode(agentDir: string = getAgentDir()): S
 
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
-/** Daemon-level access to settings.json `defaultThinkingLevel` — the level
- *  newly created sessions start with (clamped per model at use). */
+/** Daemon-level access to the unified config's `shared.thinking.defaultLevel`
+ *  — the level newly created sessions start with (clamped per model at use). */
 export function readGlobalDefaultThinkingLevel(agentDir: string = getAgentDir()): ThinkingLevel {
 	return SettingsManager.create(resolvePath(agentDir), agentDir).getDefaultThinkingLevel() ?? "medium";
 }

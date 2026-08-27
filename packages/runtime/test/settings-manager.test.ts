@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { parse } from "yaml";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS } from "../src/core/http-dispatcher.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 
@@ -9,6 +10,9 @@ describe("SettingsManager", () => {
 	const testDir = join(process.cwd(), "test-settings-tmp");
 	const agentDir = join(testDir, "agent");
 	const projectDir = join(testDir, "project");
+	// Preference writes land in the unified authority (config.yaml v2);
+	// settings.json keeps only machine state and resource lists.
+	const readUnified = () => parse(readFileSync(join(agentDir, "config.yaml"), "utf-8"));
 
 	beforeEach(() => {
 		// Clean up and create fresh directories
@@ -49,12 +53,15 @@ describe("SettingsManager", () => {
 			manager.setDefaultThinkingLevel("high");
 			await manager.flush();
 
-			// Verify enabledModels is preserved
-			const savedSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-			expect(savedSettings.enabledModels).toEqual(["claude-opus-4-5", "gpt-5.2-codex"]);
-			expect(savedSettings.defaultThinkingLevel).toBe("high");
-			expect(savedSettings.theme).toBe("dark");
-			expect(savedSettings.defaultModel).toBe("claude-sonnet");
+			// Verify enabledModels is preserved (relocated into the unified
+			// authority alongside the other preferences on first write).
+			const config = readUnified();
+			expect(config.shared.enabledModels).toEqual(["claude-opus-4-5", "gpt-5.2-codex"]);
+			expect(config.shared.thinking.defaultLevel).toBe("high");
+			expect(config.cli.theme).toBe("dark");
+			// The legacy provider/model pair is machine state and stays put.
+			const registry = JSON.parse(readFileSync(settingsPath, "utf-8"));
+			expect(registry.defaultModel).toBe("claude-sonnet");
 		});
 
 		it("should preserve custom settings when changing theme", async () => {
@@ -78,11 +85,13 @@ describe("SettingsManager", () => {
 			manager.setTheme("light");
 			await manager.flush();
 
-			// Verify all settings preserved
-			const savedSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-			expect(savedSettings.shellPath).toBe("/bin/zsh");
-			expect(savedSettings.extensions).toEqual(["/path/to/extension.ts"]);
-			expect(savedSettings.theme).toBe("light");
+			// Verify all settings preserved: preferences in the unified file,
+			// resource lists still in settings.json.
+			const config = readUnified();
+			expect(config.cli.shellPath).toBe("/bin/zsh");
+			expect(config.cli.theme).toBe("light");
+			const registry = JSON.parse(readFileSync(settingsPath, "utf-8"));
+			expect(registry.extensions).toEqual(["/path/to/extension.ts"]);
 		});
 
 		it("should let in-memory changes override file changes for same key", async () => {
@@ -106,8 +115,7 @@ describe("SettingsManager", () => {
 			await manager.flush();
 
 			// In-memory change should win
-			const savedSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-			expect(savedSettings.defaultThinkingLevel).toBe("high");
+			expect(readUnified().shared.thinking.defaultLevel).toBe("high");
 		});
 	});
 
@@ -211,8 +219,7 @@ describe("SettingsManager", () => {
 			manager.setTheme("solarized-light/tokyo-night");
 			await manager.flush();
 
-			const savedSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-			expect(savedSettings.theme).toBe("solarized-light/tokyo-night");
+			expect(readUnified().cli.theme).toBe("solarized-light/tokyo-night");
 		});
 	});
 
@@ -407,8 +414,7 @@ describe("SettingsManager", () => {
 			await manager.flush();
 
 			expect(manager.getOutputPad()).toBe(0);
-			const savedSettings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8"));
-			expect(savedSettings.outputPad).toBe(0);
+			expect(readUnified().cli.outputPad).toBe(0);
 		});
 
 		it("should treat unsupported outputPad values as default padding", () => {
@@ -447,9 +453,9 @@ describe("SettingsManager", () => {
 			manager.setTheme("light");
 			await manager.flush();
 
-			const savedSettings = JSON.parse(readFileSync(settingsPath, "utf-8"));
-			expect(savedSettings.shellCommandPrefix).toBe("shopt -s expand_aliases");
-			expect(savedSettings.theme).toBe("light");
+			const config = readUnified();
+			expect(config.cli.shellCommandPrefix).toBe("shopt -s expand_aliases");
+			expect(config.cli.theme).toBe("light");
 		});
 	});
 
