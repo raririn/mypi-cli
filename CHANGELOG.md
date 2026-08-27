@@ -27,6 +27,9 @@ Unified configuration + archive-manage hardening:
   with the exact typed invocation (`mypiCommandInvocation`), so clients can
   render one command chip instead of echoing both the typed command and the
   rewritten kickoff.
+- GUI config gains `gui.thinkingView` ("verbose" | "minimal", default
+  minimal) and the `gui.shortcuts.thinkingView` chord (default
+  CmdOrCtrl+Shift+V) for the desktop thinking-block folding toggle.
 
 - Code Mode dogfood round 1: `ALL_TOOLS` is now actually defined inside
   cells (was promised by the contract but never injected); goal tools

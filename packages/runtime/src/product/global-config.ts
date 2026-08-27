@@ -67,6 +67,9 @@ export interface GuiConfig {
 	 * opaquely so new decorations never require a daemon release). */
 	readonly favouritePi: string;
 	readonly theme: { readonly mode: "dark" | "light"; readonly preset: GuiThemePreset };
+	/** Timeline thinking-block folding: "verbose" renders every block open,
+	 *  "minimal" (default) folds them all. Toggled live via shortcut/palette. */
+	readonly thinkingView: "verbose" | "minimal";
 	readonly layout: { readonly railWidth: number; readonly workbenchWidth: number };
 	readonly shortcuts: {
 		readonly home: string;
@@ -82,6 +85,7 @@ export interface GuiConfig {
 		readonly zoomOut: string;
 		readonly zoomReset: string;
 		readonly stopRun: string;
+		readonly thinkingView: string;
 	};
 	readonly remoteHosts: readonly GuiRemoteHostConfig[];
 }
@@ -168,6 +172,7 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfig = Object.freeze({
 		appMode: "work",
 		favouritePi: "rotate",
 		theme: Object.freeze({ mode: "dark", preset: "default" }),
+		thinkingView: "minimal" as const,
 		layout: Object.freeze({ railWidth: 256, workbenchWidth: 576 }),
 		shortcuts: Object.freeze({
 			home: "CmdOrCtrl+Shift+H",
@@ -183,6 +188,7 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfig = Object.freeze({
 			zoomOut: "CmdOrCtrl+-",
 			zoomReset: "CmdOrCtrl+0",
 			stopRun: "Escape",
+			thinkingView: "CmdOrCtrl+Shift+V",
 		}),
 		remoteHosts: Object.freeze([]),
 	}),
@@ -208,6 +214,7 @@ export type GlobalConfigField =
 	| "tracking.warningBytes"
 	| "gui.appMode"
 	| "gui.favouritePi"
+	| "gui.thinkingView"
 	| "gui.theme.mode"
 	| "gui.theme.preset"
 	| "gui.layout.railWidth"
@@ -225,6 +232,7 @@ export type GlobalConfigField =
 	| "gui.shortcuts.zoomOut"
 	| "gui.shortcuts.zoomReset"
 	| "gui.shortcuts.stopRun"
+	| "gui.shortcuts.thinkingView"
 	| "gui.remoteHosts";
 
 export interface SanitizedGlobalConfig extends Omit<GlobalConfig, "mcp"> {
@@ -235,11 +243,12 @@ const GLOBAL_CONFIG_FIELDS = new Set<GlobalConfigField>([
 	"history.autoArchive", "history.shortTestMaxWords", "history.maxActive", "history.maxArchived",
 	"subagents.advisorModel", "subagents.advisorThinkingLevel", "subagents.requireAdvisor", "subagents.requireReviewer",
 	"tracking.maxSessionCheckpoints", "tracking.maxDetachedCheckpoints", "tracking.warningFiles", "tracking.warningBytes",
-	"gui.appMode", "gui.favouritePi", "gui.theme.mode", "gui.theme.preset", "gui.layout.railWidth", "gui.layout.workbenchWidth",
+	"gui.appMode", "gui.favouritePi", "gui.thinkingView", "gui.theme.mode", "gui.theme.preset", "gui.layout.railWidth", "gui.layout.workbenchWidth",
 	"gui.shortcuts.home", "gui.shortcuts.newSession",
 	"gui.shortcuts.commandPalette", "gui.shortcuts.globalSearch", "gui.shortcuts.threadSearch",
 	"gui.shortcuts.terminal", "gui.shortcuts.sidebar", "gui.shortcuts.openFolder", "gui.shortcuts.settings",
 	"gui.shortcuts.zoomIn", "gui.shortcuts.zoomOut", "gui.shortcuts.zoomReset", "gui.shortcuts.stopRun",
+	"gui.shortcuts.thinkingView",
 	"gui.remoteHosts",
 ]);
 let pendingServiceTierUpdate: Promise<GlobalConfig> | undefined;
@@ -812,6 +821,7 @@ function parseConfigRecord(
 			gui: {
 				appMode: gui.appMode === "chat" ? "chat" : DEFAULT_GLOBAL_CONFIG.gui.appMode,
 				favouritePi: isPiIdentitySlug(gui.favouritePi) ? gui.favouritePi : DEFAULT_GLOBAL_CONFIG.gui.favouritePi,
+				thinkingView: gui.thinkingView === "verbose" ? "verbose" : DEFAULT_GLOBAL_CONFIG.gui.thinkingView,
 				theme: {
 					mode: guiTheme.mode === "light" ? "light" : DEFAULT_GLOBAL_CONFIG.gui.theme.mode,
 					preset: isGuiThemePreset(guiTheme.preset) ? guiTheme.preset : DEFAULT_GLOBAL_CONFIG.gui.theme.preset,
@@ -855,6 +865,7 @@ function parseConfigRecord(
 			|| config.tracking.maxDetachedCheckpoints > config.tracking.maxSessionCheckpoints
 			|| (gui.appMode !== undefined && gui.appMode !== "work" && gui.appMode !== "chat")
 			|| (gui.favouritePi !== undefined && !isPiIdentitySlug(gui.favouritePi))
+			|| (gui.thinkingView !== undefined && gui.thinkingView !== "verbose" && gui.thinkingView !== "minimal")
 			|| (guiTheme.mode !== undefined && guiTheme.mode !== "dark" && guiTheme.mode !== "light")
 			|| (guiTheme.preset !== undefined && !isGuiThemePreset(guiTheme.preset))
 			|| !validOptionalInteger(guiLayout.railWidth, 200, 440)
@@ -986,6 +997,7 @@ function cloneDefaults(): GlobalConfig {
 		gui: {
 			appMode: DEFAULT_GLOBAL_CONFIG.gui.appMode,
 			favouritePi: DEFAULT_GLOBAL_CONFIG.gui.favouritePi,
+			thinkingView: DEFAULT_GLOBAL_CONFIG.gui.thinkingView,
 			theme: { ...DEFAULT_GLOBAL_CONFIG.gui.theme },
 			layout: { ...DEFAULT_GLOBAL_CONFIG.gui.layout },
 			shortcuts: { ...DEFAULT_GLOBAL_CONFIG.gui.shortcuts },
