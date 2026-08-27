@@ -73,6 +73,8 @@ export interface WarningSettings {
 
 export interface SafetySettings {
 	defaultMode?: SafetyMode;
+	/** false disables the dangerous-bash-command guard (default on, all modes). */
+	bashGuard?: boolean;
 }
 
 /** FEAT-087 code mode. "compatible" = flat schemas AND exec_code;
@@ -901,6 +903,11 @@ export class SettingsManager {
 	getDefaultSafetyMode(): SafetyMode {
 		const mode = this.globalSettings.safety?.defaultMode;
 		return isSafetyMode(mode) ? mode : DEFAULT_SAFETY_MODE;
+	}
+
+	/** Heuristic dangerous-bash-command interception; on unless explicitly disabled. */
+	getBashGuardEnabled(): boolean {
+		return this.globalSettings.safety?.bashGuard !== false;
 	}
 
 	/** FEAT-087 tool-projection mode. Dev-branch default is "code" (exec_code

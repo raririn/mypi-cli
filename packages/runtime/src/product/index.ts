@@ -7,6 +7,7 @@ import imageGenExtension from "./image-gen.ts";
 import llamaExtension from "./llama/index.ts";
 import agentSignalsExtension from "./mypi-agent-signals.ts";
 import askUserExtension from "./mypi-ask-user.ts";
+import bashGuardExtension from "./mypi-bash-guard.ts";
 import chatManageExtension from "./mypi-chat-manage.ts";
 import chatExtension from "./mypi-chat.ts";
 import cliproxyProviderExtension from "./mypi-cliproxy-provider.ts";
@@ -46,6 +47,7 @@ export const productModules: readonly ProductModule[] = [
 	defineProductModule("compaction-recall", "required", compactionRecallExtension),
 	defineProductModule("tui-hero", "surface", pizzaHeroExtension),
 	defineProductModule("safety", "required", safetyExtension),
+	defineProductModule("bash-guard", "required", bashGuardExtension),
 	defineProductModule("web", "capability", webSearchExtension),
 	defineProductModule("image-gen", "capability", imageGenExtension),
 	defineProductModule("identity", "required", identityExtension),
