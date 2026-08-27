@@ -11,11 +11,11 @@ const root = resolve(import.meta.dirname, "..");
 test("CLI SemVer major matches the MyPi protocol generation and stable chronicle", () => {
   const contract = readMyPiRepositoryVersionContract(root);
   assert.equal(Number(contract.productVersion.split(".", 1)[0]), contract.protocolGeneration);
-  assert.equal(contract.productVersion, "2.0.0-beta.10");
+  assert.equal(contract.productVersion, "2.0.0-beta.11");
   assert.equal(contract.protocolGeneration, 2);
   assert.equal(contract.releaseName, "Roma");
   assert.equal(contract.releaseChronicle, 1);
-  assert.equal(contract.displayVersion, "2.0.0-beta.10 (Roma; pi-core 0.82.1)");
+  assert.equal(contract.displayVersion, "2.0.0-beta.11 (Roma; pi-core 0.82.1)");
 });
 
 test("public npm documentation uses the scoped package and isolated profile", () => {
