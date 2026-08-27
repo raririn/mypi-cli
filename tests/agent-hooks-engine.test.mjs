@@ -41,6 +41,12 @@ async function bootEngine(script) {
     request.on("data", (chunk) => { body += chunk.toString(); });
     request.on("end", () => {
       const parsed = JSON.parse(body);
+      // Model-based auto-title issues its own provider request; answer it
+      // out-of-band so the scripted step counter only sees agent turns.
+      if (JSON.stringify(parsed.messages ?? []).includes("Generate a short UI conversation title")) {
+        sseText(response, "Mock Title");
+        return;
+      }
       requests.push(parsed);
       script(requests.length, parsed, response);
     });

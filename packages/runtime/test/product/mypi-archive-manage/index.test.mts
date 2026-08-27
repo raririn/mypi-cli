@@ -18,6 +18,7 @@ const ARCHIVE_TOOLS = [
   "restore_archived_session",
   "delete_archived_session",
   "delete_archived_sessions_older_than",
+  "delete_archived_sessions_with_max_user_messages",
   "delete_orphaned_session",
 ];
 const HOUR_MS = 60 * 60 * 1000;

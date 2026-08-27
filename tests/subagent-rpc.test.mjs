@@ -145,8 +145,12 @@ test("last-client detach cancels an RPC grant without delivery and follow-up rev
   const sockets = new Set();
   const server = createServer((request, response) => {
     if (request.url !== "/v1/chat/completions") return response.writeHead(404).end();
-    request.resume();
+    let body = "";
+    request.on("data", (chunk) => { body += chunk.toString(); });
     request.on("end", () => {
+      // Auto-title requests are answered out-of-band so the scripted
+      // counter only sees agent turns.
+      if (body.includes("Generate a short UI conversation title")) return writeCompletion(response, "Mock Title");
       requestCount += 1;
       if (requestCount === 1) return; // Hold the first provider request until parent-detach aborts it.
       writeCompletion(response, "revived-ok");
@@ -290,6 +294,7 @@ test("advisor uses a caller-model neutral brief and evidence ledger without forw
     let body = "";
     request.on("data", (chunk) => { body += chunk.toString(); });
     request.on("end", () => {
+      if (body.includes("Generate a short UI conversation title")) return writeCompletion(response, "Mock Title");
       requestBodies.push(body);
       requestCount += 1;
       if (requestCount === 1 || requestCount === 4) {
