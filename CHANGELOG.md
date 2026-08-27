@@ -1,6 +1,31 @@
 # MyPi CLI changelog
 
-## Unreleased
+## 2.0.0-beta.12 — 2026-08-27
+
+Safety hardening + catalog agreement:
+
+- **Bash guard — heuristic dangerous-command interception (full access
+  only).** A curated rule set blocks high-blast-radius shell commands
+  before execution: filesystem-wide `find` scans (`/`, `/usr`, `/var`),
+  recursive `rm` of root trees / home / cwd bombs / `$VAR/`-shaped
+  unexpanded roots / `--no-preserve-root`, recursive `chmod` of system
+  trees, and mkfs/wipefs/dd or redirects onto raw block devices. The block
+  message tells the model to reconsider or re-run the exactly same command;
+  the exact re-run raises a user confirm dialog (GUI permission card / TUI
+  dialog) and executes only on approval — once per approval; denial keeps
+  the command blocked for the rest of the run, and bypass tricks (bash -c,
+  eval, encodings, script files, interpreters, …) are explicitly forbidden.
+  Bounded safety modes stand down: the sandbox and ask flows already gate
+  bash there. `shared.safety.bashGuard: false` disables.
+- Session-level `get_available_models` now reports the configured
+  `defaultModel` (same resolution as the daemon catalog), so a GUI
+  live-catalog refresh no longer strips the default-model flag that new
+  drafts seed from.
+- Model-based auto-title runs for rpc (daemon/GUI) engines, not only the
+  TUI — GUI session rows stop falling back to the raw first user message.
+- `gui.noticeTimeoutSeconds` (3–300, default 20): toast auto-fade timeout.
+- Daemon-served engines are told their client renders markdown images and
+  mermaid diagrams (capability advertisement for the image-output round).
 
 Unified configuration + archive-manage hardening:
 
