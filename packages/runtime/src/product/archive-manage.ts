@@ -22,6 +22,7 @@ const TOOL_NAMES = [
 	"restore_archived_session",
 	"delete_archived_session",
 	"delete_archived_sessions_older_than",
+	"delete_archived_sessions_with_max_user_messages",
 	"delete_orphaned_session",
 ] as const;
 const TOOL_NAME_SET = new Set<string>(TOOL_NAMES);
@@ -62,7 +63,7 @@ const HELP = `# /archive-manage — manage MyPi session archives
 
 ## Behavior and state lifetime
 
-The command starts one agent turn with temporary archive-only tools. Broad inventory starts with compact counts. Listings are filterable and paginated (20 records by default), omit previews by default, and offer a separate one-session inspection tool. Dedicated bulk tools handle age-based archive, user-message-count archive, and delete requests without listing every matching session or making one tool call per session. All archive tools are removed when the agent turn ends.
+The command starts one agent turn with temporary archive-only tools. Broad inventory starts with compact counts. Listings are filterable and paginated (20 records by default), omit previews by default, and offer a separate one-session inspection tool. Dedicated bulk tools handle age-based archive, user-message-count archive, and delete requests without listing every matching session or making one tool call per session. All archive tools are removed when the agent turn ends, with a visible "Session tool grant expired" notice — run /archive-manage again for follow-up changes.
 
 Unarchived identifies JSONL storage under \`sessions/\`; writer ownership is a separate state reported from fresh atomic lock heartbeats, with live legacy lease-only owners identified during migration. Normal history discovery indexes \`sessions/\`, while archived JSONL files live in \`session-archive/\`.
 
@@ -111,12 +112,22 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 	let active = false;
 	let toolsBeforeArchiveManage: string[] | undefined;
 
-	const restoreTools = (ctx?: ExtensionContext) => {
+	const restoreTools = (ctx?: ExtensionContext, options: { readonly notifyExpired?: boolean } = {}) => {
+		const wasActive = active;
 		active = false;
 		if (toolsBeforeArchiveManage) pi.setActiveTools(toolsBeforeArchiveManage);
 		else pi.setActiveTools(pi.getActiveTools().filter((name) => !TOOL_NAME_SET.has(name)));
 		toolsBeforeArchiveManage = undefined;
 		ctx?.ui.setStatus("archive-manage", undefined);
+		// The grant is deliberately one turn; say so out loud — a silent expiry
+		// reads as broken tools (2026-08-26: a follow-up "delete them" turn with
+		// vanished tools pushed a model into rm'ing 195 transcripts via bash).
+		if (wasActive && options.notifyExpired) {
+			ctx?.ui.notify(
+				"Session tool grant expired. Run /archive-manage again if additional archive management is needed.",
+				"info",
+			);
+		}
 	};
 
 	pi.registerTool({
@@ -167,7 +178,7 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "list_session_archives",
 		label: "List Session Archives",
-		description: `List compact MyPi session metadata with storage-state/age filters, current-branch user-message counts, writer state, and offset pagination. The active filter selects unarchived storage; writerState reports process ownership. Returns at most ${MAX_LIST_LIMIT} records and omits previews by default. Available only during /archive-manage.`,
+		description: `List compact MyPi session metadata with storage-state/age filters, current-branch user-message counts, writer state, and offset pagination. The active filter selects unarchived storage; writerState reports process ownership. Returns at most ${MAX_LIST_LIMIT} records and omits previews by default. The result's details carry machine-readable output: details.sessions (array of records), details.total, details.hasMore — parse those instead of the text. Available only during /archive-manage.`,
 		promptSnippet: "List a bounded page of filtered MyPi sessions",
 		parameters: Type.Object({
 			state: Type.Optional(STATE_SCHEMA),
@@ -205,7 +216,9 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 			const offset = params.offset ?? 0;
 			const limit = params.limit ?? DEFAULT_LIST_LIMIT;
 			const page = records.slice(offset, offset + limit);
-			return textResult(await formatSessionListing(records, page, offset, Boolean(params.include_preview)), {
+			const listing = await formatSessionListing(records, page, offset, Boolean(params.include_preview));
+			return textResult(listing.text, {
+				sessions: listing.sessions,
 				total: records.length,
 				offset,
 				limit,
@@ -384,7 +397,7 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 					failures.push({ sessionId: session.id, reason: compactError(error) });
 				}
 			}
-			return userCountBulkResult(archived, candidates.length, sessions.length, params.max_user_messages, failures);
+			return userCountBulkResult("Archived", archived, candidates.length, sessions.length, params.max_user_messages, failures);
 		},
 	});
 
@@ -500,6 +513,61 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 	});
 
 	pi.registerTool({
+		name: "delete_archived_sessions_with_max_user_messages",
+		label: "Delete Archived Sessions With Max User Messages",
+		description:
+			"Permanently delete every already-archived session whose current branch has at most the requested number of user-role messages. Cannot touch unarchived history: to remove short test sessions permanently, first archive_sessions_with_max_user_messages, then call this. Requires an explicit user deletion request or confirmation and confirm=true. Available only during /archive-manage.",
+		promptSnippet: "Permanently delete archived MyPi sessions by current-branch user-message count",
+		parameters: Type.Object({
+			max_user_messages: USER_MESSAGE_COUNT_SCHEMA,
+			confirm: Type.Literal(true, {
+				description:
+					"Must be true only after the user explicitly requests or confirms this bulk permanent deletion",
+			}),
+		}),
+		async execute(_toolCallId, params) {
+			assertArchiveMode(active);
+			if (params.confirm !== true) throw new Error("Bulk permanent deletion requires confirm=true.");
+			const sessions = await listStoredSessions(paths.archiveRoot);
+			const candidates: SessionInfo[] = [];
+			const failures: BulkFailure[] = [];
+			for (const session of sessions) {
+				try {
+					if ((await countCurrentBranchUserMessages(session.path)) <= params.max_user_messages)
+						candidates.push(session);
+				} catch (error) {
+					failures.push({
+						sessionId: session.id,
+						reason: `could not count user messages: ${compactError(error)}`,
+					});
+				}
+			}
+			let deleted = 0;
+			for (const session of candidates) {
+				try {
+					assertContained(session.path, paths.archiveRoot, "archive");
+					await withSessionWriterLock(session.path, async () => {
+						await removeSubagentParentStorage(dirname(paths.sessionsRoot), session.id);
+						await rm(session.path);
+						await removeEmptyParent(session.path, paths.archiveRoot);
+						deleted++;
+					});
+				} catch (error) {
+					failures.push({ sessionId: session.id, reason: compactError(error) });
+				}
+			}
+			return userCountBulkResult(
+				"Permanently deleted",
+				deleted,
+				candidates.length,
+				sessions.length,
+				params.max_user_messages,
+				failures,
+			);
+		},
+	});
+
+	pi.registerTool({
 		name: "delete_orphaned_session",
 		label: "Delete Orphaned Session",
 		description:
@@ -585,10 +653,10 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 			return undefined;
 		}
 		return {
-			systemPrompt: `${event.systemPrompt}\n\n[ARCHIVE MANAGEMENT ACTIVE]\nUse the temporary archive tools for session-history changes. Treat active as the backward-compatible filter name for unarchived storage and use writerState or session_archive_stats for ownership. Prefer session_archive_stats for broad inventory. Keep listings filtered and paginated; previews are opt-in, and inspect_session_archive is for one record. For age-based or user-message-count bulk requests, call the matching dedicated bulk tool directly instead of listing every match or issuing per-session calls. Permanent deletion requires an explicit user request or confirmation and confirm=true. Preserve the session running this command.`,
+			systemPrompt: `${event.systemPrompt}\n\n[ARCHIVE MANAGEMENT ACTIVE]\nUse the archive tools for ALL session-history changes — never the filesystem or shell; session files must only be moved or deleted through these tools so locks, containment, and tracker cleanup apply. The tool grant expires when this turn ends; if the tools are unavailable, tell the user to run /archive-manage again instead of falling back to bash or scripts. Treat active as the backward-compatible filter name for unarchived storage and use writerState or session_archive_stats for ownership. Prefer session_archive_stats for broad inventory. Keep listings filtered and paginated; previews are opt-in, inspect_session_archive is for one record, and list results carry a machine-readable copy in details.sessions (with details.total/hasMore). For age-based or user-message-count bulk requests, call the matching dedicated bulk tool directly instead of listing every match or issuing per-session calls; bulk permanent deletion of short sessions is archive_sessions_with_max_user_messages followed by delete_archived_sessions_with_max_user_messages. Permanent deletion requires an explicit user request or confirmation and confirm=true. Preserve the session running this command.`,
 		};
 	});
-	pi.on("agent_end", (_event, ctx) => restoreTools(ctx));
+	pi.on("agent_end", (_event, ctx) => restoreTools(ctx, { notifyExpired: true }));
 	pi.on("session_start", (_event, ctx) => restoreTools(ctx));
 	pi.on("session_shutdown", () => restoreTools());
 
@@ -636,21 +704,21 @@ async function formatSessionListing(
 	page: readonly SessionRecord[],
 	offset: number,
 	includePreview: boolean,
-): Promise<string> {
-	if (matches.length === 0) return "No matching sessions found.";
+): Promise<{ readonly text: string; readonly sessions: readonly Record<string, unknown>[] }> {
+	if (matches.length === 0) return { text: "No matching sessions found.", sessions: [] };
 	const unarchived = matches.filter((record) => record.state === "active").length;
 	const archived = matches.length - unarchived;
 	const first = page.length === 0 ? 0 : offset + 1;
 	const last = offset + page.length;
 	const hasMore = last < matches.length;
-	const header = `Matched ${matches.length} stored sessions (unarchived ${unarchived}, archived ${archived}); showing ${first}-${last}.${hasMore ? ` Use offset=${last} for more.` : ""}`;
-	const lines = await Promise.all(
+	const header = `Matched ${matches.length} stored sessions (unarchived ${unarchived}, archived ${archived}); showing ${first}-${last}.${hasMore ? ` Use offset=${last} for more.` : ""} Structured records: details.sessions.`;
+	const sessions = await Promise.all(
 		page.map(async ({ state, session }) => {
 			const [userMessageCount, writerStatus] = await Promise.all([
 				countCurrentBranchUserMessages(session.path),
 				inspectWriterStatus(session.path),
 			]);
-			return JSON.stringify({
+			return {
 				storageState: storageStateLabel(state),
 				sessionId: session.id,
 				modifiedAt: session.modified.toISOString(),
@@ -660,10 +728,10 @@ async function formatSessionListing(
 				userMessageCount,
 				...writerStatusMetadata(writerStatus),
 				preview: includePreview ? compactText(session.firstMessage, MAX_PREVIEW_CHARS) : undefined,
-			});
+			};
 		}),
 	);
-	return [header, ...lines].join("\n");
+	return { text: [header, ...sessions.map((record) => JSON.stringify(record))].join("\n"), sessions };
 }
 
 function storageStateLabel(state: SessionState): "unarchived" | "archived" {
@@ -733,13 +801,15 @@ function bulkResult(
 }
 
 function userCountBulkResult(
+	verb: "Archived" | "Permanently deleted",
 	completed: number,
 	matched: number,
 	scanned: number,
 	maxUserMessages: number,
 	failures: readonly BulkFailure[],
 ) {
-	let text = `Archived ${completed}/${matched} matching unarchived sessions with at most ${maxUserMessages} user messages (scanned ${scanned}).`;
+	const scope = verb === "Archived" ? "unarchived" : "archived";
+	let text = `${verb} ${completed}/${matched} matching ${scope} sessions with at most ${maxUserMessages} user messages (scanned ${scanned}).`;
 	if (failures.length > 0) {
 		const shown = failures.slice(0, MAX_FAILURES_SHOWN).map((failure) => `${failure.sessionId} (${failure.reason})`);
 		text += `\nSkipped/failed ${failures.length}: ${shown.join("; ")}`;
