@@ -73,7 +73,7 @@ export interface WarningSettings {
 
 export interface SafetySettings {
 	defaultMode?: SafetyMode;
-	/** false disables the dangerous-bash-command guard (default on, all modes). */
+	/** false disables the dangerous-bash-command guard (default on; active in full access only). */
 	bashGuard?: boolean;
 }
 

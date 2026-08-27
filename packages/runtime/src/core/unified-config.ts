@@ -207,7 +207,7 @@ const CONFIG_NOTES: Record<string, string> = {
 	"shared.defaultModel": "provider/model, or null for automatic. New sessions.",
 	"shared.serviceTier": "default | priority. Applies at the next turn boundary.",
 	"shared.honestUserAgent": "true advertises pizzeria/<version>. Effective within ~5s.",
-	"shared.safety": "defaultMode: safe|sandbox|sandbox-ask|ask|full. bashGuard: false disables dangerous-command interception. New sessions only.",
+	"shared.safety": "defaultMode: safe|sandbox|sandbox-ask|ask|full. bashGuard: false disables dangerous-command interception (full access only). New sessions only.",
 	"shared.thinking": "defaultLevel: off..max. New sessions only; clamped per model.",
 	"shared.tools": "mode: flat|code|compatible. Needs a daemon restart.",
 	"shared.transport": "sse|websocket|websocket-cached|auto. New sessions.",

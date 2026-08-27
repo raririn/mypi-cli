@@ -1,11 +1,13 @@
 /**
  * Heuristic dangerous-command interception for the bash tool.
  *
- * The guard runs as a product extension so it applies in every safety mode —
- * including "full", which skips the runtime safety gate entirely. It blocks a
- * small curated set of high-blast-radius shell patterns (full-filesystem
- * find scans, root/home-wiping rm, recursive chmod of system trees,
- * filesystem-destroying writes). A blocked call returns an instruction the
+ * The guard applies in FULL ACCESS only — the one mode with no other gate in
+ * front of bash. Bounded modes stand down: the sandbox would deny the command
+ * anyway (approving here and then watching the sandbox block it would be a
+ * confusing double gate), and ask/sandbox-ask already route bash through
+ * their own user approval. It blocks a small curated set of high-blast-radius
+ * shell patterns (full-filesystem find scans, root/home-wiping rm, recursive
+ * chmod of system trees, filesystem-destroying writes). A blocked call returns an instruction the
  * model can act on: reconsider, or re-run the exact same command to request
  * user approval. The exact re-run triggers a blocking confirm dialog; the
  * command executes only if the user approves, and an approval admits exactly
@@ -366,6 +368,9 @@ export default function bashGuardExtension(pi: ExtensionAPI): void {
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== "bash") return undefined;
+		// Full access only (checked per call — the mode can change between
+		// runs). A disabled safety policy behaves as full and keeps the guard.
+		if (pi.getSafetyState().effective !== "full") return undefined;
 		const command = String(event.input.command ?? "");
 		const match = detectDangerousCommand(command);
 		if (!match) return undefined;

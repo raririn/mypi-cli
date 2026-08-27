@@ -119,7 +119,7 @@ describe("bash-guard block message", () => {
 
 type Handler = (event: any, ctx: any) => unknown;
 
-function createFakePi() {
+function createFakePi(effectiveMode = "full") {
 	const handlers = new Map<string, Handler[]>();
 	const pi = {
 		on(event: string, handler: Handler) {
@@ -128,6 +128,7 @@ function createFakePi() {
 			handlers.set(event, list);
 		},
 		events: { emit() {} },
+		getSafetyState: () => ({ effective: effectiveMode, enabled: true }),
 	};
 	const fire = async (event: string, payload: any, ctx: any) => {
 		let result: unknown;
@@ -212,6 +213,15 @@ describe("bash-guard extension flow", () => {
 		const second = (await fire("tool_call", bashCall("rm -rf /"), ctx)) as any;
 		assert.equal(second.block, true);
 		assert.match(second.reason, /no approval UI/);
+	});
+
+	it("stands down outside full access — bounded modes have their own gates", async () => {
+		for (const mode of ["safe", "sandbox", "sandbox-ask", "ask"]) {
+			const { pi, fire } = createFakePi(mode);
+			bashGuardExtension(pi as any);
+			const ctx = { hasUI: true, ui: { confirm: async () => { throw new Error("confirm must not be called"); } } };
+			assert.equal(await fire("tool_call", bashCall("rm -rf /"), ctx), undefined, mode);
+		}
 	});
 
 	it("ignores safe commands and non-bash tools", async () => {
