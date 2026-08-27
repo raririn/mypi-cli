@@ -178,7 +178,7 @@ const SHARED_KEY_ORDER = [
 	"history", "subagents", "tracking",
 	"mcp",
 ];
-const GUI_KEY_ORDER = ["appMode", "favouritePi", "theme", "layout", "shortcuts", "remoteHosts"];
+const GUI_KEY_ORDER = ["appMode", "favouritePi", "thinkingView", "noticeTimeoutSeconds", "theme", "layout", "shortcuts", "remoteHosts"];
 
 function orderRecord(source: ConfigRecord, preferred: readonly string[]): ConfigRecord {
 	const ordered: ConfigRecord = {};
@@ -239,6 +239,7 @@ const CONFIG_NOTES: Record<string, string> = {
 	"gui.layout": "Rail/workbench widths in px. Immediate.",
 	"gui.shortcuts": "Keyboard chords. Applied on the GUI's next config load.",
 	"gui.remoteHosts": "Saved SSH remote hosts (managed via the GUI).",
+	"gui.noticeTimeoutSeconds": "Toast auto-fade seconds (3-300). Applied on app start.",
 };
 
 function applyGeneratedComments(document: Document): void {

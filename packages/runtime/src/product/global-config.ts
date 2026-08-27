@@ -70,6 +70,8 @@ export interface GuiConfig {
 	/** Timeline thinking-block folding: "verbose" renders every block open,
 	 *  "minimal" (default) folds them all. Toggled live via shortcut/palette. */
 	readonly thinkingView: "verbose" | "minimal";
+	/** Toast auto-fade timeout in seconds (applied on app start). */
+	readonly noticeTimeoutSeconds: number;
 	readonly layout: { readonly railWidth: number; readonly workbenchWidth: number };
 	readonly shortcuts: {
 		readonly home: string;
@@ -177,6 +179,7 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfig = Object.freeze({
 		favouritePi: "rotate",
 		theme: Object.freeze({ mode: "dark", preset: "default" }),
 		thinkingView: "minimal" as const,
+		noticeTimeoutSeconds: 20,
 		layout: Object.freeze({ railWidth: 256, workbenchWidth: 576 }),
 		shortcuts: Object.freeze({
 			home: "CmdOrCtrl+Shift+H",
@@ -220,6 +223,7 @@ export type GlobalConfigField =
 	| "gui.appMode"
 	| "gui.favouritePi"
 	| "gui.thinkingView"
+	| "gui.noticeTimeoutSeconds"
 	| "gui.theme.mode"
 	| "gui.theme.preset"
 	| "gui.layout.railWidth"
@@ -248,7 +252,7 @@ const GLOBAL_CONFIG_FIELDS = new Set<GlobalConfigField>([
 	"history.autoArchive", "history.shortTestMaxWords", "history.maxActive", "history.maxArchived",
 	"subagents.advisorModel", "subagents.advisorThinkingLevel", "subagents.requireAdvisor", "subagents.requireReviewer",
 	"tracking.maxSessionCheckpoints", "tracking.maxDetachedCheckpoints", "tracking.warningFiles", "tracking.warningBytes",
-	"gui.appMode", "gui.favouritePi", "gui.thinkingView", "gui.theme.mode", "gui.theme.preset", "gui.layout.railWidth", "gui.layout.workbenchWidth",
+	"gui.appMode", "gui.favouritePi", "gui.thinkingView", "gui.noticeTimeoutSeconds", "gui.theme.mode", "gui.theme.preset", "gui.layout.railWidth", "gui.layout.workbenchWidth",
 	"gui.shortcuts.home", "gui.shortcuts.newSession",
 	"gui.shortcuts.commandPalette", "gui.shortcuts.globalSearch", "gui.shortcuts.threadSearch",
 	"gui.shortcuts.terminal", "gui.shortcuts.sidebar", "gui.shortcuts.openFolder", "gui.shortcuts.settings",
@@ -830,6 +834,7 @@ function parseConfigRecord(
 				appMode: gui.appMode === "chat" ? "chat" : DEFAULT_GLOBAL_CONFIG.gui.appMode,
 				favouritePi: isPiIdentitySlug(gui.favouritePi) ? gui.favouritePi : DEFAULT_GLOBAL_CONFIG.gui.favouritePi,
 				thinkingView: gui.thinkingView === "verbose" ? "verbose" : DEFAULT_GLOBAL_CONFIG.gui.thinkingView,
+				noticeTimeoutSeconds: readBoundedInteger(gui.noticeTimeoutSeconds, 3, 300, DEFAULT_GLOBAL_CONFIG.gui.noticeTimeoutSeconds),
 				theme: {
 					mode: guiTheme.mode === "light" ? "light" : DEFAULT_GLOBAL_CONFIG.gui.theme.mode,
 					preset: isGuiThemePreset(guiTheme.preset) ? guiTheme.preset : DEFAULT_GLOBAL_CONFIG.gui.theme.preset,
@@ -876,6 +881,7 @@ function parseConfigRecord(
 			|| (gui.appMode !== undefined && gui.appMode !== "work" && gui.appMode !== "chat")
 			|| (gui.favouritePi !== undefined && !isPiIdentitySlug(gui.favouritePi))
 			|| (gui.thinkingView !== undefined && gui.thinkingView !== "verbose" && gui.thinkingView !== "minimal")
+			|| !validOptionalInteger(gui.noticeTimeoutSeconds, 3, 300)
 			|| (guiTheme.mode !== undefined && guiTheme.mode !== "dark" && guiTheme.mode !== "light")
 			|| (guiTheme.preset !== undefined && !isGuiThemePreset(guiTheme.preset))
 			|| !validOptionalInteger(guiLayout.railWidth, 200, 440)
@@ -1009,6 +1015,7 @@ function cloneDefaults(): GlobalConfig {
 			appMode: DEFAULT_GLOBAL_CONFIG.gui.appMode,
 			favouritePi: DEFAULT_GLOBAL_CONFIG.gui.favouritePi,
 			thinkingView: DEFAULT_GLOBAL_CONFIG.gui.thinkingView,
+			noticeTimeoutSeconds: DEFAULT_GLOBAL_CONFIG.gui.noticeTimeoutSeconds,
 			theme: { ...DEFAULT_GLOBAL_CONFIG.gui.theme },
 			layout: { ...DEFAULT_GLOBAL_CONFIG.gui.layout },
 			shortcuts: { ...DEFAULT_GLOBAL_CONFIG.gui.shortcuts },
