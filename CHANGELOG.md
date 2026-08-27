@@ -35,6 +35,9 @@ Unified configuration + archive-manage hardening:
   to OpenAI Codex. Supports edits via up to 5 workspace-contained input
   images; files land in `generated-images/`; results carry an image block
   so the TUI (kitty/iterm) and GUI render them inline.
+- `imageGen.provider` is a first-class config field (sanitized wire +
+  update_global_config), so the GUI offers Settings → General → "Image
+  generation" instead of hand-editing config.yaml.
 - GUI config gains `gui.thinkingView` ("verbose" | "minimal", default
   minimal) and the `gui.shortcuts.thinkingView` chord (default
   CmdOrCtrl+Shift+V) for the desktop thinking-block folding toggle.

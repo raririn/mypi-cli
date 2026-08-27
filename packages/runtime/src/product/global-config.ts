@@ -120,6 +120,9 @@ export interface GlobalConfig {
 	readonly tools: ToolsProjectionConfig;
 	readonly safety: SafetyDefaultsConfig;
 	readonly thinking: ThinkingDefaultsConfig;
+	/** Image generation (generate_image tool). provider null = off; the tool
+	 *  additionally requires a matching OAuth credential. New sessions. */
+	readonly imageGen: { readonly provider: "openai-codex" | null };
 	readonly history: HistoryConfig;
 	readonly subagents: SubagentsConfig;
 	readonly tracking: TrackingConfig;
@@ -155,6 +158,7 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfig = Object.freeze({
 	tools: Object.freeze({ mode: "compatible" as const }),
 	safety: Object.freeze({ defaultMode: DEFAULT_SAFETY_MODE }),
 	thinking: Object.freeze({ defaultLevel: "medium" as const }),
+	imageGen: Object.freeze({ provider: null }),
 	history: Object.freeze({
 		autoArchive: true,
 		shortTestMaxWords: 10,
@@ -203,6 +207,7 @@ export type GlobalConfigField =
 	| "tools.mode"
 	| "safety.defaultMode"
 	| "thinking.defaultLevel"
+	| "imageGen.provider"
 	| `history.${HistoryKey}`
 	| "subagents.advisorModel"
 	| "subagents.advisorThinkingLevel"
@@ -239,7 +244,7 @@ export interface SanitizedGlobalConfig extends Omit<GlobalConfig, "mcp"> {
 	readonly mcpServerIds: readonly string[];
 }
 const GLOBAL_CONFIG_FIELDS = new Set<GlobalConfigField>([
-	"defaultModel", "serviceTier", "honestUserAgent", "tools.mode", "safety.defaultMode", "thinking.defaultLevel",
+	"defaultModel", "serviceTier", "honestUserAgent", "tools.mode", "safety.defaultMode", "thinking.defaultLevel", "imageGen.provider",
 	"history.autoArchive", "history.shortTestMaxWords", "history.maxActive", "history.maxArchived",
 	"subagents.advisorModel", "subagents.advisorThinkingLevel", "subagents.requireAdvisor", "subagents.requireReviewer",
 	"tracking.maxSessionCheckpoints", "tracking.maxDetachedCheckpoints", "tracking.warningFiles", "tracking.warningBytes",
@@ -771,6 +776,8 @@ function parseConfigRecord(
 		if (!isRecord(safety)) return { diagnostic: invalidOwnedConfig(path) };
 		const thinking = shared.thinking === undefined ? {} : shared.thinking;
 		if (!isRecord(thinking)) return { diagnostic: invalidOwnedConfig(path) };
+		const imageGen = shared.imageGen === undefined ? {} : shared.imageGen;
+		if (!isRecord(imageGen)) return { diagnostic: invalidOwnedConfig(path) };
 		const history = shared.history === undefined ? {} : shared.history;
 		if (!isRecord(history)) return { diagnostic: invalidOwnedConfig(path) };
 		const subagents = shared.subagents === undefined ? {} : shared.subagents;
@@ -796,6 +803,7 @@ function parseConfigRecord(
 			tools: { mode: readToolsProjectionMode(isRecord(shared.tools) ? (shared.tools as ConfigRecord).mode : undefined) },
 			safety: { defaultMode: isSafetyMode(safety.defaultMode) ? safety.defaultMode : DEFAULT_GLOBAL_CONFIG.safety.defaultMode },
 			thinking: { defaultLevel: isDefaultThinkingLevel(thinking.defaultLevel) ? thinking.defaultLevel : DEFAULT_GLOBAL_CONFIG.thinking.defaultLevel },
+			imageGen: { provider: imageGen.provider === "openai-codex" ? "openai-codex" : null },
 			history: {
 				autoArchive: readBoolean(history.autoArchive, DEFAULT_GLOBAL_CONFIG.history.autoArchive),
 				shortTestMaxWords: readBoundedInteger(history.shortTestMaxWords, 1, 100, DEFAULT_GLOBAL_CONFIG.history.shortTestMaxWords),
@@ -845,6 +853,8 @@ function parseConfigRecord(
 			(isRecord(shared.tools) && (shared.tools as ConfigRecord).mode !== undefined && !isToolsProjectionMode((shared.tools as ConfigRecord).mode)) ||
 			(safety.defaultMode !== undefined && !isSafetyMode(safety.defaultMode)) ||
 			(thinking.defaultLevel !== undefined && !isDefaultThinkingLevel(thinking.defaultLevel)) ||
+			(imageGen.provider !== undefined && imageGen.provider !== null && imageGen.provider !== "openai-codex") ||
+			(imageGen.endpoint !== undefined && !safeShortText(imageGen.endpoint)) ||
 			(history.autoArchive !== undefined && typeof history.autoArchive !== "boolean") ||
 			!validOptionalInteger(history.shortTestMaxWords, 1, 100) ||
 			!validOptionalInteger(history.maxActive, 1, 1_000) ||
@@ -991,6 +1001,7 @@ function cloneDefaults(): GlobalConfig {
 		tools: { ...DEFAULT_GLOBAL_CONFIG.tools },
 		safety: { ...DEFAULT_GLOBAL_CONFIG.safety },
 		thinking: { ...DEFAULT_GLOBAL_CONFIG.thinking },
+		imageGen: { ...DEFAULT_GLOBAL_CONFIG.imageGen },
 		history: { ...DEFAULT_GLOBAL_CONFIG.history },
 		subagents: { ...DEFAULT_GLOBAL_CONFIG.subagents },
 		tracking: { ...DEFAULT_GLOBAL_CONFIG.tracking },
