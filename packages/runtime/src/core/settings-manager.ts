@@ -85,6 +85,15 @@ export const DEFAULT_TOOLS_MODE: ToolsMode = "compatible";
 
 export type DefaultProjectTrust = "ask" | "always" | "never";
 
+/** Image-generation feature configuration (shared: section of config.yaml).
+ *  The generate_image tool registers only when `provider` names a supported
+ *  backend AND the matching OAuth credential exists in auth.json. */
+export interface ImageGenSettings {
+	provider?: "openai-codex";
+	/** Base endpoint override; defaults to https://chatgpt.com/backend-api/codex */
+	endpoint?: string;
+}
+
 export type TransportSetting = Transport;
 
 /**
@@ -148,6 +157,7 @@ export interface Settings {
 	warnings?: WarningSettings;
 	safety?: SafetySettings; // host-global default captured only by newly created sessions
 	tools?: ToolsSettings; // FEAT-087: tool-projection mode (flat | code | code-only)
+	imageGen?: ImageGenSettings; // enables the generate_image tool when a supported provider is configured
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
 	httpProxy?: string; // Proxy URL applied as HTTP_PROXY and HTTPS_PROXY for Pi-managed HTTP clients
 	httpIdleTimeoutMs?: number; // HTTP header/body idle timeout in milliseconds; 0 disables it
@@ -911,6 +921,11 @@ export class SettingsManager {
 		this.globalSettings.tools.mode = mode;
 		this.markModified("tools", "mode");
 		this.save();
+	}
+
+	/** Image-generation feature configuration; undefined when not configured. */
+	getImageGen(): ImageGenSettings | undefined {
+		return this.settings.imageGen;
 	}
 
 	setDefaultSafetyMode(mode: SafetyMode): void {

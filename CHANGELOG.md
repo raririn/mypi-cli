@@ -27,6 +27,14 @@ Unified configuration + archive-manage hardening:
   with the exact typed invocation (`mypiCommandInvocation`), so clients can
   render one command chip instead of echoing both the typed command and the
   rewritten kickoff.
+- **Image generation (`generate_image`)**: a new tool backed by OpenAI's
+  Codex image backend (`gpt-image-2`), using the existing openai-codex OAuth
+  (honest `originator: pi` identity; subscription-scoped `image_gen` limits
+  surface as friendly messages). Advertised ONLY when configured: set
+  `shared.imageGen.provider: openai-codex` in config.yaml AND be signed in
+  to OpenAI Codex. Supports edits via up to 5 workspace-contained input
+  images; files land in `generated-images/`; results carry an image block
+  so the TUI (kitty/iterm) and GUI render them inline.
 - GUI config gains `gui.thinkingView` ("verbose" | "minimal", default
   minimal) and the `gui.shortcuts.thinkingView` chord (default
   CmdOrCtrl+Shift+V) for the desktop thinking-block folding toggle.

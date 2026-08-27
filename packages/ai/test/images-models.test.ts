@@ -195,15 +195,21 @@ describe("ImagesModels", () => {
 		await expect(models.refresh()).resolves.toBeUndefined();
 	});
 
-	it("builtinImagesModels registers the openrouter provider with its catalog", async () => {
+	it("builtinImagesModels registers the openrouter and openai-codex providers with their catalogs", async () => {
 		const models = builtinImagesModels({ authContext: fakeAuthContext({ OPENROUTER_API_KEY: "or-key" }) });
 		const providers = models.getProviders();
-		expect(providers.map((p) => p.id)).toEqual(["openrouter"]);
+		expect(providers.map((p) => p.id)).toEqual(["openrouter", "openai-codex"]);
 
 		const list = models.getModels("openrouter");
 		expect(list.length).toBeGreaterThan(0);
 		expect(list.every((m) => m.api === "openrouter-images")).toBe(true);
 
 		expect((await models.getAuth(list[0]))?.auth.apiKey).toBe("or-key");
+
+		const codexList = models.getModels("openai-codex");
+		expect(codexList.map((m) => m.id)).toEqual(["gpt-image-2"]);
+		expect(codexList.every((m) => m.api === "openai-codex-images")).toBe(true);
+		// OAuth-only provider: unconfigured (no stored credential) resolves to no auth.
+		expect(await models.getAuth("openai-codex")).toBeUndefined();
 	});
 });

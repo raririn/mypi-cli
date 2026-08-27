@@ -3,6 +3,7 @@ import compactionRecallExtension from "./compaction-recall.ts";
 import guiControlExtension from "./gui-control/index.ts";
 import globalConfigExtension from "./global-config.ts";
 import hooksExtension from "./hooks.ts";
+import imageGenExtension from "./image-gen.ts";
 import llamaExtension from "./llama/index.ts";
 import agentSignalsExtension from "./mypi-agent-signals.ts";
 import askUserExtension from "./mypi-ask-user.ts";
@@ -46,6 +47,7 @@ export const productModules: readonly ProductModule[] = [
 	defineProductModule("tui-hero", "surface", pizzaHeroExtension),
 	defineProductModule("safety", "required", safetyExtension),
 	defineProductModule("web", "capability", webSearchExtension),
+	defineProductModule("image-gen", "capability", imageGenExtension),
 	defineProductModule("identity", "required", identityExtension),
 	defineProductModule("credential-redaction", "required", credentialRedactionExtension),
 	defineProductModule("agent-signals", "capability", agentSignalsExtension),
