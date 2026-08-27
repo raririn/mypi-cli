@@ -185,26 +185,43 @@ test("manual or existing names win over delayed generation and later inputs neve
   });
 });
 
-test("non-TUI modes, extension input, and missing model authentication do not name a session", async () => {
+test("rpc engines title like the TUI; headless modes, extension input, and missing model authentication do not", async () => {
   await withAgentDir(async (agentDir) => {
     const manager = SessionManager.create(join(agentDir, "workspace"));
     let calls = 0;
-    const harness = createHarness(manager, async () => { calls += 1; return "Should not apply"; });
+    const harness = createHarness(manager, async () => { calls += 1; return "Generated title"; });
+    // Daemon-served (GUI) engines run mode "rpc" — they title now; only
+    // extension-injected prompts stay excluded.
     const rpcContext = { ...harness.context, mode: "rpc" };
     await harness.emit("session_start", { reason: "startup" }, rpcContext);
-    await harness.emit("input", { source: "interactive", text: "RPC prompt" }, rpcContext);
-    await harness.emit("input", { source: "extension", text: "Injected prompt" });
+    await harness.emit("input", { source: "extension", text: "Injected prompt" }, rpcContext);
     await flushAsyncWork();
     assert.equal(calls, 0);
-    assert.equal(manager.getSessionName(), undefined);
+    await harness.emit("input", { source: "rpc", text: "RPC prompt" }, rpcContext);
+    await flushAsyncWork();
+    assert.equal(calls, 1);
+    assert.equal(manager.getSessionName(), "Generated title");
 
-    manager.appendMessage({ role: "user", content: "No selected model", timestamp: Date.now() });
-    manager.appendMessage(assistantMessage("Response"));
-    const defaultHarness = createHarness(manager);
+    // Headless modes never title.
+    const headlessManager = SessionManager.create(join(agentDir, "headless"));
+    let headlessCalls = 0;
+    const headlessHarness = createHarness(headlessManager, async () => { headlessCalls += 1; return "Should not apply"; });
+    const headlessContext = { ...headlessHarness.context, mode: "json" };
+    await headlessHarness.emit("session_start", { reason: "startup" }, headlessContext);
+    await headlessHarness.emit("input", { source: "rpc", text: "Headless prompt" }, headlessContext);
+    await flushAsyncWork();
+    assert.equal(headlessCalls, 0);
+    assert.equal(headlessManager.getSessionName(), undefined);
+
+    // Missing model auth: fresh session (the rpc one above is titled now).
+    const unauthedManager = SessionManager.create(join(agentDir, "unauthed"));
+    unauthedManager.appendMessage({ role: "user", content: "No selected model", timestamp: Date.now() });
+    unauthedManager.appendMessage(assistantMessage("Response"));
+    const defaultHarness = createHarness(unauthedManager);
     registerTuiAutoTitle(defaultHarness.api as any);
     await defaultHarness.emit("session_start", { reason: "startup" });
     await flushAsyncWork();
-    assert.equal(manager.getSessionName(), undefined);
+    assert.equal(unauthedManager.getSessionName(), undefined);
   });
 });
 

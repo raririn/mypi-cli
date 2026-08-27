@@ -64,7 +64,11 @@ export function registerTuiAutoTitle(
 
   pi.on("session_start", (_event, ctx) => {
     cancelPending();
-    active = ctx.mode === "tui";
+    // Interactive surfaces: the TUI, and rpc engines (daemon-served GUI
+    // sessions — their sessions were never model-titled, so every GUI row
+    // fell back to the raw first user message). Headless one-shot modes
+    // stay untitled.
+    active = ctx.mode === "tui" || ctx.mode === "rpc";
     attempted = false;
     sessionId = ctx.sessionManager.getSessionId();
     if (!active || pi.getSessionName()) return;
@@ -74,7 +78,7 @@ export function registerTuiAutoTitle(
   });
 
   pi.on("input", (event, ctx) => {
-    if (event.source === "interactive") start(event.text, ctx);
+    if (event.source === "interactive" || event.source === "rpc") start(event.text, ctx);
     return undefined;
   });
 
