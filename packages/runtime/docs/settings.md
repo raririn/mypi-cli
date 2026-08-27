@@ -1,13 +1,46 @@
 # Settings
 
-Pi uses JSON settings files with project settings overriding global settings.
+## The unified configuration authority (config.yaml v2)
+
+Since 2.0.0-beta.12, all global user-facing settings live in **one file**:
+`~/.mypi/agent/config.yaml` (version 2), namespaced by owner:
+
+| Section | Owner | Examples |
+|---------|-------|----------|
+| `shared:` | Every client and the daemon | `defaultModel`, `serviceTier`, `safety.defaultMode`, `thinking.defaultLevel`, `tools.mode`, `history`, `subagents`, `tracking`, `compaction`, `retry`, `mcp` |
+| `cli:` | mypi TUI only | `theme`, `terminal`, `editorPaddingX`, `doubleEscapeAction`, … |
+| `gui:` | pizzeria desktop only | `appMode`, `theme`, `layout`, `shortcuts`, `remoteHosts` |
+
+Clients only load their own section plus `shared` — the GUI never receives
+`cli:`, the CLI never reads `gui:`. Keys are written in a fixed order and the
+file carries generated comments noting when each value takes effect
+(immediately, next session, or after a daemon restart). Comments are
+regenerated on every programmatic write, so hand-written comments do not
+survive; hand-edited *values* are honored.
+
+A one-shot migration (run automatically at CLI startup and daemon boot) lifts
+version-1 files and absorbs the old settings.json preferences; originals are
+backed up under `~/.mypi/agent/backups/unified-config/`.
+
+`~/.mypi/agent/settings.json` remains only as a machine-managed registry
+(installed resource lists such as `packages`/`extensions`/`skills`, the
+changelog stamp, the analytics id, and the legacy provider/model pair). It is
+not user configuration.
+
+## Scopes
+
+Project settings override global settings; nested objects merge one level.
 
 | Location | Scope |
 |----------|-------|
-| `~/.pi/agent/settings.json` | Global (all projects) |
-| `.pi/settings.json` | Project (current directory) |
+| `~/.mypi/agent/config.yaml` | Global (all projects), sections above |
+| `.mypi/settings.json` | Project (current directory), flat JSON keys |
 
-Edit directly or use `/settings` for common options.
+Edit directly or use `/settings` for common options. The flat key names in
+the tables below are the canonical setting identifiers: in the global file
+they live inside their section (renames: `defaultThinkingLevel` →
+`shared.thinking.defaultLevel`; `safety`/`tools` → `shared.safety`/
+`shared.tools`); in project settings.json they stay flat.
 
 ## Project Trust
 

@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+Unified configuration + archive-manage hardening:
+
+- **Unified config.yaml v2 — the single settings authority.** All global
+  user-facing settings now live in `~/.mypi/agent/config.yaml`, namespaced
+  `shared:` / `cli:` / `gui:`, with deterministic key order and generated
+  comments noting when each value takes effect. Clients only load their own
+  section plus `shared`. A one-shot migration (CLI startup and daemon boot)
+  lifts version-1 files and absorbs settings.json preferences, backing up
+  originals under `backups/unified-config/`. `settings.json` is demoted to
+  the machine registry (resource lists, changelog stamp, analytics id).
+  `safety.defaultMode` and `thinking.defaultLevel` are native config fields;
+  the daemon's `update_global_config` handles every field through one path.
+  See `packages/runtime/docs/settings.md`.
+- **/archive-manage post-incident hardening**: the one-turn tool grant now
+  expires loudly ("Session tool grant expired. Run /archive-manage again…");
+  the system prompt forbids filesystem fallbacks for session files; listings
+  carry machine-readable `details.sessions`/`total`/`hasMore`; and the new
+  `delete_archived_sessions_with_max_user_messages` completes the guarded
+  bulk path for short test sessions (archive by count, then delete archived
+  by count).
+- Slash commands that rewrite the prompt (`/archive-manage`, `/goal`,
+  `/plan`, `/readonly`, `/chat-manage`, …) tag the dispatched user message
+  with the exact typed invocation (`mypiCommandInvocation`), so clients can
+  render one command chip instead of echoing both the typed command and the
+  rewritten kickoff.
+
 - Code Mode dogfood round 1: `ALL_TOOLS` is now actually defined inside
   cells (was promised by the contract but never injected); goal tools
   (`create_goal`/`get_goal`/`get_goal_plan`) are cell-callable — only
