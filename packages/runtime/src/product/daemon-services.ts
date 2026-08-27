@@ -25,6 +25,7 @@ import {
 } from "./global-config.ts";
 import { canonicalizePath } from "../utils/paths.ts";
 import { findInitialModel } from "../core/model-resolver.ts";
+import type { ModelRuntime } from "../core/model-runtime.ts";
 
 const MAX_DISCOVERED_FILES = 10_000;
 const MAX_SCAN_DEPTH = 4;
@@ -340,23 +341,38 @@ export async function getDaemonModelCatalog(cwd: string, agentDir = getAgentDir(
 	// cached runtime for the daemon's whole lifetime (same rule as the RPC
 	// path and listDaemonAuthProviders).
 	await services.modelRuntime.reloadPersistedModelState();
+	const initial = await resolveInitialDefaultModel(services.modelRuntime, services.settingsManager, agentDir);
+	return {
+		models: services.modelRuntime.getAvailableSnapshot().map(serializeModel),
+		defaultModel: initial ? serializeModel(initial) : null,
+	};
+}
+
+/**
+ * The model a new session would start with: the config.yaml default when it
+ * resolves against the available catalog, else the model-resolver fallback
+ * chain. Shared by the daemon catalog and the per-session RPC catalog so
+ * every catalog surface reports the same default.
+ */
+export async function resolveInitialDefaultModel(
+	modelRuntime: ModelRuntime,
+	settingsManager: SettingsManager,
+	agentDir = getAgentDir(),
+): Promise<Model<Api> | undefined> {
 	const configuredDefault = splitConfiguredDefaultModel(await resolveConfiguredDefaultModel({
 		path: join(resolve(agentDir), "config.yaml"),
-		legacyProvider: services.settingsManager.getLegacyGlobalDefaultProvider(),
-		legacyModelId: services.settingsManager.getLegacyGlobalDefaultModel(),
+		legacyProvider: settingsManager.getLegacyGlobalDefaultProvider(),
+		legacyModelId: settingsManager.getLegacyGlobalDefaultModel(),
 	}));
 	const initial = await findInitialModel({
 		scopedModels: [],
 		isContinuing: false,
 		defaultProvider: configuredDefault?.provider,
 		defaultModelId: configuredDefault?.modelId,
-		defaultThinkingLevel: services.settingsManager.getDefaultThinkingLevel(),
-		modelRuntime: services.modelRuntime,
+		defaultThinkingLevel: settingsManager.getDefaultThinkingLevel(),
+		modelRuntime,
 	});
-	return {
-		models: services.modelRuntime.getAvailableSnapshot().map(serializeModel),
-		defaultModel: initial.model ? serializeModel(initial.model) : null,
-	};
+	return initial.model ?? undefined;
 }
 
 /** One selectable login flow (a provider appears once per supported flow,

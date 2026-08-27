@@ -29,6 +29,7 @@ import {
 import { SessionManager } from "../../core/session-manager.ts";
 import { hasProductAuthority } from "../../core/source-info.ts";
 import { killTrackedDetachedChildren } from "../../utils/shell.ts";
+import { resolveInitialDefaultModel } from "../../product/daemon-services.ts";
 import { type Theme, theme } from "../interactive/theme/theme.ts";
 import { attachJsonlLineReader, serializeJsonLine } from "./jsonl.ts";
 import type {
@@ -686,7 +687,17 @@ export async function runRpcMode(runtimeHost: AgentSessionRuntime): Promise<neve
 
 			case "get_available_models": {
 				const models = await getExternallyCurrentModels();
-				return success(id, "get_available_models", { models });
+				// Same default the daemon catalog reports, so a session-level
+				// catalog refresh cannot strip the default-model flag the GUI
+				// uses to seed new drafts.
+				let defaultModel: { provider: string; id: string } | null = null;
+				try {
+					const initial = await resolveInitialDefaultModel(session.modelRuntime, session.settingsManager);
+					defaultModel = initial ? { provider: initial.provider, id: initial.id } : null;
+				} catch {
+					// Best-effort: the models list is still useful without it.
+				}
+				return success(id, "get_available_models", { models, defaultModel });
 			}
 
 			// =================================================================

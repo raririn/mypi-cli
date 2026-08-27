@@ -231,7 +231,7 @@ export type RpcResponse =
 			type: "response";
 			command: "get_available_models";
 			success: true;
-			data: { models: Model<any>[] };
+			data: { models: Model<any>[]; defaultModel?: { provider: string; id: string } | null };
 	  }
 
 	// Thinking
