@@ -248,6 +248,60 @@ describe("AgentSession prompt characterization", () => {
 		expect(harness.getPendingResponseCount()).toBe(1);
 	});
 
+	it("tags command-handler sendUserMessage with the typed invocation", async () => {
+		// Slash commands rewrite the typed input into a kickoff prompt
+		// (/archive-manage, /goal, /chat-manage …). The persisted user message
+		// must carry the original invocation so clients can collapse the rewrite
+		// into a command chip instead of printing the request twice.
+		const harness = await createHarness({
+			extensionFactories: [
+				(pi) => {
+					pi.registerCommand("kickoff", {
+						description: "Kickoff command",
+						handler: async (args) => {
+							// Fire-and-forget, exactly like real product handlers.
+							pi.sendUserMessage(args.trim() || "Summarize everything.");
+						},
+					});
+				},
+			],
+		});
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("ok")]);
+
+		await harness.session.prompt("/kickoff clean things up");
+		await harness.session.waitForIdle();
+
+		const user = harness.session.messages.find((message) => message.role === "user");
+		expect(user).toBeDefined();
+		const textBlock = Array.isArray(user?.content)
+			? (user.content.find((part) => part.type === "text") as
+					| { mypiCommandInvocation?: unknown }
+					| undefined)
+			: undefined;
+		expect(textBlock?.mypiCommandInvocation).toEqual({
+			version: 1,
+			commandName: "kickoff",
+			originalText: "/kickoff clean things up",
+		});
+	});
+
+	it("does not tag sendUserMessage issued outside a command handler", async () => {
+		const harness = await createHarness();
+		harnesses.push(harness);
+		harness.setResponses([fauxAssistantMessage("ok")]);
+
+		await harness.session.sendUserMessage("plain extension message");
+
+		const user = harness.session.messages.find((message) => message.role === "user");
+		const textBlock = Array.isArray(user?.content)
+			? (user.content.find((part) => part.type === "text") as
+					| { mypiCommandInvocation?: unknown }
+					| undefined)
+			: undefined;
+		expect(textBlock?.mypiCommandInvocation).toBeUndefined();
+	});
+
 	it("sendUserMessage while idle triggers a turn", async () => {
 		const harness = await createHarness();
 		harnesses.push(harness);

@@ -13,6 +13,7 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -225,10 +226,30 @@ interface MyPiSkillInvocationPresentation {
 	originalText: string;
 }
 
+/** Presentation provenance for user messages an extension command handler
+ * dispatched via sendUserMessage(). Slash commands rewrite the typed input
+ * into an internal kickoff prompt (/goal, /archive-manage, /chat-manage, …);
+ * clients that optimistically echoed the typed text need the original
+ * invocation to collapse the persisted rewrite into a command chip instead of
+ * printing the request twice. Persisted on the text block like
+ * mypiSkillInvocation. */
+interface MyPiCommandInvocationPresentation {
+	version: 1;
+	commandName: string;
+	/** The exact text the user typed, e.g. "/archive-manage clean up old sessions". */
+	originalText: string;
+}
+
+/** Follows the async causal chain of a running extension-command handler so
+ * only sendUserMessage() calls made BY that handler are tagged — a concurrent
+ * queued delivery from another extension must never inherit the tag. */
+const commandInvocationContext = new AsyncLocalStorage<MyPiCommandInvocationPresentation>();
+
 type MyPiQueuedMessageMode = "steer" | "followUp";
 
 type MyPiTextContent = TextContent & {
 	mypiSkillInvocation?: MyPiSkillInvocationPresentation;
+	mypiCommandInvocation?: MyPiCommandInvocationPresentation;
 	mypiQueuedMessageId?: string;
 	mypiQueuedMessageMode?: MyPiQueuedMessageMode;
 };
@@ -2039,11 +2060,13 @@ export class AgentSession {
 			messages = [];
 
 			// Add user message
+			const commandPresentation = commandInvocationContext.getStore();
 			const userContent: (MyPiTextContent | ImageContent)[] = [
 				{
 					type: "text",
 					text: expandedText,
 					...(skillPresentation ? { mypiSkillInvocation: skillPresentation } : {}),
+					...(commandPresentation ? { mypiCommandInvocation: commandPresentation } : {}),
 				},
 			];
 			if (currentImages) {
@@ -2152,7 +2175,14 @@ export class AgentSession {
 		const ctx = this._extensionRunner.createCommandContext();
 
 		try {
-			await command.handler(args, ctx);
+			// Any sendUserMessage() the handler issues (even fire-and-forget after
+			// its own awaits) inherits this invocation via AsyncLocalStorage, so
+			// the persisted rewrite carries the typed command for clients to
+			// render as a command chip instead of a duplicate user bubble.
+			await commandInvocationContext.run(
+				{ version: 1, commandName, originalText: text },
+				() => command.handler(args, ctx),
+			);
 			return true;
 		} catch (err) {
 			// Emit error via extension runner
@@ -2268,11 +2298,13 @@ export class AgentSession {
 		const queueId = this._reserveQueuedMessageId(mypiQueuedMessageId);
 		this._steeringMessages.push({ id: queueId, message: text, mode: "steer", hasImages: Boolean(images?.length) });
 		this._emitQueueUpdate();
+		const commandPresentation = commandInvocationContext.getStore();
 		const content: (MyPiTextContent | ImageContent)[] = [
 			{
 				type: "text",
 				text,
 				...(skillPresentation ? { mypiSkillInvocation: skillPresentation } : {}),
+				...(commandPresentation ? { mypiCommandInvocation: commandPresentation } : {}),
 				mypiQueuedMessageId: queueId,
 				mypiQueuedMessageMode: "steer",
 			},
@@ -2300,11 +2332,13 @@ export class AgentSession {
 		const queueId = this._reserveQueuedMessageId(mypiQueuedMessageId);
 		this._followUpMessages.push({ id: queueId, message: text, mode: "followUp", hasImages: Boolean(images?.length) });
 		this._emitQueueUpdate();
+		const commandPresentation = commandInvocationContext.getStore();
 		const content: (MyPiTextContent | ImageContent)[] = [
 			{
 				type: "text",
 				text,
 				...(skillPresentation ? { mypiSkillInvocation: skillPresentation } : {}),
+				...(commandPresentation ? { mypiCommandInvocation: commandPresentation } : {}),
 				mypiQueuedMessageId: queueId,
 				mypiQueuedMessageMode: "followUp",
 			},
