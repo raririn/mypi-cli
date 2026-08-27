@@ -1,6 +1,7 @@
 import {
 	existsSync,
 	lstatSync,
+	mkdirSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
@@ -19,7 +20,6 @@ import {
 	myPiSandboxPreferencePath,
 	pruneMyPiSandboxEnvironment,
 	resolveMyPiSandboxPreference,
-	saveMyPiSandboxPreference,
 } from "../src/core/mypi-sandbox.ts";
 import {
 	__resetExecutionModeForTest,
@@ -36,6 +36,13 @@ function commandScratchDirectories(): string[] {
 		.sort();
 }
 
+
+/** Legacy-file fixture: the production writer was removed with the migration. */
+function saveMyPiSandboxPreference(enabled: boolean, agentDir: string): void {
+	mkdirSync(agentDir, { recursive: true, mode: 0o700 });
+	writeFileSync(myPiSandboxPreferencePath(agentDir), `${JSON.stringify({ version: 1, enabled })}\n`, { mode: 0o600 });
+}
+
 describe("MyPi shell sandbox", () => {
 	let agentDir: string;
 
@@ -49,16 +56,18 @@ describe("MyPi shell sandbox", () => {
 		__resetExecutionModeForTest();
 	});
 
-	it("gates execution on the per-session mode, seeded from the global preference", () => {
+	it("gates execution on the per-session mode; the retired legacy file never seeds it", () => {
 		const previousAgentDir = process.env.MYPI_CODING_AGENT_DIR;
 		try {
 			process.env.MYPI_CODING_AGENT_DIR = agentDir;
-			// Seeds from the global preference on first read.
+			// The legacy preference file no longer has authority over the mode.
 			saveMyPiSandboxPreference(true, agentDir);
-			expect(isSandboxActive()).toBe(true);
-			expect(getExecutionMode()).toBe("sandbox");
+			expect(isSandboxActive()).toBe(false);
+			expect(getExecutionMode()).toBe("off");
 
-			// The per-session hotkey/command overrides without rewriting the file.
+			// The per-session hotkey/command is the only writer, in memory only.
+			setExecutionMode("sandbox");
+			expect(isSandboxActive()).toBe(true);
 			setExecutionMode("safe");
 			expect(isSandboxActive()).toBe(false);
 			expect(resolveMyPiSandboxPreference(agentDir).enabled).toBe(true);
@@ -90,7 +99,6 @@ describe("MyPi shell sandbox", () => {
 		const target = join(agentDir, "target.json");
 		symlinkSync(target, myPiSandboxPreferencePath(agentDir));
 
-		expect(() => saveMyPiSandboxPreference(true, agentDir)).toThrow(/non-symlinked file/);
 		expect(() => resolveMyPiSandboxPreference(agentDir)).toThrow(/non-symlinked file/);
 	});
 

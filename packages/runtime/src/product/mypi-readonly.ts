@@ -1,3 +1,4 @@
+import { SettingsManager } from "../core/settings-manager.ts";
 import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { getAgentDir } from "../config.ts";
@@ -162,52 +163,32 @@ Web tools perform constrained public GET requests, block private/local targets, 
 type RestrictedCommandContext = ExtensionContext & Partial<Pick<ExtensionCommandContext, "waitForIdle">>;
 type ParsedRestrictedCommand = { mode: "once" | "always" | "never" | "help"; prompt: string };
 
+/** Legacy path kept for the one-shot migration and tests. */
 export function readonlyConfigPath(agentDir: string): string {
   return join(resolve(agentDir), "readonly.json");
 }
 
+/**
+ * The persistent access-mode preference lives in the unified config
+ * (shared.readonly.preference); SettingsManager.create absorbs a legacy
+ * readonly.json (v1 or v2) once.
+ */
 export function loadReadonlyConfig(agentDir: string): LoadedReadonlyConfig {
-  const path = readonlyConfigPath(agentDir);
-  if (!existsSync(path)) return { config: DEFAULT_READONLY_CONFIG };
   try {
-    const stat = lstatSync(path);
-    if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("config must be a regular file");
-    const value = JSON.parse(readFileSync(path, "utf8")) as { version?: unknown; preference?: unknown };
-    if (value.version === 1 && (value.preference === "always" || value.preference === "never")) {
-      return { config: { version: 2, preference: value.preference === "always" ? "readonly" : "never" } };
-    }
-    if (value.version !== 2 || (value.preference !== "readonly" && value.preference !== "noread" && value.preference !== "never")) {
-      throw new Error("unsupported or malformed config");
-    }
-    return { config: { version: 2, preference: value.preference } };
+    const preference = SettingsManager.create(process.cwd(), agentDir).getReadonlyPreference();
+    return { config: { version: 2, preference } };
   } catch (error) {
     return { config: DEFAULT_READONLY_CONFIG, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
-export function saveReadonlyConfig(agentDir: string, config: ReadonlyConfig): void {
+export async function saveReadonlyConfig(agentDir: string, config: ReadonlyConfig): Promise<void> {
   if (config.version !== 2 || (config.preference !== "readonly" && config.preference !== "noread" && config.preference !== "never")) {
     throw new Error("Invalid access-mode config");
   }
-  const path = readonlyConfigPath(agentDir);
-  const directory = dirname(path);
-  if (existsSync(directory) && lstatSync(directory).isSymbolicLink()) throw new Error("Refusing symlinked agent directory");
-  mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const temp = join(directory, `.readonly-${process.pid}-${Date.now()}.tmp`);
-  let fd: number | undefined;
-  try {
-    fd = openSync(temp, "wx", 0o600);
-    writeFileSync(fd, `${JSON.stringify(config, null, 2)}\n`, "utf8");
-    fsyncSync(fd);
-    closeSync(fd);
-    fd = undefined;
-    try { chmodSync(temp, 0o600); } catch { /* best effort */ }
-    renameSync(temp, path);
-  } catch (error) {
-    if (fd !== undefined) try { closeSync(fd); } catch { /* ignored */ }
-    try { rmSync(temp, { force: true }); } catch { /* ignored */ }
-    throw error;
-  }
+  const manager = SettingsManager.create(process.cwd(), agentDir);
+  manager.setReadonlyPreference(config.preference);
+  await manager.flush();
 }
 
 function parseRestrictedCommand(args: string, usage: string): ParsedRestrictedCommand | { error: string } {
@@ -321,7 +302,7 @@ export default async function readonlyExtension(pi: ExtensionAPI): Promise<void>
   async function setPreference(mode: RestrictedMode, enabled: boolean, ctx: RestrictedCommandContext): Promise<boolean> {
     const nextPreference: AccessPreference = enabled ? mode : preference === mode ? "never" : preference;
     try {
-      saveReadonlyConfig(agentDir, { version: 2, preference: nextPreference });
+      await saveReadonlyConfig(agentDir, { version: 2, preference: nextPreference });
     } catch (error) {
       ctx.ui.notify(`Could not save access-mode preference: ${error instanceof Error ? error.message : String(error)}`, "error");
       return false;

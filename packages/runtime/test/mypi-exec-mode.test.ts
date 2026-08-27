@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -11,7 +11,11 @@ import {
 	onExecutionModeChange,
 	setExecutionMode,
 } from "../src/core/mypi-exec-mode.ts";
-import { saveMyPiSandboxPreference } from "../src/core/mypi-sandbox.ts";
+
+
+function writeLegacySandboxPreference(enabled: boolean, agentDir: string): void {
+	writeFileSync(join(agentDir, "sandbox-config.json"), `${JSON.stringify({ version: 1, enabled })}\n`, { mode: 0o600 });
+}
 
 describe("MyPi execution mode", () => {
 	let agentDir: string;
@@ -37,10 +41,10 @@ describe("MyPi execution mode", () => {
 		expect(isSafeModeActive()).toBe(false);
 	});
 
-	it("seeds sandbox from an enabled global preference", () => {
-		saveMyPiSandboxPreference(true, agentDir);
-		expect(getExecutionMode()).toBe("sandbox");
-		expect(isSandboxActive()).toBe(true);
+	it("ignores the retired legacy sandbox-config.json (no seeding)", () => {
+		writeLegacySandboxPreference(true, agentDir);
+		expect(getExecutionMode()).toBe("off");
+		expect(isSandboxActive()).toBe(false);
 	});
 
 	it("cycles off -> sandbox -> safe -> off and stays mutually exclusive", () => {

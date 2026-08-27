@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { lstatSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -115,23 +115,31 @@ test("parses the documented readonly and noread grammars", () => {
   assert.match((parseNoreadCommand("--sometimes") as { error: string }).error, /Unknown option/);
 });
 
-test("access config defaults to never, migrates v1, persists atomically, and rejects symlinks", () => {
+test("access config defaults to never, migrates v1 into the unified config, persists, and rejects symlinks", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-readonly-config-"));
   try {
     assert.equal(loadReadonlyConfig(root).config.preference, "never");
     writeFileSync(readonlyConfigPath(root), JSON.stringify({ version: 1, preference: "always" }));
     assert.equal(loadReadonlyConfig(root).config.preference, "readonly");
 
-    saveReadonlyConfig(root, { version: 2, preference: "noread" });
-    assert.equal(loadReadonlyConfig(root).config.preference, "noread");
-    assert.equal(lstatSync(readonlyConfigPath(root)).mode & 0o777, 0o600);
+    // The absorbed legacy file retires to .migrated once the value is flushed.
+    for (let i = 0; i < 100 && existsSync(readonlyConfigPath(root)); i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    assert.equal(existsSync(readonlyConfigPath(root)), false);
+    assert.equal(existsSync(`${readonlyConfigPath(root)}.migrated`), true);
 
-    const path = readonlyConfigPath(root);
-    rmSync(path);
-    const target = join(root, "target.json");
-    writeFileSync(target, JSON.stringify({ version: 2, preference: "noread" }));
-    symlinkSync(target, path);
-    assert.equal(loadReadonlyConfig(root).config.preference, "never");
+    await saveReadonlyConfig(root, { version: 2, preference: "noread" });
+    assert.equal(loadReadonlyConfig(root).config.preference, "noread");
+
+    // A symlinked legacy file is refused instead of followed.
+    const symlinkRoot = mkdtempSync(join(tmpdir(), "pi-readonly-symlink-"));
+    try {
+      const target = join(symlinkRoot, "target.json");
+      writeFileSync(target, JSON.stringify({ version: 2, preference: "noread" }));
+      symlinkSync(target, readonlyConfigPath(symlinkRoot));
+      assert.equal(loadReadonlyConfig(symlinkRoot).config.preference, "never");
+    } finally { rmSync(symlinkRoot, { recursive: true, force: true }); }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

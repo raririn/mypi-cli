@@ -178,7 +178,7 @@ export default async function webSearchExtension(pi: ExtensionAPI): Promise<void
 				return;
 			}
 			try {
-				saveWebSearchPreference(agentDir, request);
+				await saveWebSearchPreference(agentDir, request);
 				reportProviderStatus(ctx);
 			} catch (error) {
 				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");

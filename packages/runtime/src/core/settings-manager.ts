@@ -1,7 +1,7 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Transport } from "@earendil-works/pi-ai";
 import { randomUUID } from "crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
@@ -75,6 +75,18 @@ export interface SafetySettings {
 	defaultMode?: SafetyMode;
 	/** false disables the dangerous-bash-command guard (default on; active in full access only). */
 	bashGuard?: boolean;
+}
+
+/** Built-in web-search provider preference (formerly websearch-config.json). */
+export interface WebSearchSettings {
+	provider?: "brave" | "curl";
+}
+
+export type ReadonlyModePreference = "readonly" | "noread" | "never";
+
+/** Persistent /readonly · /noread access-mode preference (formerly readonly.json). */
+export interface ReadonlyModeSettings {
+	preference?: ReadonlyModePreference;
 }
 
 /** FEAT-087 code mode. "compatible" = flat schemas AND exec_code;
@@ -158,6 +170,8 @@ export interface Settings {
 	markdown?: MarkdownSettings;
 	warnings?: WarningSettings;
 	safety?: SafetySettings; // host-global default captured only by newly created sessions
+	webSearch?: WebSearchSettings; // built-in web-search provider preference
+	readonly?: ReadonlyModeSettings; // persistent /readonly · /noread access mode
 	tools?: ToolsSettings; // FEAT-087: tool-projection mode (flat | code | code-only)
 	imageGen?: ImageGenSettings; // enables the generate_image tool when a supported provider is configured
 	sessionDir?: string; // Custom session storage directory (same format as --session-dir CLI flag)
@@ -439,7 +453,66 @@ export class SettingsManager {
 		const storage = new UnifiedSettingsStorage(cwd, agentDir);
 		const manager = SettingsManager.fromStorage(storage, options);
 		manager.migrateLegacySandboxPreference(agentDir);
+		manager.migrateLegacyWebSearchPreference(agentDir);
+		manager.migrateLegacyReadonlyPreference(agentDir);
 		return manager;
+	}
+
+	/** One-shot absorb of websearch-config.json into shared.webSearch. */
+	private migrateLegacyWebSearchPreference(agentDir: string): void {
+		if (this.globalSettings.webSearch?.provider !== undefined) return;
+		const legacyPath = join(resolvePath(agentDir), "websearch-config.json");
+		if (!existsSync(legacyPath)) return;
+		try {
+			const stat = lstatSync(legacyPath);
+			if (!stat.isFile() || stat.isSymbolicLink()) {
+				throw new Error(`Refusing unsafe legacy web-search preference at ${legacyPath}`);
+			}
+			const candidate = JSON.parse(readFileSync(legacyPath, "utf8")) as { version?: unknown; provider?: unknown };
+			if (candidate.version !== 1 || (candidate.provider !== "brave" && candidate.provider !== "curl")) {
+				throw new Error(`Invalid legacy web-search preference at ${legacyPath}`);
+			}
+			this.setWebSearchProvider(candidate.provider);
+			this.retireLegacyPreferenceFile(legacyPath);
+		} catch (error) {
+			this.recordError("global", error);
+		}
+	}
+
+	/** Rename an absorbed legacy file once its value is safely flushed, so a
+	 *  stale copy can never re-migrate over a newer unified value. */
+	private retireLegacyPreferenceFile(legacyPath: string): void {
+		void this.flush()
+			.then(() => renameSync(legacyPath, `${legacyPath}.migrated`))
+			.catch(() => undefined);
+	}
+
+	/** One-shot absorb of readonly.json (v1 or v2) into shared.readonly. */
+	private migrateLegacyReadonlyPreference(agentDir: string): void {
+		if (this.globalSettings.readonly?.preference !== undefined) return;
+		const legacyPath = join(resolvePath(agentDir), "readonly.json");
+		if (!existsSync(legacyPath)) return;
+		try {
+			const stat = lstatSync(legacyPath);
+			if (!stat.isFile() || stat.isSymbolicLink()) {
+				throw new Error(`Refusing unsafe legacy access-mode preference at ${legacyPath}`);
+			}
+			const candidate = JSON.parse(readFileSync(legacyPath, "utf8")) as { version?: unknown; preference?: unknown };
+			let preference: ReadonlyModePreference | undefined;
+			if (candidate.version === 1) {
+				if (candidate.preference === "always") preference = "readonly";
+				else if (candidate.preference === "never") preference = "never";
+			} else if (candidate.version === 2) {
+				if (candidate.preference === "readonly" || candidate.preference === "noread" || candidate.preference === "never") {
+					preference = candidate.preference;
+				}
+			}
+			if (preference === undefined) throw new Error(`Invalid legacy access-mode preference at ${legacyPath}`);
+			this.setReadonlyPreference(preference);
+			this.retireLegacyPreferenceFile(legacyPath);
+		} catch (error) {
+			this.recordError("global", error);
+		}
 	}
 
 	private migrateLegacySandboxPreference(agentDir: string): void {
@@ -839,25 +912,10 @@ export class SettingsManager {
 		return this.globalSettings.defaultModel;
 	}
 
-	setDefaultProvider(provider: string): void {
-		this.globalSettings.defaultProvider = provider;
-		this.markModified("defaultProvider");
-		this.save();
-	}
-
-	setDefaultModel(modelId: string): void {
-		this.globalSettings.defaultModel = modelId;
-		this.markModified("defaultModel");
-		this.save();
-	}
-
-	setDefaultModelAndProvider(provider: string, modelId: string): void {
-		this.globalSettings.defaultProvider = provider;
-		this.globalSettings.defaultModel = modelId;
-		this.markModified("defaultProvider");
-		this.markModified("defaultModel");
-		this.save();
-	}
+	// The legacy global default-model setters are gone: `/model --global` and
+	// the GUI write `shared.defaultModel` through updateDefaultModel
+	// (product/global-config.ts); the settings.json pair is migration-input
+	// only (see resolveConfiguredDefaultModel).
 
 	getSteeringMode(): "all" | "one-at-a-time" {
 		return this.settings.steeringMode || "one-at-a-time";
@@ -908,6 +966,36 @@ export class SettingsManager {
 	/** Heuristic dangerous-bash-command interception; on unless explicitly disabled. */
 	getBashGuardEnabled(): boolean {
 		return this.globalSettings.safety?.bashGuard !== false;
+	}
+
+	getWebSearchProvider(): "brave" | "curl" {
+		const provider = this.settings.webSearch?.provider;
+		return provider === "curl" ? "curl" : "brave";
+	}
+
+	setWebSearchProvider(provider: "brave" | "curl"): void {
+		if (provider !== "brave" && provider !== "curl") {
+			throw new Error(`Invalid web-search provider: ${String(provider)}`);
+		}
+		this.globalSettings.webSearch ??= {};
+		this.globalSettings.webSearch.provider = provider;
+		this.markModified("webSearch", "provider");
+		this.save();
+	}
+
+	getReadonlyPreference(): ReadonlyModePreference {
+		const preference = this.settings.readonly?.preference;
+		return preference === "readonly" || preference === "noread" ? preference : "never";
+	}
+
+	setReadonlyPreference(preference: ReadonlyModePreference): void {
+		if (preference !== "readonly" && preference !== "noread" && preference !== "never") {
+			throw new Error(`Invalid access-mode preference: ${String(preference)}`);
+		}
+		this.globalSettings.readonly ??= {};
+		this.globalSettings.readonly.preference = preference;
+		this.markModified("readonly", "preference");
+		this.save();
 	}
 
 	/** FEAT-087 tool-projection mode. Dev-branch default is "code" (exec_code

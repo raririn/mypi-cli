@@ -123,34 +123,9 @@ export function resolveMyPiSandboxPreference(agentDir = getAgentDir()): MyPiSand
 	return { version: 1, enabled: candidate.enabled };
 }
 
-export function saveMyPiSandboxPreference(enabled: boolean, agentDir = getAgentDir()): void {
-	if (typeof enabled !== "boolean") {
-		throw new Error("Invalid sandbox preference; enabled must be a boolean.");
-	}
-	const root = assertSafeAgentDirectory(agentDir);
-	const path = myPiSandboxPreferencePath(root);
-	const stat = lstatIfPresent(path);
-	if (stat) {
-		if (!stat.isFile() || stat.isSymbolicLink()) {
-			throw new Error(`Refusing unsafe sandbox preference at ${path}: expected a regular non-symlinked file.`);
-		}
-	}
-
-	const temporaryPath = `${path}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-	let descriptor: number | undefined;
-	try {
-		descriptor = openSync(temporaryPath, "wx", 0o600);
-		writeFileSync(descriptor, `${JSON.stringify({ version: 1, enabled }, null, 2)}\n`, "utf8");
-		fsyncSync(descriptor);
-		closeSync(descriptor);
-		descriptor = undefined;
-		chmodSync(temporaryPath, 0o600);
-		renameSync(temporaryPath, path);
-	} finally {
-		if (descriptor !== undefined) closeSync(descriptor);
-		rmSync(temporaryPath, { force: true });
-	}
-}
+// The legacy sandbox-config.json writer is gone: nothing may re-author the
+// retired preference file. resolveMyPiSandboxPreference stays for the
+// one-shot migration into shared.safety.defaultMode.
 
 function uniquePaths(paths: string[]): string[] {
 	return [...new Set(paths.map((path) => resolve(path)))];

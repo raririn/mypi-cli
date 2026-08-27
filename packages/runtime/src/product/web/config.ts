@@ -12,6 +12,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
+import { SettingsManager } from "../../core/settings-manager.ts";
 import { join, resolve } from "node:path";
 
 /** Optional Brave API configuration for MyPi's built-in web search. */
@@ -43,67 +44,23 @@ export function webSearchPreferenceConfigPath(agentDir: string): string {
 }
 
 export function resolveWebSearchPreference(agentDir: string): WebSearchPreferenceConfig {
-	const path = webSearchPreferenceConfigPath(agentDir);
-	if (!existsSync(path)) {
+	// The preference lives in the unified config (shared.webSearch.provider);
+	// SettingsManager.create absorbs a legacy websearch-config.json once.
+	try {
+		const provider = SettingsManager.create(process.cwd(), agentDir).getWebSearchProvider();
+		return { version: 1, provider };
+	} catch {
 		return { ...DEFAULT_WEB_SEARCH_PREFERENCE };
 	}
-
-	const stat = lstatSync(path);
-	if (!stat.isFile() || stat.isSymbolicLink()) {
-		throw new Error(`Refusing unsafe web-search preference at ${path}: expected a regular non-symlinked file.`);
-	}
-
-	let value: unknown;
-	try {
-		value = JSON.parse(readFileSync(path, "utf8"));
-	} catch {
-		throw new Error(`Could not parse web-search preference at ${path}; expected valid JSON.`);
-	}
-
-	if (!value || typeof value !== "object") {
-		throw new Error(`Invalid web-search preference at ${path}.`);
-	}
-	const candidate = value as { version?: unknown; provider?: unknown };
-	if (candidate.version !== 1 || (candidate.provider !== "brave" && candidate.provider !== "curl")) {
-		throw new Error(`Invalid web-search preference at ${path}; expected version 1 and provider "brave" or "curl".`);
-	}
-
-	return { version: 1, provider: candidate.provider };
 }
 
-export function saveWebSearchPreference(agentDir: string, provider: WebSearchProviderPreference): void {
+export async function saveWebSearchPreference(agentDir: string, provider: WebSearchProviderPreference): Promise<void> {
 	if (provider !== "brave" && provider !== "curl") {
 		throw new Error('Invalid web-search provider; expected "brave" or "curl".');
 	}
-	const root = resolve(agentDir);
-	mkdirSync(root, { recursive: true, mode: 0o700 });
-	const rootStat = lstatSync(root);
-	if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
-		throw new Error(`Refusing unsafe MyPi agent directory at ${root}: expected a non-symlinked directory.`);
-	}
-
-	const path = webSearchPreferenceConfigPath(root);
-	if (existsSync(path)) {
-		const stat = lstatSync(path);
-		if (!stat.isFile() || stat.isSymbolicLink()) {
-			throw new Error(`Refusing unsafe web-search preference at ${path}: expected a regular non-symlinked file.`);
-		}
-	}
-
-	const temporaryPath = `${path}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-	let descriptor: number | undefined;
-	try {
-		descriptor = openSync(temporaryPath, "wx", 0o600);
-		writeFileSync(descriptor, `${JSON.stringify({ version: 1, provider }, null, 2)}\n`, "utf8");
-		fsyncSync(descriptor);
-		closeSync(descriptor);
-		descriptor = undefined;
-		chmodSync(temporaryPath, 0o600);
-		renameSync(temporaryPath, path);
-	} finally {
-		if (descriptor !== undefined) closeSync(descriptor);
-		rmSync(temporaryPath, { force: true });
-	}
+	const manager = SettingsManager.create(process.cwd(), agentDir);
+	manager.setWebSearchProvider(provider);
+	await manager.flush();
 }
 
 export function resolveBraveSearchConfig(

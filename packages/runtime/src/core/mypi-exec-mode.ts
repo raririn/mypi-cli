@@ -14,13 +14,11 @@
  *   sandbox  OS sandbox wraps bash/`!` execution
  *   safe     mutating tools require approval; no OS isolation
  *
- * The three are mutually exclusive. The value is seeded once from the global
- * sandbox preference (so an operator default still applies to new sessions),
- * after which the per-session hotkey/command overrides it in memory without
- * rewriting the shared file.
+ * The three are mutually exclusive. The value starts at "off" and only the
+ * per-session hotkey/command changes it in memory; the persistent operator
+ * default lives in shared.safety.defaultMode and is enforced by the runtime
+ * safety ladder, not by this compat module.
  */
-
-import { resolveMyPiSandboxPreference } from "./mypi-sandbox.ts";
 
 export type ExecutionMode = "off" | "sandbox" | "safe";
 
@@ -29,18 +27,12 @@ export const EXECUTION_MODE_CYCLE: readonly ExecutionMode[] = ["off", "sandbox",
 let current: ExecutionMode | undefined;
 const listeners = new Set<(mode: ExecutionMode) => void>();
 
-/** Seed lazily from the global sandbox preference the first time the mode is read. */
-function seed(): ExecutionMode {
-	try {
-		return resolveMyPiSandboxPreference().enabled ? "sandbox" : "off";
-	} catch {
-		// A malformed global preference must not wedge the session; default open.
-		return "off";
-	}
-}
-
 export function getExecutionMode(): ExecutionMode {
-	if (current === undefined) current = seed();
+	// No global seed: the legacy sandbox-config.json preference was migrated
+	// into shared.safety.defaultMode, which the runtime safety ladder (not
+	// this compat module) enforces per session. This mode only changes via
+	// the explicit /sandbox and /safemode toggles.
+	if (current === undefined) current = "off";
 	return current;
 }
 
