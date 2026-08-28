@@ -124,7 +124,7 @@ export interface GlobalConfig {
 	readonly thinking: ThinkingDefaultsConfig;
 	/** Image generation (generate_image tool). provider null = off; the tool
 	 *  additionally requires a matching OAuth credential. New sessions. */
-	readonly imageGen: { readonly provider: "openai-codex" | null };
+	readonly imageGen: { readonly provider: "openai-codex" | null; readonly endpoint: string | null };
 	readonly history: HistoryConfig;
 	readonly subagents: SubagentsConfig;
 	readonly tracking: TrackingConfig;
@@ -164,7 +164,7 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfig = Object.freeze({
 	tools: Object.freeze({ mode: "compatible" as const, disabled: Object.freeze([]) as readonly string[], enabled: Object.freeze([]) as readonly string[] }),
 	safety: Object.freeze({ defaultMode: DEFAULT_SAFETY_MODE }),
 	thinking: Object.freeze({ defaultLevel: "medium" as const }),
-	imageGen: Object.freeze({ provider: null }),
+	imageGen: Object.freeze({ provider: null, endpoint: null }),
 	history: Object.freeze({
 		autoArchive: true,
 		shortTestMaxWords: 10,
@@ -217,6 +217,7 @@ export type GlobalConfigField =
 	| "safety.defaultMode"
 	| "thinking.defaultLevel"
 	| "imageGen.provider"
+	| "imageGen.endpoint"
 	| `history.${HistoryKey}`
 	| "subagents.advisorModel"
 	| "subagents.advisorThinkingLevel"
@@ -254,7 +255,7 @@ export interface SanitizedGlobalConfig extends Omit<GlobalConfig, "mcp"> {
 	readonly mcpServerIds: readonly string[];
 }
 const GLOBAL_CONFIG_FIELDS = new Set<GlobalConfigField>([
-	"defaultModel", "serviceTier", "honestUserAgent", "tools.mode", "tools.disabled", "tools.enabled", "safety.defaultMode", "thinking.defaultLevel", "imageGen.provider",
+	"defaultModel", "serviceTier", "honestUserAgent", "tools.mode", "tools.disabled", "tools.enabled", "safety.defaultMode", "thinking.defaultLevel", "imageGen.provider", "imageGen.endpoint",
 	"history.autoArchive", "history.shortTestMaxWords", "history.maxActive", "history.maxArchived",
 	"subagents.advisorModel", "subagents.advisorThinkingLevel", "subagents.requireAdvisor", "subagents.requireReviewer",
 	"tracking.maxSessionCheckpoints", "tracking.maxDetachedCheckpoints", "tracking.warningFiles", "tracking.warningBytes",
@@ -820,7 +821,10 @@ function parseConfigRecord(
 			})(),
 			safety: { defaultMode: isSafetyMode(safety.defaultMode) ? safety.defaultMode : DEFAULT_GLOBAL_CONFIG.safety.defaultMode },
 			thinking: { defaultLevel: isDefaultThinkingLevel(thinking.defaultLevel) ? thinking.defaultLevel : DEFAULT_GLOBAL_CONFIG.thinking.defaultLevel },
-			imageGen: { provider: imageGen.provider === "openai-codex" ? "openai-codex" : null },
+			imageGen: {
+				provider: imageGen.provider === "openai-codex" ? "openai-codex" : null,
+				endpoint: typeof imageGen.endpoint === "string" && imageGen.endpoint.trim() !== "" ? imageGen.endpoint.trim() : null,
+			},
 			history: {
 				autoArchive: readBoolean(history.autoArchive, DEFAULT_GLOBAL_CONFIG.history.autoArchive),
 				shortTestMaxWords: readBoundedInteger(history.shortTestMaxWords, 1, 100, DEFAULT_GLOBAL_CONFIG.history.shortTestMaxWords),
@@ -872,7 +876,7 @@ function parseConfigRecord(
 			(safety.defaultMode !== undefined && !isSafetyMode(safety.defaultMode)) ||
 			(thinking.defaultLevel !== undefined && !isDefaultThinkingLevel(thinking.defaultLevel)) ||
 			(imageGen.provider !== undefined && imageGen.provider !== null && imageGen.provider !== "openai-codex") ||
-			(imageGen.endpoint !== undefined && !safeShortText(imageGen.endpoint)) ||
+			(imageGen.endpoint !== undefined && imageGen.endpoint !== null && !safeShortText(imageGen.endpoint)) ||
 			(history.autoArchive !== undefined && typeof history.autoArchive !== "boolean") ||
 			!validOptionalInteger(history.shortTestMaxWords, 1, 100) ||
 			!validOptionalInteger(history.maxActive, 1, 1_000) ||

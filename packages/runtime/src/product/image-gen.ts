@@ -90,11 +90,13 @@ export function resolveImageGenActivation(options?: { cwd?: string; agentDir?: s
 	} catch {
 		return undefined;
 	}
+	// Present only when the Settings → Tools toggle is on AND an endpoint is
+	// explicitly configured (Settings → General). Credentials are validated at
+	// call time — an alternative endpoint may not need the Codex OAuth at all.
 	if (configured?.provider !== OPENAI_CODEX_PROVIDER_ID) return undefined;
-	const credential = readStoredCredential(OPENAI_CODEX_PROVIDER_ID, join(agentDir, "auth.json"));
-	if (credential?.type !== "oauth") return undefined;
 	const endpoint = configured.endpoint?.trim().replace(/\/+$/, "");
-	return { endpoint: endpoint || DEFAULT_IMAGE_GEN_ENDPOINT };
+	if (!endpoint) return undefined;
+	return { endpoint };
 }
 
 interface CodexImagesRuntime {

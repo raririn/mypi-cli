@@ -410,7 +410,10 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		settingsManager,
 		cwd,
 		agentDir,
-		...(configuredToolsMode ? { toolsMode: configuredToolsMode } : {}),
+		// Pinned at creation (immutable tool surface per session): without an
+		// explicit override the session would re-read settings live and a
+		// mid-session tools.mode edit could flip the projection.
+		toolsMode: configuredToolsMode ?? settingsManager.getToolsMode(),
 		disabledToolGroups,
 		scopedModels: options.scopedModels,
 		resourceLoader,

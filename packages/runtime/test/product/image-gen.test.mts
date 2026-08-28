@@ -70,42 +70,44 @@ async function writeAgentDir(options: { configured?: boolean; oauth?: boolean; e
   return agentDir;
 }
 
-test("generate_image gating: registers only when configured AND an openai-codex OAuth credential exists", async () => {
+test("generate_image gating: registers only when the toggle is on AND an endpoint is set", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "mypi-image-gen-cwd-"));
   const unconfigured = await writeAgentDir({ oauth: true });
-  const noCredential = await writeAgentDir({ configured: true });
+  const noEndpoint = await writeAgentDir({ configured: true, oauth: true });
   const ready = await writeAgentDir({ configured: true, oauth: true, endpoint: "https://example.test/codex/" });
   const previousAgentDir = process.env.MYPI_CODING_AGENT_DIR;
   try {
-    assert.equal(resolveImageGenActivation({ cwd, agentDir: unconfigured }), undefined, "config gate");
-    assert.equal(resolveImageGenActivation({ cwd, agentDir: noCredential }), undefined, "credential gate");
+    assert.equal(resolveImageGenActivation({ cwd, agentDir: unconfigured }), undefined, "toggle gate");
+    assert.equal(resolveImageGenActivation({ cwd, agentDir: noEndpoint }), undefined, "endpoint gate — no default fallback");
     const activation = resolveImageGenActivation({ cwd, agentDir: ready });
-    assert.deepEqual(activation, { endpoint: "https://example.test/codex" }, "endpoint override, trailing slash trimmed");
+    assert.deepEqual(activation, { endpoint: "https://example.test/codex" }, "endpoint, trailing slash trimmed");
 
-    const defaults = await writeAgentDir({ configured: true, oauth: true });
-    assert.deepEqual(resolveImageGenActivation({ cwd, agentDir: defaults }), { endpoint: DEFAULT_IMAGE_GEN_ENDPOINT });
+    // Credentials no longer gate registration: an alternative endpoint may
+    // not need the Codex OAuth; failures surface at call time.
+    const noCredential = await writeAgentDir({ configured: true, endpoint: "https://example.test/codex/" });
+    assert.deepEqual(resolveImageGenActivation({ cwd, agentDir: noCredential }), { endpoint: "https://example.test/codex" });
+    await rm(noCredential, { recursive: true, force: true });
 
     // The product-module entry point respects the same gate.
-    process.env.MYPI_CODING_AGENT_DIR = noCredential;
+    process.env.MYPI_CODING_AGENT_DIR = noEndpoint;
     const gated = createHarness();
     imageGenExtension(gated.pi);
-    assert.equal(gated.toolCount(), 0, "no tool without a credential");
+    assert.equal(gated.toolCount(), 0, "no tool without an endpoint");
 
     process.env.MYPI_CODING_AGENT_DIR = ready;
     const active = createHarness();
     imageGenExtension(active.pi);
-    assert.ok(active.tool(GENERATE_IMAGE_TOOL_NAME), "tool registered when configured + credentialed");
-    await rm(defaults, { recursive: true, force: true });
+    assert.ok(active.tool(GENERATE_IMAGE_TOOL_NAME), "tool registered when toggled on with an endpoint");
   } finally {
     if (previousAgentDir === undefined) delete process.env.MYPI_CODING_AGENT_DIR;
     else process.env.MYPI_CODING_AGENT_DIR = previousAgentDir;
-    for (const dir of [cwd, unconfigured, noCredential, ready]) await rm(dir, { recursive: true, force: true });
+    for (const dir of [cwd, unconfigured, noEndpoint, ready]) await rm(dir, { recursive: true, force: true });
   }
 });
 
 test("generate_image shapes the Codex request, writes the PNG, and returns an image content block", async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), "mypi-image-gen-ws-"));
-  const agentDir = await writeAgentDir({ configured: true, oauth: true });
+  const agentDir = await writeAgentDir({ configured: true, oauth: true, endpoint: DEFAULT_IMAGE_GEN_ENDPOINT });
   const previousAgentDir = process.env.MYPI_CODING_AGENT_DIR;
   process.env.MYPI_CODING_AGENT_DIR = agentDir;
   const png = fakePngBytes();
@@ -201,7 +203,7 @@ test("generate_image shapes the Codex request, writes the PNG, and returns an im
 
 test("generate_image surfaces friendly usage-limit errors without retrying the 429", async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), "mypi-image-gen-limit-"));
-  const agentDir = await writeAgentDir({ configured: true, oauth: true });
+  const agentDir = await writeAgentDir({ configured: true, oauth: true, endpoint: DEFAULT_IMAGE_GEN_ENDPOINT });
   let calls = 0;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async () => {

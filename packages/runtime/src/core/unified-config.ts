@@ -229,7 +229,7 @@ const CONFIG_NOTES: Record<string, string> = {
 	"shared.history": "History maintenance. Next new-session maintenance pass.",
 	"shared.subagents": "Advisor/reviewer delegation defaults. New sessions.",
 	"shared.tracking": "Workspace checkpoint limits and warnings. Immediate.",
-	"shared.imageGen": "provider: openai-codex — enables the generate_image tool (reads the OpenAI Codex OAuth). New sessions.",
+	"shared.imageGen": "generate_image tool: present only with provider set (Tools toggle) AND endpoint set. New sessions.",
 	"shared.mcp": "MCP servers. Managed via GUI/CLI commands. New sessions.",
 	"cli": "mypi TUI only — other clients do not read this section.",
 	"cli.theme": "TUI color theme. Immediate.",
