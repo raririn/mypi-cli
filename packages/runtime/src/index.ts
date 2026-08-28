@@ -544,3 +544,5 @@ export * from "./product/gui-control/protocol.ts";
 // Shell utilities
 export { getShellConfig } from "./utils/shell.ts";
 export type { ProductProfile } from "./product/index.ts";
+
+export { TOOL_GROUPS, isKnownToolGroup, resolveDisabledToolGroups, isToolInDisabledGroup, type ToolGroup } from "./core/tool-groups.ts";

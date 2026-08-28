@@ -1,3 +1,4 @@
+import { resolveDisabledToolGroups } from "./tool-groups.ts";
 import { join } from "node:path";
 import { Agent, type AgentMessage, setDefaultStreamFn, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { clampThinkingLevel, type Message, type Model, streamSimple } from "@earendil-works/pi-ai/compat";
@@ -391,12 +392,18 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 	}
 
 	// FEAT-087: config.yaml owns the tool projection; read once per session.
+	// The disabled tool-group set rides the same one-shot read (new sessions
+	// only, so a toggle never busts a live session's prompt cache).
 	let configuredToolsMode: "flat" | "code" | "compatible" | undefined;
+	let disabledToolGroups: ReadonlySet<string> | undefined;
 	try {
-		configuredToolsMode = (await loadGlobalConfig(joinPath(resolvePathAbs(agentDir), "config.yaml"))).config.tools.mode;
+		const toolsConfig = (await loadGlobalConfig(joinPath(resolvePathAbs(agentDir), "config.yaml"))).config.tools;
+		configuredToolsMode = toolsConfig.mode;
+		disabledToolGroups = resolveDisabledToolGroups(toolsConfig.disabled, toolsConfig.enabled);
 	} catch {
 		// Settings/default fallback inside the session.
 	}
+	disabledToolGroups ??= resolveDisabledToolGroups(undefined, undefined);
 	const session = new AgentSession({
 		agent,
 		sessionManager,
@@ -404,6 +411,7 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		cwd,
 		agentDir,
 		...(configuredToolsMode ? { toolsMode: configuredToolsMode } : {}),
+		disabledToolGroups,
 		scopedModels: options.scopedModels,
 		resourceLoader,
 		customTools: options.customTools,

@@ -214,7 +214,7 @@ const CONFIG_NOTES: Record<string, string> = {
 	"shared.readonly": "preference: readonly|noread|never — persistent /readonly · /noread access mode. Next session.",
 	"shared.webSearch": "provider: brave|curl for the built-in web_search tool. Next search.",
 	"shared.thinking": "defaultLevel: off..max. New sessions only; clamped per model.",
-	"shared.tools": "mode: flat|code|compatible. Needs a daemon restart.",
+	"shared.tools": "mode: flat|code|compatible (daemon restart). disabled/enabled: tool-group exceptions (Settings → Tools). New sessions.",
 	"shared.transport": "sse|websocket|websocket-cached|auto. New sessions.",
 	"shared.sessionDir": "Custom session storage directory. New sessions.",
 	"shared.defaultProjectTrust": "ask|always|never for untrusted project prompts.",

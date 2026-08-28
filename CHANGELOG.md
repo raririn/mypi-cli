@@ -1,5 +1,24 @@
 # MyPi CLI changelog
 
+## Unreleased
+
+- **Settings → Tools: individually togglable tool groups.** Every session
+  tool belongs to a group (workspace read, file editing, shell, web,
+  ask_user, commentary, checkpoints & recall, goals, subagents, MCP, status,
+  wakeups — default on; archive management and chat management — default
+  off). `shared.tools.disabled` / `shared.tools.enabled` store the
+  exceptions; the set is captured at session creation (new sessions only).
+  A disabled group vanishes everywhere: tool schemas, the system prompt's
+  tool list AND its prose guidance (shell/editing workflow, destructive-
+  actions, read-only mode tool lists), code-mode cells and TS declarations,
+  and MCP dynamics. Turning everything off leaves a working chatbot —
+  exercised end-to-end by tests/tool-toggles-engine.test.mjs.
+- The `/archive-manage` and `/chat-manage` one-turn tool grants are retired:
+  the tools are governed by their Settings → Tools groups; the commands
+  remain as kickoff prompts and point at Settings when the group is off.
+- Project scope joined the unified config and the changelog stamp was
+  renamed to `lastPiCoreChangelogVersion` (see prior commits).
+
 ## 2.0.0-beta.12 — 2026-08-27
 
 Safety hardening + catalog agreement:

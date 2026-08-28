@@ -137,6 +137,10 @@ export interface GlobalConfig {
 export type ToolsProjectionMode = "flat" | "code" | "compatible";
 export interface ToolsProjectionConfig {
 	readonly mode: ToolsProjectionMode;
+	/** Tool-group ids turned OFF beyond the defaults (see core/tool-groups.ts). */
+	readonly disabled: readonly string[];
+	/** Default-off tool-group ids turned ON (archive-manage, chat-manage). */
+	readonly enabled: readonly string[];
 }
 
 export interface GlobalConfigDiagnostic {
@@ -157,7 +161,7 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfig = Object.freeze({
 	defaultModel: null,
 	serviceTier: "default",
 	honestUserAgent: false,
-	tools: Object.freeze({ mode: "compatible" as const }),
+	tools: Object.freeze({ mode: "compatible" as const, disabled: Object.freeze([]) as readonly string[], enabled: Object.freeze([]) as readonly string[] }),
 	safety: Object.freeze({ defaultMode: DEFAULT_SAFETY_MODE }),
 	thinking: Object.freeze({ defaultLevel: "medium" as const }),
 	imageGen: Object.freeze({ provider: null }),
@@ -208,6 +212,8 @@ export type GlobalConfigField =
 	| "serviceTier"
 	| "honestUserAgent"
 	| "tools.mode"
+	| "tools.disabled"
+	| "tools.enabled"
 	| "safety.defaultMode"
 	| "thinking.defaultLevel"
 	| "imageGen.provider"
@@ -248,7 +254,7 @@ export interface SanitizedGlobalConfig extends Omit<GlobalConfig, "mcp"> {
 	readonly mcpServerIds: readonly string[];
 }
 const GLOBAL_CONFIG_FIELDS = new Set<GlobalConfigField>([
-	"defaultModel", "serviceTier", "honestUserAgent", "tools.mode", "safety.defaultMode", "thinking.defaultLevel", "imageGen.provider",
+	"defaultModel", "serviceTier", "honestUserAgent", "tools.mode", "tools.disabled", "tools.enabled", "safety.defaultMode", "thinking.defaultLevel", "imageGen.provider",
 	"history.autoArchive", "history.shortTestMaxWords", "history.maxActive", "history.maxArchived",
 	"subagents.advisorModel", "subagents.advisorThinkingLevel", "subagents.requireAdvisor", "subagents.requireReviewer",
 	"tracking.maxSessionCheckpoints", "tracking.maxDetachedCheckpoints", "tracking.warningFiles", "tracking.warningBytes",
@@ -804,7 +810,14 @@ function parseConfigRecord(
 				: DEFAULT_GLOBAL_CONFIG.defaultModel,
 			serviceTier: shared.serviceTier === "priority" ? "priority" : DEFAULT_GLOBAL_CONFIG.serviceTier,
 			honestUserAgent: readBoolean(shared.honestUserAgent, DEFAULT_GLOBAL_CONFIG.honestUserAgent),
-			tools: { mode: readToolsProjectionMode(isRecord(shared.tools) ? (shared.tools as ConfigRecord).mode : undefined) },
+			tools: (() => {
+				const rawTools = isRecord(shared.tools) ? (shared.tools as ConfigRecord) : {};
+				return {
+					mode: readToolsProjectionMode(rawTools.mode),
+					disabled: readStringArray(rawTools.disabled),
+					enabled: readStringArray(rawTools.enabled),
+				};
+			})(),
 			safety: { defaultMode: isSafetyMode(safety.defaultMode) ? safety.defaultMode : DEFAULT_GLOBAL_CONFIG.safety.defaultMode },
 			thinking: { defaultLevel: isDefaultThinkingLevel(thinking.defaultLevel) ? thinking.defaultLevel : DEFAULT_GLOBAL_CONFIG.thinking.defaultLevel },
 			imageGen: { provider: imageGen.provider === "openai-codex" ? "openai-codex" : null },
@@ -1054,6 +1067,11 @@ function isDefaultThinkingLevel(value: unknown): value is DefaultThinkingLevel {
 
 function readToolsProjectionMode(value: unknown): ToolsProjectionMode {
 	return isToolsProjectionMode(value) ? value : DEFAULT_GLOBAL_CONFIG.tools.mode;
+}
+
+function readStringArray(value: unknown): readonly string[] {
+	if (!Array.isArray(value)) return [];
+	return value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0 && entry.length <= 64);
 }
 
 function readBoundedInteger(value: unknown, minimum: number, maximum: number, fallback: number): number {

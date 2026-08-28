@@ -266,7 +266,7 @@ test("Chat cleanup removes only the exact untouched New chat placeholder", async
   }
 });
 
-test("/chat-manage does not call runtime actions while the extension is loading", async () => {
+test("/chat-manage is a kickoff over plainly registered tools (grant retired)", async () => {
   const root = await mkdtemp(join(tmpdir(), "pi-chat-manage-"));
   try {
     const harness = extensionHarness(true);
@@ -278,14 +278,15 @@ test("/chat-manage does not call runtime actions while the extension is loading"
     const manager = SessionManager.create(root, join(root, "sessions"));
     const ctx = harness.context(root, manager);
     await harness.emit("session_start", {}, ctx);
-    assert.deepEqual(harness.activeTools(), ["read", "bash"]);
-    assert.equal((await harness.emit("tool_call", { toolName: "list_chats" }, ctx)).block, true);
+    // Presence is governed by Settings → Tools ("chat-manage" group); no
+    // per-turn grant, no tool_call gate, no restore on agent_end.
+    assert.deepEqual(harness.activeTools(), ["read", "bash", ...MANAGEMENT_TOOLS]);
+    assert.equal((await harness.emit("tool_call", { toolName: "list_chats" }, ctx))?.block, undefined);
 
     await harness.commands.get("chat-manage").handler("list chats", ctx);
-    assert.deepEqual(harness.activeTools(), ["read", "bash", ...MANAGEMENT_TOOLS]);
     assert.deepEqual(harness.sent, ["list chats"]);
     await harness.emit("agent_end", {}, ctx);
-    assert.deepEqual(harness.activeTools(), ["read", "bash"]);
+    assert.deepEqual(harness.activeTools(), ["read", "bash", ...MANAGEMENT_TOOLS]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

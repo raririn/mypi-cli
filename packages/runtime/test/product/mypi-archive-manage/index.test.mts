@@ -113,7 +113,7 @@ function appendTurn(session: ReturnType<typeof SessionManager.create>, userText:
 }
 
 describe("archive manager", { concurrency: false }, () => {
-test("archive tools are active only for an /archive-manage agent turn", async () => {
+test("archive tools are plain registered tools (grant retired); the command is a kickoff", async () => {
   const agentDir = await mkdtemp(join(tmpdir(), "pi-archive-extension-scope-"));
   const restoreAgentDir = setTestAgentDir(agentDir);
   try {
@@ -122,19 +122,22 @@ test("archive tools are active only for an /archive-manage agent turn", async ()
     archiveManageExtension(harness.api as any);
     const context = harness.makeContext(current);
 
+    // Registration leaves the tools active; presence is governed by the
+    // Settings → Tools "archive-manage" group (central registry filter),
+    // not by any per-turn grant.
     assert.deepEqual(harness.getActiveTools(), ["read", "bash", ...ARCHIVE_TOOLS]);
     harness.finishLoading();
     await harness.emit("session_start", { reason: "startup" }, context);
-    assert.deepEqual(harness.getActiveTools(), ["read", "bash"]);
-    const blocked = await harness.emit("tool_call", { toolName: "archive_sessions_older_than" }, context);
-    assert.equal(blocked.block, true);
+    assert.deepEqual(harness.getActiveTools(), ["read", "bash", ...ARCHIVE_TOOLS]);
+    const gate = await harness.emit("tool_call", { toolName: "archive_sessions_older_than" }, context);
+    assert.equal(gate?.block, undefined);
 
     await harness.commands.get("archive-manage").handler("show archives", context);
-    assert.deepEqual(harness.getActiveTools(), ["read", "bash", ...ARCHIVE_TOOLS]);
     assert.deepEqual(harness.sentMessages, ["show archives"]);
 
+    // Turn end changes nothing — no expiry, no restore.
     await harness.emit("agent_end", {}, context);
-    assert.deepEqual(harness.getActiveTools(), ["read", "bash"]);
+    assert.deepEqual(harness.getActiveTools(), ["read", "bash", ...ARCHIVE_TOOLS]);
   } finally {
     restoreAgentDir();
     await rm(agentDir, { recursive: true, force: true });

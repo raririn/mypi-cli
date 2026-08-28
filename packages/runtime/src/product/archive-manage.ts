@@ -109,26 +109,14 @@ interface WriterStatus {
 
 export default function archiveManageExtension(pi: ExtensionAPI): void {
 	const paths = resolveArchivePaths();
-	let active = false;
-	let toolsBeforeArchiveManage: string[] | undefined;
-
-	const restoreTools = (ctx?: ExtensionContext, options: { readonly notifyExpired?: boolean } = {}) => {
-		const wasActive = active;
-		active = false;
-		if (toolsBeforeArchiveManage) pi.setActiveTools(toolsBeforeArchiveManage);
-		else pi.setActiveTools(pi.getActiveTools().filter((name) => !TOOL_NAME_SET.has(name)));
-		toolsBeforeArchiveManage = undefined;
-		ctx?.ui.setStatus("archive-manage", undefined);
-		// The grant is deliberately one turn; say so out loud — a silent expiry
-		// reads as broken tools (2026-08-26: a follow-up "delete them" turn with
-		// vanished tools pushed a model into rm'ing 195 transcripts via bash).
-		if (wasActive && options.notifyExpired) {
-			ctx?.ui.notify(
-				"Session tool grant expired. Run /archive-manage again if additional archive management is needed.",
-				"info",
-			);
-		}
-	};
+	// The one-turn grant is retired (beta.13): the archive tools are governed
+	// by Settings → Tools ("archive-manage" group, default off). When the
+	// group is enabled the tools are simply present, like any other tool; the
+	// central registry filter removes them entirely when it is off — so the
+	// old snapshot/restore/expiry machinery (and its expiry-notice footgun,
+	// 2026-08-26: a silent expiry pushed a model into rm'ing 195 transcripts
+	// via bash) has nothing left to guard.
+	const toolsPresent = () => pi.getActiveTools().some((name) => TOOL_NAME_SET.has(name));
 
 	pi.registerTool({
 		name: "session_archive_stats",
@@ -140,7 +128,6 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 			older_than_hours: Type.Optional(AGE_SCHEMA),
 		}),
 		async execute(_toolCallId, params) {
-			assertArchiveMode(active);
 			const records = await loadSessionRecords(paths, "all");
 			const hours = params.older_than_hours;
 			const cutoff = hours === undefined ? undefined : ageCutoff(hours);
@@ -205,7 +192,6 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 			),
 		}),
 		async execute(_toolCallId, params) {
-			assertArchiveMode(active);
 			const state = (params.state ?? "all") as RequestedState;
 			const cutoff = params.older_than_hours === undefined ? undefined : ageCutoff(params.older_than_hours);
 			const records = (await loadSessionRecords(paths, state)).filter(
@@ -239,7 +225,6 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 			state: Type.Optional(STATE_SCHEMA),
 		}),
 		async execute(_toolCallId, params) {
-			assertArchiveMode(active);
 			const record = requireUniqueRecord(
 				await loadSessionRecords(paths, (params.state ?? "all") as RequestedState),
 				params.session_id,
@@ -278,7 +263,6 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 			}),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			assertArchiveMode(active);
 			const session = requireUniqueSession(
 				await listStoredSessions(paths.sessionsRoot),
 				params.session_id,
@@ -312,7 +296,6 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 			}),
 		}),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			assertArchiveMode(active);
 			const all = [
 				...(await listStoredSessions(paths.sessionsRoot)),
 				...(await listStoredSessions(paths.archiveRoot)),
@@ -337,7 +320,6 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 		promptSnippet: "Bulk-archive unarchived MyPi sessions by last-activity age",
 		parameters: Type.Object({ older_than_hours: AGE_SCHEMA }),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			assertArchiveMode(active);
 			const cutoff = ageCutoff(params.older_than_hours);
 			const candidates = (await listStoredSessions(paths.sessionsRoot)).filter(
 				(session) => session.modified.getTime() < cutoff,
@@ -368,7 +350,6 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 		promptSnippet: "Bulk-archive unarchived MyPi sessions by current-branch user-message count",
 		parameters: Type.Object({ max_user_messages: USER_MESSAGE_COUNT_SCHEMA }),
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			assertArchiveMode(active);
 			const sessions = await listStoredSessions(paths.sessionsRoot);
 			const candidates: SessionInfo[] = [];
 			const failures: BulkFailure[] = [];
@@ -414,7 +395,6 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 			}),
 		}),
 		async execute(_toolCallId, params) {
-			assertArchiveMode(active);
 			const session = requireUniqueSession(
 				await listStoredSessions(paths.archiveRoot),
 				params.session_id,
@@ -449,7 +429,6 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 			}),
 		}),
 		async execute(_toolCallId, params) {
-			assertArchiveMode(active);
 			if (params.confirm !== true) throw new Error("Permanent deletion requires confirm=true.");
 			const session = requireUniqueSession(
 				await listStoredSessions(paths.archiveRoot),
@@ -480,7 +459,6 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 			}),
 		}),
 		async execute(_toolCallId, params) {
-			assertArchiveMode(active);
 			if (params.confirm !== true) throw new Error("Bulk permanent deletion requires confirm=true.");
 			const cutoff = ageCutoff(params.older_than_hours);
 			const candidates = (await listStoredSessions(paths.archiveRoot)).filter(
@@ -526,7 +504,6 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 			}),
 		}),
 		async execute(_toolCallId, params) {
-			assertArchiveMode(active);
 			if (params.confirm !== true) throw new Error("Bulk permanent deletion requires confirm=true.");
 			const sessions = await listStoredSessions(paths.archiveRoot);
 			const candidates: SessionInfo[] = [];
@@ -583,7 +560,6 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 			}),
 		}),
 		async execute(_toolCallId, params) {
-			assertArchiveMode(active);
 			if (params.confirm !== true) throw new Error("Permanent deletion requires confirm=true.");
 			const record = requireUniqueRecord(await loadSessionRecords(paths, "all"), params.session_id);
 			const session = record.session;
@@ -616,10 +592,13 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 			ctx.ui.notify("The agent is busy; wait for it to finish before starting /archive-manage.", "warning");
 			return;
 		}
-		toolsBeforeArchiveManage = pi.getActiveTools().filter((name) => !TOOL_NAME_SET.has(name));
-		pi.setActiveTools([...toolsBeforeArchiveManage, ...TOOL_NAMES]);
-		active = true;
-		ctx.ui.setStatus("archive-manage", "ARCHIVE MANAGE");
+		if (!toolsPresent()) {
+			ctx.ui.notify(
+				'The archive tools are disabled. Enable "Archive management" in Settings → Tools (new sessions pick it up).',
+				"warning",
+			);
+			return;
+		}
 		pi.sendUserMessage(
 			request ||
 				"Summarize my unarchived, archived, and currently writer-protected sessions, then help me decide whether to archive, restore, or permanently remove any of them. Ask before permanent deletion.",
@@ -638,31 +617,12 @@ export default function archiveManageExtension(pi: ExtensionAPI): void {
 		await handleCommand(match[1] ?? "", ctx);
 		return { action: "handled" };
 	});
-	pi.on("tool_call", (event) => {
-		if (TOOL_NAME_SET.has(event.toolName) && !active) {
-			return { block: true, reason: `${event.toolName} is only available during /archive-manage.` };
-		}
-		return undefined;
-	});
 	pi.on("before_agent_start", (event) => {
-		if (!active) {
-			const currentTools = pi.getActiveTools();
-			if (currentTools.some((name) => TOOL_NAME_SET.has(name))) {
-				pi.setActiveTools(currentTools.filter((name) => !TOOL_NAME_SET.has(name)));
-			}
-			return undefined;
-		}
+		if (!toolsPresent()) return undefined;
 		return {
-			systemPrompt: `${event.systemPrompt}\n\n[ARCHIVE MANAGEMENT ACTIVE]\nUse the archive tools for ALL session-history changes — never the filesystem or shell; session files must only be moved or deleted through these tools so locks, containment, and tracker cleanup apply. The tool grant expires when this turn ends; if the tools are unavailable, tell the user to run /archive-manage again instead of falling back to bash or scripts. Treat active as the backward-compatible filter name for unarchived storage and use writerState or session_archive_stats for ownership. Prefer session_archive_stats for broad inventory. Keep listings filtered and paginated; previews are opt-in, inspect_session_archive is for one record, and list results carry a machine-readable copy in details.sessions (with details.total/hasMore). For age-based or user-message-count bulk requests, call the matching dedicated bulk tool directly instead of listing every match or issuing per-session calls; bulk permanent deletion of short sessions is archive_sessions_with_max_user_messages followed by delete_archived_sessions_with_max_user_messages. Permanent deletion requires an explicit user request or confirmation and confirm=true. Preserve the session running this command.`,
+			systemPrompt: `${event.systemPrompt}\n\n[ARCHIVE MANAGEMENT ACTIVE]\nUse the archive tools for ALL session-history changes — never the filesystem or shell; session files must only be moved or deleted through these tools so locks, containment, and tracker cleanup apply. If an archive tool is unavailable, tell the user to enable Archive management in Settings → Tools instead of falling back to bash or scripts. Treat active as the backward-compatible filter name for unarchived storage and use writerState or session_archive_stats for ownership. Prefer session_archive_stats for broad inventory. Keep listings filtered and paginated; previews are opt-in, inspect_session_archive is for one record, and list results carry a machine-readable copy in details.sessions (with details.total/hasMore). For age-based or user-message-count bulk requests, call the matching dedicated bulk tool directly instead of listing every match or issuing per-session calls; bulk permanent deletion of short sessions is archive_sessions_with_max_user_messages followed by delete_archived_sessions_with_max_user_messages. Permanent deletion requires an explicit user request or confirmation and confirm=true. Preserve the session running this command.`,
 		};
 	});
-	pi.on("agent_end", (_event, ctx) => restoreTools(ctx, { notifyExpired: true }));
-	pi.on("session_start", (_event, ctx) => restoreTools(ctx));
-	pi.on("session_shutdown", () => restoreTools());
-
-	// Custom tools are active by default after registration. Deactivate them from
-	// session_start, once Pi has initialized the extension runtime; action methods
-	// such as getActiveTools/setActiveTools are not valid during extension loading.
 }
 
 function resolveArchivePaths(): ArchivePaths {
@@ -1080,9 +1040,6 @@ async function removeEmptyParent(file: string, archiveRoot: string): Promise<voi
 	}
 }
 
-function assertArchiveMode(active: boolean): void {
-	if (!active) throw new Error("Archive tools are only available during /archive-manage.");
-}
 
 function textResult(text: string, details: Record<string, unknown> = {}) {
 	return { content: [{ type: "text" as const, text }], details };

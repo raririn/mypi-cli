@@ -22,7 +22,7 @@
     "test:agent-hooks": "node --test tests/agent-hooks-engine.test.mjs",
     "test:distribution": "node --test tests/distribution.test.mjs",
     "test:preattach": "node --test tests/preattach.test.mjs",
-    "test:host": "node --test tests/host.test.mjs tests/subagent-rpc.test.mjs tests/mcp-rpc.test.mjs",
+    "test:host": "node --test tests/host.test.mjs tests/subagent-rpc.test.mjs tests/mcp-rpc.test.mjs tests/tool-toggles-engine.test.mjs",
     "test:daemon": "node --test tests/daemon.test.mjs",
     "test:hosted": "node --test tests/hosted.test.mjs tests/ownership-conflict-ui.test.mjs",
     "test:rpc-dialogs": "node --test tests/rpc-dialogs.test.mjs",

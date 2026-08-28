@@ -13,6 +13,7 @@
  * Modes use this class and add their own I/O layer on top.
  */
 
+import { isToolInDisabledGroup, resolveDisabledToolGroups } from "./tool-groups.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -444,6 +445,9 @@ export interface AgentSessionConfig {
 	 *  remains a dev override when absent. Applied at construction — a daemon
 	 *  restart makes a config change effective. */
 	toolsMode?: "flat" | "code" | "compatible";
+	/** Tool-group ids disabled for this session (Settings → Tools), resolved
+	 *  from shared.tools.disabled/enabled at creation. New sessions only. */
+	disabledToolGroups?: ReadonlySet<string>;
 	/** Initial active built-in tool names. Default: [read, bash, edit, write, commentary] */
 	initialActiveToolNames?: string[];
 	/** Optional allowlist of tool names. When provided, only these tool names are exposed. */
@@ -613,6 +617,7 @@ export class AgentSession {
 	private _initialActiveToolNames?: string[];
 	private _allowedToolNames?: Set<string>;
 	private _excludedToolNames?: Set<string>;
+	private _disabledToolGroups: ReadonlySet<string>;
 	private _baseToolsOverride?: Record<string, AgentTool>;
 	private _sessionStartEvent: SessionStartEvent;
 	private _extensionUIContext?: ExtensionUIContext;
@@ -669,6 +674,7 @@ export class AgentSession {
 		this._excludedToolNames = config.excludedToolNames
 			? new Set(normalizeLegacyToolNames(config.excludedToolNames))
 			: undefined;
+		this._disabledToolGroups = config.disabledToolGroups ?? resolveDisabledToolGroups(undefined, undefined);
 		this._baseToolsOverride = config.baseToolsOverride;
 		this._sessionStartEvent = config.sessionStartEvent ?? { type: "session_start", reason: "startup" };
 		this._safetyPolicyEnabled = config.safetyPolicyEnabled ?? true;
@@ -3647,7 +3653,12 @@ export class AgentSession {
 		const previousActiveToolNames = this._requestedActiveToolNames ?? this.getActiveToolNames();
 		const allowedToolNames = this._allowedToolNames;
 		const excludedToolNames = this._excludedToolNames;
+		const disabledGroups = this._disabledToolGroups;
 		const isAllowedTool = (name: string): boolean => {
+			// Settings → Tools: a disabled group removes its tools everywhere —
+			// registry, prompt, safety substitutes, code-mode cells, MCP
+			// dynamics — before any allow/exclude list applies.
+			if (isToolInDisabledGroup(name, disabledGroups)) return false;
 			if (excludedToolNames?.has(name)) return false;
 			if (!allowedToolNames || allowedToolNames.has(name)) return true;
 			// Bounded safety modes substitute the workspace tools for the broad
