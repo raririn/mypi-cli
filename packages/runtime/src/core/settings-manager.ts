@@ -128,7 +128,10 @@ export type PackageSource =
 	  };
 
 export interface Settings {
+	/** Legacy stamp name; read once for migration, no longer written. */
 	lastChangelogVersion?: string;
+	/** Last vendored pi-core CHANGELOG version shown (the update notes track pi-core, not MyPi releases). */
+	lastPiCoreChangelogVersion?: string;
 	defaultProvider?: string;
 	defaultModel?: string;
 	defaultThinkingLevel?: ThinkingLevel;
@@ -323,38 +326,56 @@ export class FileSettingsStorage implements SettingsStorage {
 export class UnifiedSettingsStorage implements SettingsStorage {
 	private configPath: string;
 	private registryPath: string;
-	private projectStorage: FileSettingsStorage;
+	private projectConfigPath: string;
+	private projectRegistryPath: string;
 
 	constructor(cwd: string, agentDir: string) {
 		const resolvedAgentDir = resolvePath(agentDir);
 		this.configPath = resolveUnifiedConfigPath(resolvedAgentDir);
 		this.registryPath = join(resolvedAgentDir, "settings.json");
-		this.projectStorage = new FileSettingsStorage(cwd, agentDir);
+		const projectDir = join(resolvePath(cwd), CONFIG_DIR_NAME);
+		this.projectConfigPath = join(projectDir, "config.yaml");
+		this.projectRegistryPath = join(projectDir, "settings.json");
 	}
 
 	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void {
 		if (scope === "project") {
-			this.projectStorage.withLock(scope, fn);
+			// Project scope mirrors the global composite: preferences route
+			// into <cwd>/.mypi/config.yaml sections, resource lists stay in
+			// .mypi/settings.json. The yaml is only materialized when a
+			// project-scoped preference is actually written — reading a repo
+			// must never create files in it; legacy flat settings.json keys
+			// stay effective until their first rewrite absorbs them.
+			this.withUnifiedLock(this.projectConfigPath, this.projectRegistryPath, fn, false);
 			return;
 		}
+		this.withUnifiedLock(this.configPath, this.registryPath, fn, true);
+	}
+
+	private withUnifiedLock(
+		configPath: string,
+		registryPath: string,
+		fn: (current: string | undefined) => string | undefined,
+		createConfigWhenMissing: boolean,
+	): void {
 		const releases: Array<() => void> = [];
 		let configLocked = false;
 		let registryLocked = false;
 		try {
-			const configExists = existsSync(this.configPath);
-			const registryExists = existsSync(this.registryPath);
+			const configExists = existsSync(configPath);
+			const registryExists = existsSync(registryPath);
 			if (configExists) {
-				releases.push(lockUnifiedConfigSync(this.configPath));
+				releases.push(lockUnifiedConfigSync(configPath));
 				configLocked = true;
 			}
 			if (registryExists) {
-				releases.push(acquireLockSyncWithRetry(this.registryPath));
+				releases.push(acquireLockSyncWithRetry(registryPath));
 				registryLocked = true;
 			}
 			// A malformed unified file or registry throws here; the manager
 			// records the load error and suppresses writes to this scope.
-			const source = configExists ? readUnifiedSourceSync(this.configPath) : undefined;
-			const registryRaw = registryExists ? readFileSync(this.registryPath, "utf-8") : undefined;
+			const source = configExists ? readUnifiedSourceSync(configPath) : undefined;
+			const registryRaw = registryExists ? readFileSync(registryPath, "utf-8") : undefined;
 			const registryParsed: unknown = registryRaw === undefined ? undefined : JSON.parse(registryRaw);
 			const registry: ConfigRecord =
 				typeof registryParsed === "object" && registryParsed !== null && !Array.isArray(registryParsed)
@@ -369,21 +390,24 @@ export class UnifiedSettingsStorage implements SettingsStorage {
 			const merged = JSON.parse(next) as ConfigRecord;
 			const baseSource = source ?? { version: UNIFIED_CONFIG_VERSION };
 			const { source: nextSource, leftover } = applySettingsToUnifiedSource(baseSource, merged);
-			if (JSON.stringify(nextSource) !== JSON.stringify(baseSource) || !configExists) {
+			const cliKeys = Object.keys((nextSource.cli as ConfigRecord | undefined) ?? {}).length;
+			const sharedKeys = Object.keys((nextSource.shared as ConfigRecord | undefined) ?? {}).length;
+			const wantsConfig = createConfigWhenMissing || configExists || cliKeys + sharedKeys > 0;
+			if (wantsConfig && (JSON.stringify(nextSource) !== JSON.stringify(baseSource) || !configExists)) {
 				if (!configLocked) {
-					mkdirSync(dirname(this.configPath), { recursive: true });
-					releases.push(lockUnifiedConfigSync(this.configPath));
+					mkdirSync(dirname(configPath), { recursive: true });
+					releases.push(lockUnifiedConfigSync(configPath));
 					configLocked = true;
 				}
-				writeUnifiedSourceSync(this.configPath, nextSource);
+				writeUnifiedSourceSync(configPath, nextSource);
 			}
 			if (JSON.stringify(leftover) !== JSON.stringify(registry)) {
 				if (!registryLocked) {
-					mkdirSync(dirname(this.registryPath), { recursive: true });
-					releases.push(acquireLockSyncWithRetry(this.registryPath));
+					mkdirSync(dirname(registryPath), { recursive: true });
+					releases.push(acquireLockSyncWithRetry(registryPath));
 					registryLocked = true;
 				}
-				writeFileSync(this.registryPath, JSON.stringify(leftover, null, 2), "utf-8");
+				writeFileSync(registryPath, JSON.stringify(leftover, null, 2), "utf-8");
 			}
 		} finally {
 			for (const release of releases.reverse()) {
@@ -879,12 +903,16 @@ export class SettingsManager {
 		return drained;
 	}
 
-	getLastChangelogVersion(): string | undefined {
-		return this.settings.lastChangelogVersion;
+	getLastPiCoreChangelogVersion(): string | undefined {
+		return this.settings.lastPiCoreChangelogVersion ?? this.settings.lastChangelogVersion;
 	}
 
-	setLastChangelogVersion(version: string): void {
-		this.globalSettings.lastChangelogVersion = version;
+	setLastPiCoreChangelogVersion(version: string): void {
+		this.globalSettings.lastPiCoreChangelogVersion = version;
+		// Retire the misleading legacy name (it always held the vendored
+		// pi-core version, not a MyPi release).
+		delete this.globalSettings.lastChangelogVersion;
+		this.markModified("lastPiCoreChangelogVersion");
 		this.markModified("lastChangelogVersion");
 		this.save();
 	}

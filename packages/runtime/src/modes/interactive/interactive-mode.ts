@@ -1074,20 +1074,20 @@ export class InteractiveMode {
 			return undefined;
 		}
 
-		const lastVersion = this.settingsManager.getLastChangelogVersion();
+		const lastVersion = this.settingsManager.getLastPiCoreChangelogVersion();
 		const changelogPath = getChangelogPath();
 		const entries = parseChangelog(changelogPath);
 
 		if (!lastVersion) {
 			// Fresh install - record the version, send telemetry, don't show changelog
-			this.settingsManager.setLastChangelogVersion(VERSION);
+			this.settingsManager.setLastPiCoreChangelogVersion(VERSION);
 			this.reportInstallTelemetry(VERSION);
 			return undefined;
 		}
 
 		const newEntries = getNewEntries(entries, lastVersion);
 		if (newEntries.length > 0) {
-			this.settingsManager.setLastChangelogVersion(VERSION);
+			this.settingsManager.setLastPiCoreChangelogVersion(VERSION);
 			this.reportInstallTelemetry(VERSION);
 			return newEntries.map((e) => normalizeChangelogLinks(e.content, e)).join("\n\n");
 		}

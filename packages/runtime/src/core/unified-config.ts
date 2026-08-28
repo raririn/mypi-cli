@@ -92,6 +92,7 @@ export const SETTINGS_REGISTRY_KEYS = new Set<string>([
 	"defaultProvider",
 	"extensions",
 	"lastChangelogVersion",
+	"lastPiCoreChangelogVersion",
 	"packages",
 	"prompts",
 	"skills",
