@@ -1,25 +1,31 @@
 import type { ExtensionAPI } from '../core/extensions/types.ts'
 import { keyHint, keyText } from '../modes/interactive/components/keybinding-hints.ts'
 
-export const PROGRESS_BRIEF_INTERVAL = 10
-export const PROGRESS_BRIEF_CUSTOM_TYPE = 'mypi-progress-brief-reminder'
-
+/**
+ * BUG-124: the old design injected a hidden context reminder on every run's
+ * first turn and every 10 tool-bearing turns. Weak models answered the
+ * reminder itself — an announcement-only `stop` that persisted as a
+ * successful terminal boundary while the promised work never happened.
+ *
+ * Progress guidance now consumes zero provider turns (R1/R2): it is a
+ * static system-prompt clause, present only when the `commentary` tool is
+ * available (R5), telling the model to ride progress updates on the
+ * commentary TOOL co-emitted with continuing work — never as a standalone
+ * text response. Subagent children are excluded entirely (R3); with no
+ * per-turn state left there is nothing for internal wakes to reset (R4);
+ * ordinary assistant `stop` stays terminal (R6/R7).
+ */
 export const PROGRESS_BRIEF_POLICY = `
-Progress brief policy:
+Progress updates policy:
 - Do not reveal private chain-of-thought.
-- If your first response to this request will call tools, first give the user a concise one- or two-sentence work brief describing what you will do and why.
-- When a progress-brief reminder appears, if you will continue calling tools, first give a concise one- or two-sentence update describing what changed, what you learned, and what you will do next.
-- If you are ready to give the final answer without more tools, answer normally without a redundant progress preamble.
+- While you are working with tools, share concise one- or two-sentence progress updates through the \`commentary\` tool, co-emitted in the same response as your continuing tool calls — never as a standalone text response.
+- A plain text response without tool calls is always your final answer. Never end with a text response that merely announces what you will do next; either do it (tool calls) or deliver the result.
 `.trim()
 
-export const PROGRESS_BRIEF_REMINDER = `
-Progress-brief reminder: before making additional tool calls, give the user a factual one- or two-sentence progress update. Describe results and next actions without exposing private chain-of-thought. If no more tools are needed, answer normally.
-`.trim()
-
-/** Adds concise model-authored progress briefs without persisting reminder messages. */
 export default function progressBriefsExtension(pi: ExtensionAPI): void {
-  let completedToolTurns = 0
-  let briefDue = true
+  // Explore/work/advisor/reviewer children run under their role prompts
+  // alone; progress-brief policy never applies to them (R3).
+  if (process.env.MYPI_SUBAGENT_CHILD) return
 
   pi.on('session_start', (_event, ctx) => {
     if (ctx.mode !== 'tui') return
@@ -32,32 +38,10 @@ export default function progressBriefsExtension(pi: ExtensionAPI): void {
   })
 
   pi.on('before_agent_start', (event) => {
-    completedToolTurns = 0
-    briefDue = true
+    // Guidance is meaningful only when the commentary tool exists to carry
+    // it (R5); without it, say nothing rather than invite prose progress.
+    if (!pi.getActiveTools().includes('commentary')) return undefined
     return { systemPrompt: `${event.systemPrompt}\n\n${PROGRESS_BRIEF_POLICY}` }
-  })
-
-  pi.on('context', (event) => {
-    if (!briefDue) return
-    briefDue = false
-    return {
-      messages: [
-        ...event.messages,
-        {
-          role: 'custom' as const,
-          customType: PROGRESS_BRIEF_CUSTOM_TYPE,
-          content: PROGRESS_BRIEF_REMINDER,
-          display: false,
-          timestamp: Date.now(),
-        },
-      ],
-    }
-  })
-
-  pi.on('turn_end', (event) => {
-    if (event.toolResults.length === 0) return
-    completedToolTurns += 1
-    if (completedToolTurns % PROGRESS_BRIEF_INTERVAL === 0) briefDue = true
   })
 
   pi.on('session_shutdown', (_event, ctx) => {
